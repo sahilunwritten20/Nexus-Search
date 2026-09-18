@@ -1,0 +1,6 @@
+seeds: []
+allowed_domains: []
+max_pages: 1000
+max_depth: 3
+concurrency: 8
+default_crawl_delay: 1.0

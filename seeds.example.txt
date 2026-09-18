@@ -1,0 +1,3 @@
+# One seed URL per line. Copy to seeds.txt and edit.
+https://example.com/
+https://example.com/blog/

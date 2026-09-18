@@ -1,0 +1,21 @@
+# Core (Phase 1) — API layer
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+
+# Ingestion (Phase 2) — web connector
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# Ingestion (Phase 2) — config
+PyYAML>=6.0
+
+# Crawler (Phase 3)
+requests>=2.31
+
+# Everything else (tokenizer, storage, indexer, bm25, dedup, files/code/
+# product connectors, frontier, politeness) is stdlib-only by design.
+
+# Optional upgrade paths, not required to run as shipped:
+# trafilatura>=1.8   # swap into ingestion/connectors/web.py for better boilerplate removal
+# httpx>=0.27        # true async I/O if you rewrite fetcher.py/pipeline.py around it
