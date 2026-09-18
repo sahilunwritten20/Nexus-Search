@@ -7,6 +7,12 @@ pydantic>=2.6
 beautifulsoup4>=4.12
 lxml>=5.0
 
+# Ingestion (Phase 2) — document formats
+pypdf>=4.0
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=0.6
+
 # Ingestion (Phase 2) — config
 PyYAML>=6.0
 

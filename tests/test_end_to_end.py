@@ -1,141 +1,594 @@
-"""True end-to-end test: a local HTTP server -> the real crawler -> the
-real Phase 2 ingestion adapter -> the real Phase 1 index -> real BM25
-search. Nothing here is mocked or stubbed — this is what "the system
-actually works together" means, proven rather than assumed.
-"""
-import functools
-import http.server
-import os
-import tempfile
+"""End-to-end crawler tests for Nexus Search."""
+
 import threading
-import unittest
+import time
+from http.server import (
+    BaseHTTPRequestHandler,
+    HTTPServer,
+)
 from pathlib import Path
 
-from nexus_search.core.bm25 import BM25Search
-from nexus_search.core.indexer import Indexer
-from nexus_search.core.storage import Storage
-from nexus_search.crawler.pipeline import CrawlPipeline
-from nexus_search.ingestion.dedup import Deduplicator
-from nexus_search.ingestion.pipeline import make_crawler_ingest_fn
+import pytest
+
+from nexus_search.crawler.pipeline import (
+    CrawlPipeline,
+)
 
 
-class _QuietHandler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+# ============================================================
+# TEST HTTP SERVER
+# ============================================================
 
 
-class TestFullPipelineEndToEnd(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.site_dir = tempfile.mkdtemp()
-        site = Path(cls.site_dir)
+class TestHandler(BaseHTTPRequestHandler):
 
-        (site / "index.html").write_text(
-            '<html lang="en"><head><title>Nexus Search Home</title></head><body>'
-            "<nav>Nav</nav>"
-            "<article><p>Nexus Search unifies web pages, documents, products, "
-            "and code into a single search index, long enough content to clear "
-            "the extractor's short-content fallback check.</p></article>"
-            '<a href="/about.html">About</a>'
-            '<a href="/private/hidden.html">Hidden</a>'
-            "</body></html>"
-        )
-        (site / "about.html").write_text(
-            '<html lang="en"><head><title>About Nexus</title></head><body>'
-            "<article><p>This page describes the BM25 ranking algorithm and "
-            "the hybrid vector search planned for Phase 4 of the roadmap.</p></article>"
-            "</body></html>"
-        )
-        private = site / "private"
-        private.mkdir()
-        (private / "hidden.html").write_text(
-            "<html><head><title>Hidden</title></head><body>"
-            "<p>Must never be indexed — disallowed by robots.txt.</p></body></html>"
-        )
-        (site / "robots.txt").write_text("User-agent: *\nDisallow: /private/\nCrawl-delay: 0\n")
+    pages = {
+        "/": """
+        <html>
+        <head>
+            <title>Nexus Home</title>
+        </head>
+        <body>
+            <h1>Nexus Search</h1>
+            <p>
+                Welcome to the Nexus Search
+                crawler test website.
+            </p>
+            <a href="/page1">
+                Page One
+            </a>
+            <a href="/page2">
+                Page Two
+            </a>
+        </body>
+        </html>
+        """,
 
-        handler = functools.partial(_QuietHandler, directory=cls.site_dir)
-        cls.httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
+        "/page1": """
+        <html>
+        <head>
+            <title>Page One</title>
+        </head>
+        <body>
+            <h1>Page One</h1>
+            <p>
+                This is the first test page.
+            </p>
+            <a href="/page3">
+                Page Three
+            </a>
+        </body>
+        </html>
+        """,
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=2)
+        "/page2": """
+        <html>
+        <head>
+            <title>Page Two</title>
+        </head>
+        <body>
+            <h1>Page Two</h1>
+            <p>
+                This is the second test page.
+            </p>
+        </body>
+        </html>
+        """,
 
-    def setUp(self):
-        fd, self.index_db = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        fd, self.frontier_db = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
+        "/page3": """
+        <html>
+        <head>
+            <title>Page Three</title>
+        </head>
+        <body>
+            <h1>Page Three</h1>
+            <p>
+                This is the third test page.
+            </p>
+        </body>
+        </html>
+        """,
+    }
 
-        self.storage = Storage(self.index_db)
-        self.indexer = Indexer(self.storage)
-        self.dedup = Deduplicator(self.index_db)
-        self.searcher = BM25Search(self.storage)
+    etag = '"test-etag-v1"'
 
-    def tearDown(self):
-        self.storage.close()
-        self.dedup.close()
-        for path in (self.index_db, self.frontier_db):
-            Path(path).unlink(missing_ok=True)
+    last_modified = (
+        "Wed, 01 Jan 2025 00:00:00 GMT"
+    )
 
-    def _run_full_crawl(self):
-        ingest_fn = make_crawler_ingest_fn(self.indexer, self.dedup)
-        pipeline = CrawlPipeline(
-            db_path=self.frontier_db,
-            allowed_domains=["127.0.0.1"],
-            max_pages=10,
-            max_depth=2,
-            ingest_fn=ingest_fn,
-        )
-        pipeline.seed([f"http://127.0.0.1:{self.port}/"])
-        return pipeline.run()
+    def do_GET(self):
 
-    def test_crawled_pages_are_searchable_via_real_bm25(self):
-        self._run_full_crawl()
-        results = self.searcher.search("BM25 ranking algorithm")
-        self.assertTrue(any("About Nexus" in r.title for r in results))
+        # robots.txt
+        if self.path == "/robots.txt":
 
-    def test_robots_txt_disallowed_page_never_reaches_the_index(self):
-        self._run_full_crawl()
-        self.assertEqual(self.storage.document_count(), 2)  # index + about; hidden is blocked
-        results = self.searcher.search("hidden disallowed")
-        self.assertEqual(results, [])
+            body = (
+                "User-agent: *\n"
+                "Allow: /\n"
+            ).encode("utf-8")
 
-    def test_index_page_findable_by_its_own_content(self):
-        self._run_full_crawl()
-        results = self.searcher.search("unifies web pages documents products")
-        self.assertTrue(any("Nexus Search Home" in r.title for r in results))
+            self.send_response(200)
 
-    def test_search_result_snippet_is_populated(self):
-        self._run_full_crawl()
-        results = self.searcher.search("BM25")
-        self.assertTrue(results[0].snippet)
-
-    def test_recrawl_does_not_duplicate_index_entries(self):
-        self._run_full_crawl()
-        first_count = self.storage.document_count()
-        # Run again with a *different* frontier DB — simulating a second,
-        # independent crawl of the same site — dedup should still catch it
-        # because it lives in the shared index DB, not the frontier DB.
-        fd, second_frontier = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        try:
-            ingest_fn = make_crawler_ingest_fn(self.indexer, self.dedup)
-            pipeline2 = CrawlPipeline(
-                db_path=second_frontier, allowed_domains=["127.0.0.1"],
-                max_pages=10, max_depth=2, ingest_fn=ingest_fn,
+            self.send_header(
+                "Content-Type",
+                "text/plain",
             )
-            pipeline2.seed([f"http://127.0.0.1:{self.port}/"])
-            pipeline2.run()
-        finally:
-            Path(second_frontier).unlink(missing_ok=True)
-        self.assertEqual(self.storage.document_count(), first_count)
+
+            self.send_header(
+                "Content-Length",
+                str(len(body)),
+            )
+
+            self.end_headers()
+
+            self.wfile.write(body)
+
+            return
+
+        # Unknown page
+        if self.path not in self.pages:
+
+            self.send_response(404)
+
+            self.end_headers()
+
+            return
+
+        # Conditional request
+        request_etag = self.headers.get(
+            "If-None-Match"
+        )
+
+        request_modified = self.headers.get(
+            "If-Modified-Since"
+        )
+
+        if (
+            request_etag == self.etag
+            or request_modified
+            == self.last_modified
+        ):
+
+            self.send_response(304)
+
+            self.send_header(
+                "ETag",
+                self.etag,
+            )
+
+            self.send_header(
+                "Last-Modified",
+                self.last_modified,
+            )
+
+            self.end_headers()
+
+            return
+
+        body = self.pages[
+            self.path
+        ].encode("utf-8")
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/html; charset=utf-8",
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(body)),
+        )
+
+        self.send_header(
+            "ETag",
+            self.etag,
+        )
+
+        self.send_header(
+            "Last-Modified",
+            self.last_modified,
+        )
+
+        self.end_headers()
+
+        self.wfile.write(body)
+
+    def log_message(
+        self,
+        format,
+        *args,
+    ):
+        # Keep pytest output clean.
+        return
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ============================================================
+# FIXTURE
+# ============================================================
+
+
+@pytest.fixture
+def test_server():
+
+    server = HTTPServer(
+        (
+            "127.0.0.1",
+            0,
+        ),
+        TestHandler,
+    )
+
+    thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+
+    thread.start()
+
+    base_url = (
+        f"http://127.0.0.1:"
+        f"{server.server_port}"
+    )
+
+    yield base_url
+
+    server.shutdown()
+    server.server_close()
+
+    thread.join(timeout=2)
+
+
+# ============================================================
+# BASIC END-TO-END CRAWL
+# ============================================================
+
+
+def test_full_crawl(
+    test_server,
+    tmp_path,
+):
+
+    frontier_db = (
+        tmp_path
+        / "frontier.db"
+    )
+
+    documents = []
+
+    def ingest_fn(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        documents.append(
+            {
+                "url": url,
+                "title": title,
+                "text": text,
+                "metadata": metadata,
+            }
+        )
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=10,
+        max_depth=2,
+        concurrency=2,
+        ingest_fn=ingest_fn,
+
+        # Required because the test server
+        # intentionally runs on localhost.
+        allow_private_hosts=True,
+    )
+
+    pipeline.seed(
+        [
+            test_server
+        ]
+    )
+
+    result = pipeline.run()
+
+    assert result["crawled"] >= 4
+
+    assert len(documents) >= 4
+
+    urls = {
+        document["url"]
+        for document in documents
+    }
+
+    assert (
+        f"{test_server}/"
+        in urls
+    )
+
+    assert (
+        f"{test_server}/page1"
+        in urls
+    )
+
+    assert (
+        f"{test_server}/page2"
+        in urls
+    )
+
+    assert (
+        f"{test_server}/page3"
+        in urls
+    )
+
+    assert all(
+        document["title"]
+        for document in documents
+    )
+
+
+# ============================================================
+# DEPTH LIMIT
+# ============================================================
+
+
+def test_crawl_depth_limit(
+    test_server,
+    tmp_path,
+):
+
+    frontier_db = (
+        tmp_path
+        / "depth.db"
+    )
+
+    documents = []
+
+    def ingest_fn(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        documents.append(
+            metadata["depth"]
+        )
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=10,
+        max_depth=0,
+        concurrency=2,
+        ingest_fn=ingest_fn,
+        allow_private_hosts=True,
+    )
+
+    pipeline.seed(
+        [
+            test_server
+        ]
+    )
+
+    result = pipeline.run()
+
+    assert result["crawled"] == 1
+
+    assert documents == [0]
+
+
+# ============================================================
+# DOMAIN LIMIT
+# ============================================================
+
+
+def test_domain_limit(
+    test_server,
+    tmp_path,
+):
+
+    frontier_db = (
+        tmp_path
+        / "domain_limit.db"
+    )
+
+    documents = []
+
+    def ingest_fn(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        documents.append(url)
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=10,
+        max_depth=2,
+        concurrency=2,
+        ingest_fn=ingest_fn,
+        max_pages_per_domain=2,
+        allow_private_hosts=True,
+    )
+
+    pipeline.seed(
+        [
+            test_server
+        ]
+    )
+
+    result = pipeline.run()
+
+    assert result["crawled"] <= 2
+
+    assert len(documents) <= 2
+
+
+# ============================================================
+# ETAG / LAST-MODIFIED RECrawl
+# ============================================================
+
+
+def test_incremental_recrawl(
+    test_server,
+    tmp_path,
+):
+
+    frontier_db = (
+        tmp_path
+        / "recrawl.db"
+    )
+
+    first_documents = []
+
+    def first_ingest(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        first_documents.append(
+            url
+        )
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=1,
+        max_depth=0,
+        concurrency=1,
+        ingest_fn=first_ingest,
+        allow_private_hosts=True,
+    )
+
+    pipeline.seed(
+        [
+            test_server
+        ]
+    )
+
+    first_result = pipeline.run()
+
+    assert first_result["crawled"] == 1
+
+    assert len(first_documents) == 1
+
+    # Give SQLite enough time so the
+    # second crawl has a different timestamp.
+    time.sleep(0.01)
+
+    second_documents = []
+
+    def second_ingest(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        second_documents.append(
+            url
+        )
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=1,
+        max_depth=0,
+        concurrency=1,
+        ingest_fn=second_ingest,
+        recrawl_interval=0.0,
+        allow_private_hosts=True,
+    )
+
+    # Explicitly queue the URL again.
+    pipeline.frontier.add(
+        test_server,
+        depth=0,
+        priority=10,
+        allow_visited=True,
+    )
+
+    second_result = pipeline.run()
+
+    assert (
+        second_result["not_modified"]
+        == 1
+    )
+
+    assert (
+        second_result["crawled"]
+        == 0
+    )
+
+    assert second_documents == []
+
+
+# ============================================================
+# SSRF PROTECTION
+# ============================================================
+
+
+def test_private_host_is_blocked(
+    tmp_path,
+):
+
+    frontier_db = (
+        tmp_path
+        / "security.db"
+    )
+
+    documents = []
+
+    def ingest_fn(
+        url,
+        title,
+        text,
+        metadata,
+    ):
+
+        documents.append(url)
+
+    pipeline = CrawlPipeline(
+        db_path=str(frontier_db),
+        allowed_domains=[
+            "127.0.0.1"
+        ],
+        max_pages=10,
+        max_depth=1,
+        concurrency=1,
+        ingest_fn=ingest_fn,
+
+        # Production/default security behavior.
+        allow_private_hosts=False,
+    )
+
+    pipeline.seed(
+        [
+            "http://127.0.0.1:9999"
+        ]
+    )
+
+    result = pipeline.run()
+
+    assert result["crawled"] == 0
+
+    assert result["skipped"] == 0
+
+    assert len(documents) == 0

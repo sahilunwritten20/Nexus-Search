@@ -1,100 +1,564 @@
 # Nexus Search
 
-A unified search engine spanning web pages, documents, products, and code —
-Phases 1 through 3, upgraded into a stronger production-oriented foundation in one properly-integrated repo
-(previously three separate deliverables with placeholder wiring between
-them; this version has none of that).
+A production-oriented search engine built from the ground up, evolving
+from traditional keyword retrieval into a hybrid semantic and AI-powered
+search platform.
 
-**113 tests, all passing** — including a true end-to-end test
-(`tests/test_end_to_end.py`) that spins up a real local HTTP server,
-crawls it, runs the crawled pages through real deduplication and
-indexing, and confirms BM25 search actually finds them. Nothing about
-"the system works" is assumed here; it's proven.
+## Project Overview
 
-## Quick start
+Nexus Search is a modular search engine project designed to demonstrate
+how modern search systems can be built incrementally.
 
-```bash
-pip install -r requirements.txt
+The project covers:
 
-# 1. Ingest something — pick any source:
-python -m nexus_search.ingestion.cli --source files --path ./some-docs
-python -m nexus_search.ingestion.cli --source code --path ./some-repo
-python -m nexus_search.ingestion.cli --source product --path ./catalog.csv
+-   Keyword search and BM25 ranking
+-   Unified document ingestion
+-   Web crawling
+-   Semantic and vector search
+-   Hybrid retrieval
+-   Advanced ranking
+-   Link intelligence
+-   AI search and RAG
+-   Distributed ingestion
+-   Distributed search
+-   Production infrastructure
 
-# 2. Or crawl a site (indexes automatically as it goes):
-cp seeds.example.txt seeds.txt   # edit with real URLs
-python -m nexus_search.crawler.cli --seeds seeds.txt --domains example.com
+The system is developed phase by phase, with automated testing and
+benchmarking used throughout the development process.
 
-# 3. Serve the API and search:
-uvicorn nexus_search.core.api:app --reload
-curl "http://localhost:8000/search?q=your+query"
+------------------------------------------------------------------------
+
+## Architecture Roadmap
+
+``` text
+                    Data Sources
+                 /       |       \
+                /        |        \
+             Files      Web       APIs
+                \        |        /
+                 \       |       /
+                  Unified Ingestion
+                         |
+                         v
+                 Document Processing
+                /                    \
+               v                      v
+          BM25 Search          Vector Search
+               \                      /
+                \                    /
+                 \                  /
+                  Hybrid Retrieval
+                         |
+                         v
+                  Advanced Ranking
+                         |
+                ┌────────┴────────┐
+                v                 v
+           Search API          AI / RAG
+                |                 |
+                v                 v
+            Results        Answers + Sources
 ```
 
-## Architecture
+------------------------------------------------------------------------
 
+# Development Roadmap
+
+## Phase 1 --- Search Core
+
+### Search Infrastructure
+
+-   Tokenizer
+-   Inverted Index
+-   SQLite Storage
+-   BM25 Search
+-   FastAPI API
+-   Query Parser
+-   Phrase Search
+-   Search Filters
+-   Title Boosting
+-   Phrase Boosting
+-   Search Snippets
+-   Pagination
+-   Top-K Handling
+-   Error Handling
+-   Automated Tests
+
+### Test Status
+
+-   113 tests passed
+-   0 tests failed
+
+------------------------------------------------------------------------
+
+## Phase 2 --- Unified Ingestion
+
+### Core Ingestion
+
+-   Text Ingestion
+-   Markdown Ingestion
+-   Source Code Ingestion
+-   CSV Ingestion
+-   JSON Ingestion
+-   Product Data Ingestion
+-   Web Page Ingestion
+-   Deduplication
+-   Content Hashing
+-   Metadata Extraction
+-   Canonical URL
+-   Unified Document Model
+
+### Document Processing
+
+-   PDF Ingestion
+-   DOCX Ingestion
+-   XLSX Ingestion
+-   PPTX Ingestion
+-   Document Chunking
+-   MIME-Type Detection
+-   Content Quality Scoring
+
+### Test Status
+
+-   Full ingestion test suite completed
+-   59 tests passed
+
+------------------------------------------------------------------------
+
+## Phase 3 --- Web Crawler
+
+### Core Crawler
+
+-   URL Frontier
+-   URL Normalization
+-   robots.txt Support
+-   Crawl Delay / Politeness
+-   Retry Mechanism
+-   Concurrent Crawling
+-   Sitemap Parsing
+-   Canonical URL Support
+-   Crawler → Ingestion Integration
+-   Crawler → Index Integration
+-   Crawler Tests
+
+### Advanced Crawler
+
+-   ETag Support
+-   Last-Modified Support
+-   Incremental Recrawling
+-   Crawl Scheduling
+-   Domain Limits
+-   SSRF Protection
+-   Crawler Monitoring
+
+### Additional Reliability
+
+-   Thread-safe crawler state
+-   SQLite locking protection
+-   Incremental crawl metadata
+-   Conditional HTTP requests
+-   Crawl metrics
+-   End-to-end crawler testing
+
+### Test Status
+
+-   Frontier tests completed
+-   10 Frontier tests passed
+-   End-to-end coverage includes crawling, depth limits, domain limits,
+    incremental recrawling, and SSRF protection
+
+------------------------------------------------------------------------
+
+# Phase 4 --- Hybrid Search
+
+## Vector / Embeddings
+
+-   Embedding Generation
+-   Document Embeddings
+-   Query Embeddings
+-   Vector Index
+-   Embedding Cache
+-   Incremental Embedding
+-   Batch Embedding
+
+## Search
+
+-   Semantic Search
+-   BM25 + Vector Hybrid Search
+-   Score Normalization
+-   Configurable BM25 Weight
+-   Configurable Vector Weight
+-   Candidate Merging
+-   Duplicate Removal
+-   Top-K Retrieval
+-   Keyword-Only Mode
+-   Semantic-Only Mode
+-   Hybrid Mode
+-   BM25 Fallback
+
+## Evaluation
+
+-   Search Benchmark Dataset
+-   Precision@K
+-   Recall@K
+-   MRR
+-   NDCG
+-   BM25 vs Vector Comparison
+-   BM25 vs Hybrid Comparison
+-   Vector vs Hybrid Comparison
+-   Search Latency Benchmark
+
+## API
+
+-   `mode=keyword`
+-   `mode=semantic`
+-   `mode=hybrid`
+-   Search Metadata
+-   Debug Search Explanation
+-   Automated Tests
+
+------------------------------------------------------------------------
+
+# Phase 5 --- Advanced Ranking
+
+## Query Understanding
+
+-   Query Normalization
+-   Spell Correction
+-   Query Expansion
+-   Synonym Handling
+-   Language Detection
+-   Query Intent Detection
+-   Entity Extraction
+-   Query Rewriting
+
+## Ranking Signals
+
+-   BM25 Score
+-   Semantic Similarity
+-   Title Match
+-   URL Match
+-   Phrase Match
+-   Freshness
+-   Document Quality
+-   Content Quality
+-   Language Relevance
+-   Source Authority
+-   Popularity Signals
+-   Click Signals
+
+## Ranking System
+
+-   Feature Extraction
+-   Feature Normalization
+-   Configurable Ranking Weights
+-   Candidate Generation
+-   Re-Ranking
+-   Learning-to-Rank Framework
+-   Ranking Model Evaluation
+-   A/B Testing
+
+## Search UX
+
+-   Autocomplete
+-   Query Suggestions
+-   Related Searches
+-   Search Highlighting
+-   Faceted Filtering
+-   Sorting
+-   Pagination Improvements
+
+------------------------------------------------------------------------
+
+# Phase 6 --- Link Intelligence
+
+-   Outgoing Link Extraction
+-   Source URL Storage
+-   Destination URL Storage
+-   Anchor Text Storage
+-   Link Metadata
+-   Internal Links
+-   External Links
+-   URL Graph
+-   Graph Storage
+-   Graph Traversal
+-   Connected Components
+-   Dead-Link Detection
+-   Orphan-Page Detection
+-   PageRank
+-   Iterative PageRank
+-   Page Authority
+-   Domain Authority Signals
+-   Link Weight Calculation
+-   Anchor-Text Relevance
+-   Link Quality Signals
+-   Spam/Link Manipulation Detection
+-   Link Score in Ranking
+-   Configurable Authority Weight
+-   Ranking Evaluation
+-   Before/After PageRank Benchmark
+-   Incremental Graph Updates
+-   Background PageRank
+-   Graph Caching
+-   Large Graph Benchmark
+-   Failure Recovery
+
+------------------------------------------------------------------------
+
+# Phase 7 --- AI Search / RAG
+
+-   Document Embeddings
+-   Chunk Embeddings
+-   Retrieval Pipeline
+-   Context Selection
+-   RAG Pipeline
+-   LLM Integration
+-   Answer Generation
+-   Source Citations
+-   Citation → Document Mapping
+-   Citation Verification
+-   Hallucination Reduction
+-   Answer + Sources API
+-   Streaming Responses
+-   Conversation Context
+-   RAG Quality Evaluation
+-   Answer Quality Evaluation
+
+------------------------------------------------------------------------
+
+# Phase 8 --- Distributed Ingestion
+
+-   Kafka
+-   Event-Driven Ingestion
+-   Distributed Crawler Workers
+-   Distributed Indexing Workers
+-   Redis
+-   Job Queues
+-   Retry Queues
+-   Dead-Letter Queues
+-   Worker Health Monitoring
+-   Backpressure
+-   Horizontal Scaling
+
+------------------------------------------------------------------------
+
+# Phase 9 --- Distributed Search
+
+-   Search Shards
+-   Document Sharding
+-   Vector Sharding
+-   Replication
+-   Replica Selection
+-   Distributed Query Execution
+-   Result Merging
+-   Fault Tolerance
+-   Node Failure Handling
+-   Rebalancing
+-   Horizontal Scaling
+-   Load Balancing
+-   Distributed Caching
+
+------------------------------------------------------------------------
+
+# Phase 10 --- Production Infrastructure
+
+## Deployment
+
+-   Docker
+-   Docker Compose
+-   Kubernetes
+-   Helm
+-   Cloud Deployment
+-   CI/CD
+-   Staging Environment
+-   Production Environment
+
+## Observability
+
+-   Structured Logging
+-   Metrics
+-   Prometheus
+-   Grafana
+-   Distributed Tracing
+-   OpenTelemetry
+-   Error Tracking
+-   Alerting
+
+## Security
+
+-   Authentication
+-   Authorization
+-   RBAC
+-   API Keys
+-   Rate Limiting
+-   Secrets Management
+-   HTTPS/TLS
+-   Input Validation
+-   SSRF Protection
+-   Audit Logging
+
+## Reliability
+
+-   Health Checks
+-   Readiness Probes
+-   Liveness Probes
+-   Autoscaling
+-   Database Backups
+-   Disaster Recovery
+-   Data Retention
+-   Graceful Shutdown
+-   Zero/Low-Downtime Deployment
+
+------------------------------------------------------------------------
+
+# Testing Strategy
+
+Nexus Search uses automated testing throughout development.
+
+Testing areas include:
+
+-   Unit testing
+-   Integration testing
+-   Ingestion testing
+-   Crawler testing
+-   API testing
+-   End-to-end testing
+-   Search quality evaluation
+-   Performance benchmarking
+
+Run the complete test suite:
+
+``` bash
+python -m pytest -v
 ```
-nexus_search/
-├── core/         Phase 1 — tokenizer, inverted index, BM25, query parser, field/phrase boosts, filters, API
-├── ingestion/     Phase 2 — files/code/web/product connectors, dedup, richer web metadata, ingest CLI
-└── crawler/       Phase 3 — URL frontier, politeness/robots.txt, sitemap parsing, canonical URLs, fetcher, crawl CLI
+
+Run ingestion tests:
+
+``` bash
+python -m pytest tests/ingestion -v
 ```
 
-All three phases share **one SQLite file** (`nexus_search.db` by default):
-`core` owns the documents + postings tables, `ingestion` adds a
-content-hash table for dedup, and `crawler` uses a separate file for its own
-frontier/visited state (crawl progress vs. the document index are
-different lifecycles — you might reset a crawl without wanting to
-rebuild the whole index).
+Run crawler tests:
 
-**The actual integration points**, not placeholders:
-- `crawler/pipeline.py` imports `extract_page` from
-  `ingestion/connectors/web.py` — one HTML-extraction implementation,
-  used by both the crawler (for content + links) and standalone web
-  ingestion (for content only). Two copies of "how to parse HTML" is
-  exactly the kind of drift that causes bugs later.
-- `crawler/cli.py` builds its `ingest_fn` from
-  `ingestion/pipeline.py::make_crawler_ingest_fn`, so crawled pages flow
-  through the same dedup and indexer every other source uses — not a
-  logging stub.
-
-## Running the tests
-
-```bash
-python -m unittest discover -s tests -v
+``` bash
+python -m pytest tests/crawler -v
 ```
 
-Breakdown: 38 tests on `core` (tokenizer/storage/indexer/BM25 + query parsing, title/phrase boosts and filters), 43 on `ingestion` (all four connectors + dedup + crawler adapter + canonical metadata), 27 on `crawler` (frontier/politeness/URL normalization + sitemap parsing), and 5 true end-to-end.
+------------------------------------------------------------------------
 
-## What's not installable here, and why
+# Technology Stack
 
-`fastapi`, `uvicorn`, and `pydantic` aren't available in the sandbox this
-was built in (no network access to PyPI), so `core/api.py` is
-syntax-checked but not functionally run here. Everything it depends on
-(`indexer`, `bm25`, `storage`) is fully tested directly — the API layer
-itself is thin, well-trodden FastAPI usage with very little room for the
-kind of bug that only shows up at runtime. Install the requirements
-locally and it runs as shipped.
+Current and planned technologies include:
 
-## Phase 1-3 upgrade highlights
+-   Python
+-   FastAPI
+-   SQLite
+-   BM25
+-   pytest
+-   Web crawling
+-   Document processing
+-   Vector embeddings
+-   Vector search
+-   Redis
+-   Kafka
+-   Docker
+-   Kubernetes
+-   Prometheus
+-   Grafana
+-   OpenTelemetry
 
-The foundation now includes several upgrades without breaking the original architecture:
+Technologies are introduced as their corresponding architecture phases
+are implemented.
 
-- **Query parser:** quoted phrases plus `type:` and `lang:` filters.
-- **Field-aware ranking:** title matches receive a controlled relevance boost.
-- **Phrase relevance:** exact phrase presence receives a controlled boost.
-- **Better snippets:** snippets are centered around matched terms/phrases when possible.
-- **Richer web metadata:** canonical URL, language, description, source URL, and crawl depth are retained.
-- **Sitemap parsing:** XML sitemaps can be parsed and used as crawler seeds.
-- **Safer API bounds:** `top_k` is constrained to a reasonable range.
+------------------------------------------------------------------------
 
-These are intentionally incremental upgrades. SQLite, BM25, the ingestion abstraction, and the crawler frontier remain the stable foundation for Phase 4 onward.
+# Project Structure
 
-## What's next
+``` text
+nexus-search/
+│
+├── nexus_search/
+│   ├── ingestion/
+│   ├── crawler/
+│   ├── search/
+│   └── ...
+│
+├── tests/
+│   ├── ingestion/
+│   ├── crawler/
+│   └── ...
+│
+├── crawler_config.yaml
+├── README.md
+└── ...
+```
 
-**Phase 4 — hybrid BM25 + vector search** is the natural next step: embed
-every document, add cosine-similarity retrieval, blend it with the BM25
-scores already computed here. That's the single biggest capability jump
-left, and the one that turns "keyword search" into something that
-actually understands meaning.
+The repository structure will expand as semantic search, advanced
+ranking, AI/RAG, and distributed components are introduced.
 
-See `SPEC.md` for the full Phase 0-10 roadmap.
+------------------------------------------------------------------------
+
+# Project Goal
+
+The long-term goal of Nexus Search is to develop a complete modern
+search platform capable of:
+
+1.  Ingesting documents from multiple sources.
+2.  Crawling and continuously updating web content.
+3.  Performing keyword retrieval using BM25.
+4.  Performing semantic vector retrieval.
+5.  Combining keyword and semantic retrieval.
+6.  Applying advanced ranking signals.
+7.  Understanding links and document authority.
+8.  Generating AI-powered answers with citations.
+9.  Scaling ingestion across distributed workers.
+10. Scaling search across distributed nodes.
+11. Providing production-grade security, observability, and reliability.
+
+------------------------------------------------------------------------
+
+# Development Philosophy
+
+The project follows an incremental engineering process:
+
+``` text
+Build
+  ↓
+Test
+  ↓
+Benchmark
+  ↓
+Improve
+  ↓
+Integrate
+  ↓
+Scale
+```
+
+Existing working components are preserved while new capabilities are
+added on top of the architecture.
+
+------------------------------------------------------------------------
+
+
+## Roadmap Summary
+
+``` text
+Phase 1   Search Core
+Phase 2   Unified Ingestion
+Phase 3   Web Crawler
+Phase 4   Hybrid Search
+Phase 5   Advanced Ranking
+Phase 6   Link Intelligence
+Phase 7   AI Search / RAG
+Phase 8   Distributed Ingestion
+Phase 9   Distributed Search
+Phase 10  Production Infrastructure
+```
+
+------------------------------------------------------------------------
+
+## License
+
+This project is currently under development.
+
