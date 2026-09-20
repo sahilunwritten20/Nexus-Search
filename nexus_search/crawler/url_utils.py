@@ -37,5 +37,4 @@ def normalize_url(url: str, base: str | None = None) -> str:
 
 def get_domain(url: str) -> str:
     """Host without port, for per-domain rate limiting and allow-list checks."""
-    netloc = urlsplit(url).netloc.lower()
-    return netloc.split(":")[0]
+    return urlsplit(url).hostname or ""

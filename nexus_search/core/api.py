@@ -1,8 +1,11 @@
 """FastAPI application exposing /documents and /search.
 
-Requires: pip install fastapi uvicorn
 Run with: uvicorn nexus_search.core.api:app --reload
+DB path: env NEXUS_DB (default nexus_search.db)
 """
+import os
+import sqlite3
+
 from fastapi import FastAPI, HTTPException
 
 from .bm25 import BM25Search
@@ -10,22 +13,22 @@ from .indexer import Indexer
 from .models import DocumentIn, SearchResponse, SearchResultOut
 from .storage import Storage
 
-app = FastAPI(title="Nexus Search — Core", version="0.2.0")
+app = FastAPI(title="Nexus Search — Core", version="0.3.0")
 
-_storage = Storage("nexus_search.db")
+_storage = Storage(os.environ.get("NEXUS_DB", "nexus_search.db"))
 _indexer = Indexer(_storage)
 _searcher = BM25Search(_storage)
 
 
 @app.post("/documents", status_code=201)
 def add_document(doc: DocumentIn):
-    _indexer.add_document(
-        doc_id=doc.doc_id,
-        content=doc.content,
-        title=doc.title,
-        doc_type=doc.doc_type,
-        metadata=doc.metadata,
-    )
+    try:
+        _indexer.add_document(
+            doc_id=doc.doc_id, content=doc.content, title=doc.title,
+            doc_type=doc.doc_type, metadata=doc.metadata,
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
     return {"doc_id": doc.doc_id, "status": "indexed"}
 
 
@@ -37,13 +40,18 @@ def delete_document(doc_id: str):
 
 
 @app.get("/search", response_model=SearchResponse)
-def search(q: str, top_k: int = 10):
+def search(q: str, top_k: int = 10, offset: int = 0):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="q must not be empty")
     top_k = min(max(top_k, 1), 100)
-    results = _searcher.search(q, top_k=top_k)
+    offset = min(max(offset, 0), 10_000)
+    page = _searcher.search_page(q, top_k=top_k, offset=offset)
     return SearchResponse(
         query=q,
-        total_results=len(results),
-        results=[SearchResultOut(**r.__dict__) for r in results],
+        total_results=page.total,
+        offset=offset,
+        top_k=top_k,
+        results=[SearchResultOut(**r.__dict__) for r in page.results],
     )
 
 

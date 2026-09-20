@@ -8,6 +8,7 @@ Supported syntax:
 from dataclasses import dataclass, field
 import re
 
+from .tokenizer import tokenize
 _TOKEN_RE = re.compile(r"\"([^\"]+)\"|([^\s]+)")
 
 
@@ -35,5 +36,5 @@ def parse_query(query: str) -> ParsedQuery:
             if key in {"type", "doc_type", "lang", "language"} and filter_value:
                 parsed.filters["doc_type" if key in {"type", "doc_type"} else "language"] = filter_value.lower()
                 continue
-        parsed.terms.extend(re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z]+)?", value.lower()))
+        parsed.terms.extend(tokenize(value))
     return parsed

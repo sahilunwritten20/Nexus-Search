@@ -59,6 +59,23 @@ class PolitenessManager:
         elapsed = time.time() - last
         return max(0.0, delay - elapsed)
 
+    def reserve_slot(self, domain: str) -> float:
+        """Atomically claim the next request slot for this domain and return
+        how long the caller must sleep before using it. Concurrent workers get
+        DIFFERENT slots, so the crawl delay holds under concurrency."""
+        delay = self.crawl_delay(domain)  # takes the lock itself, so call it first
+        with self._lock:
+            now = time.time()
+            slot = max(now, self._last_request.get(domain, 0.0) + delay)
+            self._last_request[domain] = slot
+            return slot - now
+
+    def sitemaps(self, domain: str) -> list[str]:
+        """Sitemap: lines declared in this domain's robots.txt."""
+        with self._lock:
+            parser = self._parsers.get(domain)
+        return list(parser.site_maps() or []) if parser is not None else []
+
     def record_request(self, domain: str):
         with self._lock:
             self._last_request[domain] = time.time()

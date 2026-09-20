@@ -1,6 +1,7 @@
 """SQLite-backed storage for documents and the inverted-index postings."""
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS postings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_postings_term ON postings (term);
+CREATE INDEX IF NOT EXISTS idx_postings_doc ON postings (doc_id);
 """
 
 
@@ -46,68 +48,95 @@ class Storage:
 
     def __init__(self, db_path: str = "nexus_search.db"):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.lock = threading.RLock()
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def upsert_document(
         self, doc_id: str, title: str, content: str, doc_type: str, length: int, metadata: dict
     ):
-        self.conn.execute(
-            "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(doc_id) DO UPDATE SET "
-            "title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, "
-            "length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at",
-            (doc_id, title, content, doc_type, length, json.dumps(metadata), time.time()),
-        )
-        # Clear old postings so re-indexing a doc_id doesn't leave stale terms behind.
-        self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(doc_id) DO UPDATE SET "
+                "title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, "
+                "length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at",
+                (doc_id, title, content, doc_type, length, json.dumps(metadata), time.time()),
+            )
+            # Clear old postings so re-indexing a doc_id doesn't leave stale terms behind.
+            self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
 
     def add_postings(self, doc_id: str, term_freqs: dict[str, int]):
         if not term_freqs:
             return
-        self.conn.executemany(
-            "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
-            [(term, doc_id, freq) for term, freq in term_freqs.items()],
-        )
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
+                [(term, doc_id, freq) for term, freq in term_freqs.items()],
+            )
 
     def commit(self):
-        self.conn.commit()
+        with self.lock:
+            self.conn.commit()
 
     def get_document(self, doc_id: str) -> Optional[Document]:
-        row = self.conn.execute(
-            "SELECT doc_id, title, content, doc_type, length, metadata, added_at "
-            "FROM documents WHERE doc_id = ?",
-            (doc_id,),
-        ).fetchone()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT doc_id, title, content, doc_type, length, metadata, added_at "
+                "FROM documents WHERE doc_id = ?",
+                (doc_id,),
+            ).fetchone()
         if row is None:
             return None
         return Document(row[0], row[1], row[2], row[3], row[4], json.loads(row[5]), row[6])
 
     def delete_document(self, doc_id: str) -> bool:
-        cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-        self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
-        self.conn.commit()
-        return cur.rowcount > 0
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+            self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+            self.conn.commit()
+            return cur.rowcount > 0
 
     def document_count(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        with self.lock:
+            return self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
 
     def average_length(self) -> float:
-        row = self.conn.execute("SELECT AVG(length) FROM documents").fetchone()
-        return row[0] or 0.0
+        with self.lock:
+            row = self.conn.execute("SELECT AVG(length) FROM documents").fetchone()
+            return row[0] or 0.0
 
     def postings_for_term(self, term: str) -> list[tuple[str, int]]:
         """[(doc_id, term_freq), ...] for every document containing this term."""
-        return self.conn.execute(
-            "SELECT doc_id, term_freq FROM postings WHERE term = ?", (term,)
-        ).fetchall()
+        with self.lock:
+            return self.conn.execute(
+                "SELECT doc_id, term_freq FROM postings WHERE term = ?", (term,)
+            ).fetchall()
 
     def document_frequency(self, term: str) -> int:
         """Number of distinct documents containing this term — BM25's n(t)."""
-        return self.conn.execute(
-            "SELECT COUNT(*) FROM postings WHERE term = ?", (term,)
-        ).fetchone()[0]
+        with self.lock:
+            return self.conn.execute(
+                "SELECT COUNT(*) FROM postings WHERE term = ?", (term,)
+            ).fetchone()[0]
+
+    def all_doc_ids(self) -> list[str]:
+        with self.lock:
+            return [r[0] for r in self.conn.execute("SELECT doc_id FROM documents ORDER BY doc_id")]
+
+    def doc_ids_with_prefix(self, prefix: str) -> list[str]:
+        with self.lock:
+            return [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT doc_id FROM documents WHERE substr(doc_id, 1, ?) = ?",
+                    (len(prefix), prefix),
+                )
+            ]
 
     def close(self):
-        self.conn.close()
+        with self.lock:
+            self.conn.close()

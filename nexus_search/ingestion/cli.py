@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--source", required=True, choices=["files", "code", "product"])
     parser.add_argument("--path", required=True, help="Directory (files/code) or file (product)")
     parser.add_argument("--db", default="nexus_search.db")
+    parser.add_argument("--min-quality", type=float, default=None, help="Skip docs scoring below this (0-1)")
+    parser.add_argument("--chunk-size", type=int, default=None, help="Split long docs into ~N-char chunks")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -37,7 +39,7 @@ def main():
     else:
         docs = iter_products(args.path)
 
-    stats = ingest_documents(docs, indexer, dedup)
+    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size)
     print(f"Done: {stats}")
 
 

@@ -1,26 +1,66 @@
-"""Ties connectors, dedup, and the Phase 1 indexer together."""
+"""Ties connectors, dedup, quality gate, chunking and the Phase 1 indexer together."""
 import logging
-from typing import Iterable
+import threading
+from typing import Iterable, Optional
 
 from ..core.indexer import Indexer
+from .chunker import chunk_text
 from .dedup import Deduplicator
+from .mime import detect_mime_type
+from .quality import content_quality_score
 from .types import IngestDoc
 
 logger = logging.getLogger("nexus_search.ingestion")
 
 
-def ingest_documents(docs: Iterable[IngestDoc], indexer: Indexer, dedup: Deduplicator) -> dict:
-    """Batch path — used by the CLI for files/code/product sources."""
+def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optional[int]) -> None:
+    """Index one doc, or (if chunk_size is set and the doc is longer) its chunks.
+    Old chunks of the same parent are removed first so updates never leave stale ones."""
+    for old in indexer.storage.doc_ids_with_prefix(doc.doc_id + "#chunk"):
+        indexer.delete_document(old)
+    if chunk_size and len(doc.content) > chunk_size:
+        chunks = chunk_text(doc.content, chunk_size=chunk_size, overlap=min(50, chunk_size // 10), snap_to_space=True)
+        indexer.delete_document(doc.doc_id)  # a previously un-chunked version
+        for i, chunk in enumerate(chunks):
+            indexer.add_document(
+                doc_id=f"{doc.doc_id}#chunk{i}", content=chunk, title=doc.title, doc_type=doc.doc_type,
+                metadata={**metadata, "parent_id": doc.doc_id, "chunk_index": i, "chunk_count": len(chunks)},
+            )
+    else:
+        indexer.add_document(
+            doc_id=doc.doc_id, content=doc.content, title=doc.title, doc_type=doc.doc_type, metadata=metadata
+        )
+
+
+def ingest_documents(
+    docs: Iterable[IngestDoc],
+    indexer: Indexer,
+    dedup: Deduplicator,
+    min_quality: Optional[float] = None,
+    chunk_size: Optional[int] = None,
+) -> dict:
+    """Batch path — used by the CLI for files/code/product sources.
+
+    min_quality: skip docs scoring below this (0-1). None = no gate.
+    chunk_size:  split long docs into chunks of ~this many chars. None = off.
+    """
     stats = {"indexed": 0, "duplicates": 0}
+    if min_quality is not None:
+        stats["low_quality"] = 0
     for doc in docs:
         if dedup.is_duplicate(doc.content):
             stats["duplicates"] += 1
             logger.info("DUPLICATE skip %s", doc.doc_id)
             continue
-        indexer.add_document(
-            doc_id=doc.doc_id, content=doc.content, title=doc.title,
-            doc_type=doc.doc_type, metadata=doc.metadata,
-        )
+        quality = content_quality_score(doc.content)
+        if min_quality is not None and quality < min_quality:
+            stats["low_quality"] += 1
+            logger.info("LOW QUALITY skip %s (%.2f)", doc.doc_id, quality)
+            continue
+        metadata = {**doc.metadata, "quality": round(quality, 3)}
+        if "path" in metadata:
+            metadata.setdefault("mime_type", detect_mime_type(str(metadata["path"])))
+        _index(indexer, doc, metadata, chunk_size)
         dedup.register(doc.content, doc.doc_id)
         stats["indexed"] += 1
         logger.info("INDEXED %s", doc.doc_id)
@@ -28,18 +68,18 @@ def ingest_documents(docs: Iterable[IngestDoc], indexer: Indexer, dedup: Dedupli
 
 
 def make_crawler_ingest_fn(indexer: Indexer, dedup: Deduplicator):
-    """Returns a (url, title, text, metadata) -> None callable — the exact
-    shape Phase 3's CrawlPipeline expects as `ingest_fn`. This is the real
-    integration point: pass this into CrawlPipeline instead of its
-    placeholder `default_ingest`, and crawled pages flow straight into the
-    real index with the same dedup used everywhere else.
-    """
+    """Returns a (url, title, text, metadata) -> None callable — the shape
+    CrawlPipeline expects as `ingest_fn`. Thread-safe: crawler workers call it
+    concurrently, and dedup+index+register must happen as one step."""
+    lock = threading.Lock()
+
     def ingest_fn(url: str, title: str, text: str, metadata: dict) -> None:
-        if dedup.is_duplicate(text):
-            logger.info("DUPLICATE skip %s", url)
-            return
         doc_id = f"web:{url}"
-        indexer.add_document(doc_id=doc_id, content=text, title=title, doc_type="web", metadata=metadata)
-        dedup.register(text, doc_id)
+        with lock:
+            if dedup.is_duplicate(text):
+                logger.info("DUPLICATE skip %s", url)
+                return
+            indexer.add_document(doc_id=doc_id, content=text, title=title, doc_type="web", metadata=metadata)
+            dedup.register(text, doc_id)
 
     return ingest_fn

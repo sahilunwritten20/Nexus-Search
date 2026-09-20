@@ -82,6 +82,13 @@ class Frontier:
             "TEXT",
         )
 
+        # Crash recovery: URLs claimed by a run that died (or skipped by
+        # last run's limits) get another chance. One crawler process per frontier DB.
+        self.conn.execute(
+            "UPDATE frontier SET status = 'pending' "
+            "WHERE status IN ('in_progress', 'skipped')"
+        )
+
         self.conn.commit()
 
     # ================================================================
@@ -383,6 +390,20 @@ class Frontier:
                 ),
             )
 
+            self.conn.commit()
+
+    # ================================================================
+    # Mark skipped
+    # ================================================================
+
+    def mark_skipped(self, url: str) -> None:
+        """Deliberately not fetched (robots, domain limit, unsafe host).
+        NOT recorded as visited, so a later run can still crawl it."""
+        norm = normalize_url(url)
+        with self.lock:
+            self.conn.execute(
+                "UPDATE frontier SET status = 'skipped' WHERE url = ?", (norm,)
+            )
             self.conn.commit()
 
     # ================================================================

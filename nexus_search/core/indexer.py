@@ -19,21 +19,17 @@ class Indexer:
         metadata: Optional[dict] = None,
     ):
         """Tokenize and (re)index a document. Calling this again with the
-        same doc_id replaces its previous content and postings entirely —
-        this is how the ingestion connectors in Phase 2 handle updates.
-        """
+        same doc_id replaces its previous content and postings entirely."""
         tokens = tokenize(f"{title} {content}")
         term_freqs = Counter(tokens)
-        self.storage.upsert_document(
-            doc_id=doc_id,
-            title=title,
-            content=content,
-            doc_type=doc_type,
-            length=len(tokens),
-            metadata=metadata or {},
-        )
-        self.storage.add_postings(doc_id, dict(term_freqs))
-        self.storage.commit()
+        with self.storage.lock:  # API threads / crawler workers share one connection
+            self.storage.upsert_document(
+                doc_id=doc_id, title=title, content=content, doc_type=doc_type,
+                length=len(tokens), metadata=metadata or {},
+            )
+            self.storage.add_postings(doc_id, dict(term_freqs))
+            self.storage.commit()
 
     def delete_document(self, doc_id: str) -> bool:
-        return self.storage.delete_document(doc_id)
+        with self.storage.lock:
+            return self.storage.delete_document(doc_id)
