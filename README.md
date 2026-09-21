@@ -86,7 +86,7 @@ benchmarking used throughout the development process.
 
 ### Test Status
 
--   113 tests passed
+-   48 tests passed (core: tokenizer, storage, indexer, BM25, query parser, API)
 -   0 tests failed
 
 ------------------------------------------------------------------------
@@ -164,8 +164,10 @@ benchmarking used throughout the development process.
 
 -   Frontier tests completed
 -   10 Frontier tests passed
--   End-to-end coverage includes crawling, depth limits, domain limits,
-    incremental recrawling, and SSRF protection
+-   Core crawler: 27 tests (fetcher, politeness, sitemap, URL utils, scheduler, metrics, DNS pinning)
+-   Security/SSRF: 10 tests (security, DNS pinning validation)
+-   End-to-end: 5 integration tests (full crawl, depth limit, domain limit, incremental recrawl, private host blocked)
+-   Chunk lifecycle + regressions: 24 tests (grouping, cascade delete, crawl-path chunking, index hooks, fetcher/crawler/politeness/dedup regressions)
 
 ------------------------------------------------------------------------
 

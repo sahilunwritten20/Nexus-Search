@@ -38,3 +38,7 @@ dist/
 
 # Logs
 *.log
+
+# Dev / manual scripts
+seeds.txt
+smoke_check.py

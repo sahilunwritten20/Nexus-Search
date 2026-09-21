@@ -6,6 +6,7 @@ needs rather than keeping a second copy. Two code paths parsing HTML two
 slightly different ways is exactly the kind of drift that causes subtle
 bugs later, so there's deliberately only one.
 """
+from copy import copy
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
@@ -30,7 +31,7 @@ class ExtractedPage:
 
 
 def _main_text(soup: BeautifulSoup) -> str:
-    working = BeautifulSoup(str(soup), "lxml")
+    working = copy(soup)
     for tag in working.find_all(_STRIP_TAGS):
         tag.decompose()
     for tag_name in _CONTENT_TAGS:

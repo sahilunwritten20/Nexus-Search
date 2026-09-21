@@ -25,16 +25,29 @@ class Deduplicator:
         if row is None:
             return False
         owner = row[0]
-        try:  # is the owning doc (or one of its chunks) still in the index?
-            alive = self.conn.execute(
-                "SELECT 1 FROM documents WHERE doc_id = :owner "
-                "OR substr(doc_id, 1, length(:chunk)) = :chunk LIMIT 1",
-                {"owner": owner, "chunk": owner + "#chunk"},
-            ).fetchone()
-        except sqlite3.OperationalError:
-            return True  # no documents table in this DB (standalone use): trust the hash
+
+        # Check if documents table exists in this DB
+        tables = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()
+        if tables is None:
+            return True  # no documents table (standalone use): trust the hash
+
+        chunk_prefix = owner + "#chunk"
+        prefix_len = len(chunk_prefix)
+        alive = self.conn.execute(
+            "SELECT 1 FROM documents WHERE doc_id = :owner "
+            "OR substr(doc_id, 1, :plen) = :prefix LIMIT 1",
+            {"owner": owner, "plen": prefix_len, "prefix": chunk_prefix},
+        ).fetchone()
         if alive is None:  # owner was deleted -> stale hash, allow re-ingest
             self.forget_hash(h)
+            # Also clean up any chunk hashes for this owner
+            self.conn.execute(
+                "DELETE FROM content_hashes WHERE substr(doc_id, 1, ?) = ?",
+                (prefix_len, chunk_prefix),
+            )
+            self.conn.commit()
             return False
         return True
 

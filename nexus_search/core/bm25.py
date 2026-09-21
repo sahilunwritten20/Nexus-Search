@@ -129,13 +129,18 @@ class BM25Search:
         # Group chunk hits under their parent (dict keeps best-first order).
         groups: dict[str, list[tuple[str, float]]] = {}
         for doc_id, score in ranked:
-            parent = get(doc_id).metadata.get("parent_id", doc_id) if group_chunks else doc_id
+            doc = get(doc_id)
+            if doc is None:
+                continue
+            parent = doc.metadata.get("parent_id", doc_id) if group_chunks else doc_id
             groups.setdefault(parent, []).append((doc_id, score))
 
         results = []
         for parent, members in list(groups.items())[offset:offset + top_k]:
             best_id, best_score = members[0]
             best = get(best_id)
+            if best is None:
+                continue
             results.append(
                 SearchResult(
                     doc_id=parent,
