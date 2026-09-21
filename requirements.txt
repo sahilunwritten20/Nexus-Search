@@ -19,6 +19,11 @@ PyYAML>=6.0
 # Crawler (Phase 3)
 requests>=2.31
 
+
+# Testing
+pytest>=8.0
+httpx>=0.27   # FastAPI TestClient
+
 # Everything else (tokenizer, storage, indexer, bm25, dedup, files/code/
 # product connectors, frontier, politeness) is stdlib-only by design.
 

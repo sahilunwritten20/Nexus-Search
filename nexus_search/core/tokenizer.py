@@ -1,4 +1,5 @@
 """Tokenization for Nexus Search's BM25 index (Unicode-aware)."""
+
 import re
 import unicodedata
 
@@ -10,49 +11,34 @@ _MARKS = "".join(
 _W = rf"(?:[^\W_]|[{re.escape(_MARKS)}])"
 _TOKEN_RE = re.compile(rf"{_W}+(?:'{_W}+)?")
 
-# CJK ranges that have no spaces between words: Han ideographs (Chinese,
-# and the kanji shared by Japanese/Korean text), Hiragana, Katakana, and
-# Hangul syllables. Without a real segmenter, a run of these characters
-# would otherwise become one giant token (a whole sentence), so partial
-# queries could never match. Character bigrams are the standard
-# space-free fallback: they let a 2+ character CJK query substring match
-# without needing real word segmentation.
-_CJK_RANGES = (
-    (0x3040, 0x30FF),  # Hiragana, Katakana
-    (0x3400, 0x4DBF),  # CJK Extension A
-    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
-    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
-    (0xAC00, 0xD7A3),  # Hangul syllables
-)
+# CJK scripts have no spaces between words. Without a real segmenter a whole
+# sentence would become ONE token, so runs of these characters are split into
+# overlapping character bigrams (the standard space-free fallback):
+# Hiragana/Katakana, CJK Ext-A, CJK Unified Ideographs, Compat Ideographs, Hangul.
+_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3"
+_HAS_CJK = re.compile(f"[{_CJK}]")
+_SCRIPT_RUN = re.compile(f"[{_CJK}]+|[^{_CJK}]+")
 
 
-def _is_cjk_char(ch: str) -> bool:
-    cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
-
-
-def _cjk_bigrams(token: str) -> list[str]:
-    """Split a run of CJK characters into overlapping character bigrams
-    (e.g. "東京都" -> ["東京", "京都"]). A lone leftover character (either
-    because the whole token is one character, or a trailing character with
-    no following pair) is kept as a unigram so it's still searchable.
-    """
-    if len(token) == 1:
-        return [token]
-    return [token[i:i + 2] for i in range(len(token) - 1)]
+def _cjk_bigrams(run: str) -> list[str]:
+    """Split a CJK run into overlapping bigrams. A lone character stays a unigram."""
+    if len(run) == 1:
+        return [run]
+    return [run[i : i + 2] for i in range(len(run) - 1)]
 
 
 def tokenize(text: str) -> list[str]:
     """Lowercase word tokens in any script. Keeps internal apostrophes
-    (don't -> "don't") and drops all other punctuation. CJK runs (which
-    have no spaces to mark word boundaries) are further split into
-    character bigrams so partial CJK queries can match.
+    (don't -> "don't") and drops all other punctuation. CJK runs become
+    character bigrams; a mixed token like "iPhone15发布" is split by script
+    first, so its Latin part stays a normal word ("iphone15", "发布").
     """
     text = unicodedata.normalize("NFKC", text).casefold()
-    tokens = []
+    tokens: list[str] = []
     for token in _TOKEN_RE.findall(text):
-        if any(_is_cjk_char(ch) for ch in token):
-            tokens.extend(_cjk_bigrams(token))
-        else:
+        if not _HAS_CJK.search(token):  # fast path: nearly all tokens
             tokens.append(token)
+            continue
+        for run in _SCRIPT_RUN.findall(token):
+            tokens.extend(_cjk_bigrams(run) if _HAS_CJK.match(run) else [run])
     return tokens

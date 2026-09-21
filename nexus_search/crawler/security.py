@@ -40,7 +40,8 @@ def resolve_validated_addresses(hostname: str):
         if _blocked_ip(ip):
             return None
         family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
-        return [(family, socket.SOCK_STREAM, 0, "", (hostname, 0))]
+        sockaddr = (hostname, 0, 0, 0) if ip.version == 6 else (hostname, 0)
+        return [(family, socket.SOCK_STREAM, 0, "", sockaddr)]
     except ValueError:
         pass
 
@@ -87,13 +88,28 @@ _tls = threading.local()
 _real_getaddrinfo = socket.getaddrinfo
 
 
-def _pinned_getaddrinfo(host, *args, **kwargs):
+def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     pins = getattr(_tls, "pins", None)
     if pins and isinstance(host, str):
         pinned = pins.get(_normalize_host(host))
         if pinned is not None:
-            return pinned
-    return _real_getaddrinfo(host, *args, **kwargs)
+            try:
+                port_num = int(port) if port is not None else 0
+            except (TypeError, ValueError):  # service name like "http": don't guess
+                return _real_getaddrinfo(host, port, family, type, proto, flags)
+            result = []
+            for fam, stype, prot, canon, sa in pinned:
+                if (family and fam != family) or (type and stype != type):
+                    continue
+                entry = (fam, stype, prot, canon, (sa[0], port_num) + tuple(sa[2:]))
+                if entry not in result:
+                    result.append(entry)
+            if not result:
+                raise socket.gaierror(
+                    socket.EAI_NONAME, "no pinned address for requested family/type"
+                )
+            return result
+    return _real_getaddrinfo(host, port, family, type, proto, flags)
 
 
 # Installed once, process-wide. Safe: it only changes behavior for a

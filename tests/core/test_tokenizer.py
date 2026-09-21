@@ -23,5 +23,19 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(tokenize("!!! ??? ..."), [])
 
 
+class TestTokenizerScripts(unittest.TestCase):
+    def test_devanagari_words_stay_whole(self):
+        self.assertEqual(tokenize("नमस्ते दुनिया"), ["नमस्ते", "दुनिया"])
+
+    def test_cjk_becomes_bigrams(self):
+        self.assertEqual(tokenize("東京都"), ["東京", "京都"])
+
+    def test_mixed_script_token_keeps_latin_intact(self):
+        self.assertEqual(
+            tokenize("iPhone15发布 review"), ["iphone15", "发布", "review"]
+        )
+        self.assertEqual(tokenize("Python言語入門")[0], "python")
+
+
 if __name__ == "__main__":
     unittest.main()

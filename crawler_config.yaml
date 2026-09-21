@@ -13,3 +13,6 @@ default_crawl_delay: 1.0
 max_pages_per_domain: 0
 
 recrawl_interval: 0
+
+user_agent: "NexusSearchBot/0.1 (+https://YOUR-SITE/bot)"
+chunk_size: 1000   # 0 = no chunking; Phase 4 wants this on
