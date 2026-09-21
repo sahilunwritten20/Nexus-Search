@@ -1,7 +1,10 @@
-"""BM25 retrieval with filters, title boost, required phrases, snippets, pagination."""
+"""BM25 retrieval with filters, title boost, required phrases, snippets,
+pagination, and chunk grouping."""
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
+from .filters import matches_filters
 from .query_parser import parse_query
 from .storage import Storage
 from .tokenizer import tokenize
@@ -14,16 +17,19 @@ PHRASE_BOOST = 1.25
 
 @dataclass
 class SearchResult:
-    doc_id: str
+    doc_id: str  # the PARENT doc's id when the hit is a chunk
     score: float
     title: str
     snippet: str
     doc_type: str
+    metadata: dict = field(default_factory=dict)
+    chunk_id: Optional[str] = None  # best-matching chunk, if the doc was chunked
+    matched_chunks: int = 1
 
 
 @dataclass
 class SearchPage:
-    total: int  # all matches, before offset/top_k
+    total: int  # all matches (distinct docs when grouped), before offset/top_k
     results: list[SearchResult] = field(default_factory=list)
 
 
@@ -36,14 +42,6 @@ class BM25Search:
     def _idf(self, term: str, n_docs: int) -> float:
         n_t = self.storage.document_frequency(term)
         return math.log((n_docs - n_t + 0.5) / (n_t + 0.5) + 1)
-
-    @staticmethod
-    def _matches_filters(doc, filters: dict[str, str]) -> bool:
-        if "doc_type" in filters and doc.doc_type.lower() != filters["doc_type"]:
-            return False
-        if "language" in filters and str(doc.metadata.get("language", "")).lower() != filters["language"]:
-            return False
-        return True
 
     @staticmethod
     def _has_phrase(doc_tokens: list[str], phrase: list[str]) -> bool:
@@ -67,8 +65,14 @@ class BM25Search:
             snippet += "..."
         return snippet
 
-    def search_page(self, query: str, top_k: int = 10, offset: int = 0) -> SearchPage:
-        """Ranked page of results plus the total match count."""
+    def search_page(
+        self, query: str, top_k: int = 10, offset: int = 0, group_chunks: bool = True
+    ) -> SearchPage:
+        """Ranked page of results plus the total match count.
+
+        group_chunks=True collapses all chunks of one parent into a single
+        result (best chunk wins); False returns raw chunk-level hits.
+        """
         if top_k <= 0:
             return SearchPage(0)
         offset = max(offset, 0)
@@ -93,14 +97,14 @@ class BM25Search:
                 idf = self._idf(term, n_docs)
                 for doc_id, tf in self.storage.postings_for_term(term):
                     doc = get(doc_id)
-                    if doc is None or not self._matches_filters(doc, parsed.filters):
+                    if doc is None or not matches_filters(doc, parsed.filters):
                         continue
                     norm = 1 - self.b + self.b * (doc.length / avg_len if avg_len else 1)
                     scores[doc_id] = scores.get(doc_id, 0.0) + idf * (tf * (self.k1 + 1)) / (tf + self.k1 * norm)
         elif parsed.filters:  # filter-only query, e.g. "type:pdf"
             for doc_id in self.storage.all_doc_ids():
                 doc = get(doc_id)
-                if doc and self._matches_filters(doc, parsed.filters):
+                if doc and matches_filters(doc, parsed.filters):
                     scores[doc_id] = 0.0
         else:
             return SearchPage(0)
@@ -121,17 +125,30 @@ class BM25Search:
             ranked.append((doc_id, score))
 
         ranked.sort(key=lambda kv: (-kv[1], kv[0]))
-        results = [
-            SearchResult(
-                doc_id=doc_id,
-                score=score,
-                title=get(doc_id).title,
-                snippet=self._snippet(get(doc_id), parsed.terms, parsed.phrases),
-                doc_type=get(doc_id).doc_type,
+
+        # Group chunk hits under their parent (dict keeps best-first order).
+        groups: dict[str, list[tuple[str, float]]] = {}
+        for doc_id, score in ranked:
+            parent = get(doc_id).metadata.get("parent_id", doc_id) if group_chunks else doc_id
+            groups.setdefault(parent, []).append((doc_id, score))
+
+        results = []
+        for parent, members in list(groups.items())[offset:offset + top_k]:
+            best_id, best_score = members[0]
+            best = get(best_id)
+            results.append(
+                SearchResult(
+                    doc_id=parent,
+                    score=best_score,
+                    title=best.title,
+                    snippet=self._snippet(best, parsed.terms, parsed.phrases),
+                    doc_type=best.doc_type,
+                    metadata=best.metadata,
+                    chunk_id=best_id if best_id != parent else None,
+                    matched_chunks=len(members),
+                )
             )
-            for doc_id, score in ranked[offset:offset + top_k]
-        ]
-        return SearchPage(total=len(ranked), results=results)
+        return SearchPage(total=len(groups), results=results)
 
     def search(self, query: str, top_k: int = 10) -> list[SearchResult]:
         return self.search_page(query, top_k=top_k).results

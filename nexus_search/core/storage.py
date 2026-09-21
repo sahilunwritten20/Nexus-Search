@@ -1,5 +1,6 @@
 """SQLite-backed storage for documents and the inverted-index postings."""
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -136,6 +137,13 @@ class Storage:
                     (len(prefix), prefix),
                 )
             ]
+
+    def chunk_ids(self, parent_id: str) -> list[str]:
+        """Ids of the chunk documents (parent_id#chunk0, #chunk1, ...) of a parent."""
+        pattern = re.compile(re.escape(parent_id) + r"#chunk\d+")
+        return [
+            d for d in self.doc_ids_with_prefix(parent_id + "#chunk") if pattern.fullmatch(d)
+        ]
 
     def close(self):
         with self.lock:

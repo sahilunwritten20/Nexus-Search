@@ -52,7 +52,12 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         recrawl_interval=recrawl,
         default_crawl_delay=config.get("default_crawl_delay", 1.0),
         user_agent=config.get("user_agent", "NexusSearchBot/0.1 (+https://example.com/bot)"),
-        ingest_fn=make_crawler_ingest_fn(indexer, dedup),
+        ingest_fn=make_crawler_ingest_fn(
+            indexer,
+            dedup,
+            min_quality=_pick(args.min_quality, config, "min_quality", None),
+            chunk_size=_pick(args.chunk_size, config, "chunk_size", None),
+        ),
     )
     try:
         pipeline.seed(seeds)
@@ -87,6 +92,8 @@ def main():
     parser.add_argument("--recrawl-interval", type=float, default=None)
     parser.add_argument("--every", type=float, default=None, help="Re-run the crawl every N seconds")
     parser.add_argument("--metrics-file", help="Append one JSON line of stats per run")
+    parser.add_argument("--min-quality", type=float, default=None, help="Skip pages scoring below this (0-1)")
+    parser.add_argument("--chunk-size", type=int, default=None, help="Split long pages into chunks")
     parser.add_argument("--db", default="nexus_search.db")
     args = parser.parse_args()
 

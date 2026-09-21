@@ -1,4 +1,5 @@
 """Pydantic request/response models for the FastAPI layer."""
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +17,9 @@ class SearchResultOut(BaseModel):
     title: str
     snippet: str
     doc_type: str
+    metadata: dict = Field(default_factory=dict)
+    chunk_id: Optional[str] = None  # best-matching chunk, when the doc was chunked
+    matched_chunks: int = 1
 
 
 class SearchResponse(BaseModel):
