@@ -8,6 +8,7 @@ Usage:
 import argparse
 import logging
 
+from ..core.hybrid_search import create_hybrid_search
 from ..core.indexer import Indexer
 from ..core.storage import Storage
 from .connectors.code import iter_code
@@ -31,6 +32,7 @@ def main():
     storage = Storage(args.db)
     indexer = Indexer(storage)
     dedup = Deduplicator(args.db)
+    hybrid = create_hybrid_search(storage, db_path=args.db)
 
     if args.source == "files":
         docs = iter_files(args.path)
@@ -39,8 +41,12 @@ def main():
     else:
         docs = iter_products(args.path)
 
-    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size)
+    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size, hybrid=hybrid)
     print(f"Done: {stats}")
+
+    hybrid.close()
+    storage.close()
+    dedup.close()
 
 
 if __name__ == "__main__":

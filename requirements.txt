@@ -19,6 +19,10 @@ PyYAML>=6.0
 # Crawler (Phase 3)
 requests>=2.31
 
+# Phase 4 — Hybrid Search (Embeddings & Vector)
+sentence-transformers>=2.2
+numpy>=1.24
+
 
 # Testing
 pytest>=8.0
@@ -30,3 +34,4 @@ httpx>=0.27   # FastAPI TestClient
 # Optional upgrade paths, not required to run as shipped:
 # trafilatura>=1.8   # swap into ingestion/connectors/web.py for better boilerplate removal
 # httpx>=0.27        # true async I/O if you rewrite fetcher.py/pipeline.py around it
+# hnswlib>=0.7       # HNSW vector index for scale (Phase 8+)
