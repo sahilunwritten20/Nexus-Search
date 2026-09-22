@@ -4,6 +4,9 @@ import os
 import tempfile
 import unittest
 
+# Use hash embedder for offline tests
+os.environ["NEXUS_EMBEDDER"] = "hash:384"
+
 try:
     from fastapi.testclient import TestClient
 except ImportError:  # fastapi / httpx not installed

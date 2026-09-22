@@ -7,6 +7,7 @@ Provides a clean interface for different embedding backends:
 
 All embedders output unit-norm float32 vectors.
 """
+import hashlib
 import os
 import threading
 import logging
@@ -62,6 +63,19 @@ class Embedder(ABC):
         pass
 
 
+def _stable_hash(feat: str, dim: int) -> tuple[int, float]:
+    """Deterministic hash using blake2b - same across process restarts.
+    
+    Returns (index, sign) where index is in [0, dim) and sign is +1.0 or -1.0.
+    """
+    # Use blake2b with fixed seed for determinism
+    h = hashlib.blake2b(feat.encode('utf-8'), digest_size=8, person=b'nxs')
+    digest = int.from_bytes(h.digest(), 'little')
+    idx = digest % dim
+    sign = 1.0 if (digest & 1) == 0 else -1.0
+    return idx, sign
+
+
 class HashEmbedder(Embedder):
     """Deterministic hash-based embedder using word+trigram hashing trick.
     
@@ -100,12 +114,10 @@ class HashEmbedder(Embedder):
         
         all_features = words + trigrams
         
-        # Hashing trick with signed features
+        # Hashing trick with signed features - deterministic using blake2b
         vec = np.zeros(self._dim, dtype=np.float32)
         for feat in all_features:
-            h = hash(feat) & 0x7fffffff
-            idx = h % self._dim
-            sign = 1.0 if (h & 0x40000000) == 0 else -1.0
+            idx, sign = _stable_hash(feat, self._dim)
             vec[idx] += sign
         
         # L2 normalize

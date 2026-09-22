@@ -6,9 +6,10 @@ chunking, quality scoring and dedup behave identically everywhere.
 import hashlib
 import logging
 import threading
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 from ..core.hybrid_search import HybridSearch
+from ..core.embedding_sync import EmbeddingSync
 from ..core.indexer import Indexer
 from .chunker import chunk_text
 from .dedup import Deduplicator
@@ -17,6 +18,37 @@ from .quality import content_quality_score
 from .types import IngestDoc
 
 logger = logging.getLogger("nexus_search.ingestion")
+
+
+def _embed_indexed_docs(indexed_ids: list[str], indexer: Indexer,
+                        target: Union["EmbeddingSync", "HybridSearch"]) -> None:
+    """Generate and store embeddings for newly indexed documents.
+
+    Works with either ingestion-time target:
+    - EmbeddingSync -> write through its VectorStoreManager (content-hash
+      gated, so this is a no-op if the same content was already embedded —
+      e.g. because the sync is ALSO attached to the indexer and already
+      handled the 'indexed' event).
+    - HybridSearch  -> legacy path used by tests (embedder + vector index).
+    """
+    if isinstance(target, EmbeddingSync):
+        for idx_id in indexed_ids:
+            stored_doc = indexer.storage.get_document(idx_id)
+            if stored_doc:
+                text = f"{stored_doc.title} {stored_doc.content}"
+                target.vector_store.upsert(
+                    idx_id, text,
+                    stored_doc.doc_type or "",
+                    stored_doc.metadata.get("language", "") or "",
+                )
+        return
+    for idx_id in indexed_ids:
+        stored_doc = indexer.storage.get_document(idx_id)
+        if stored_doc:
+            text = f"{stored_doc.title} {stored_doc.content}"
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+            embedding = target.embedding_manager.get_or_compute(idx_id, text)
+            target.vector_index.upsert(idx_id, embedding, content_hash)
 
 
 def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optional[int]) -> list[str]:
@@ -44,26 +76,16 @@ def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optiona
     return indexed_ids
 
 
-def _generate_embeddings_for_docs(indexed_ids: list[str], indexer: Indexer, hybrid: HybridSearch):
-    """Generate and store embeddings for newly indexed documents."""
-    for idx_id in indexed_ids:
-        stored_doc = indexer.storage.get_document(idx_id)
-        if stored_doc:
-            text = f"{stored_doc.title} {stored_doc.content}"
-            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-            embedding = hybrid.embedding_manager.get_or_compute(idx_id, text)
-            hybrid.vector_index.upsert(idx_id, embedding, content_hash)
-
-
 def ingest_one(
     doc: IngestDoc,
     indexer: Indexer,
     dedup: Deduplicator,
     min_quality: Optional[float] = None,
     chunk_size: Optional[int] = None,
-    hybrid: Optional[HybridSearch] = None,
+    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
 ) -> str:
-    """Dedup -> quality gate -> (chunk) -> index -> register.
+    """Dedup -> quality gate -> (chunk) -> index -> register -> embed.
     Returns 'indexed', 'duplicate' or 'low_quality'."""
     if dedup.is_duplicate(doc.content):
         return "duplicate"
@@ -76,9 +98,11 @@ def ingest_one(
     indexed_ids = _index(indexer, doc, metadata, chunk_size)
     dedup.register(doc.content, doc.doc_id)
 
-    # Generate embeddings for indexed documents if hybrid provided
-    if hybrid is not None:
-        _generate_embeddings_for_docs(indexed_ids, indexer, hybrid)
+    # Support both `sync` and `hybrid` parameter names for backward compatibility
+    target = sync if sync is not None else hybrid
+
+    if target is not None:
+        _embed_indexed_docs(indexed_ids, indexer, target)
 
     return "indexed"
 
@@ -89,7 +113,8 @@ def ingest_documents(
     dedup: Deduplicator,
     min_quality: Optional[float] = None,
     chunk_size: Optional[int] = None,
-    hybrid: Optional[HybridSearch] = None,
+    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
 ) -> dict:
     """Batch path - used by the CLI for files/code/product sources."""
     stats = {"indexed": 0, "duplicates": 0}
@@ -97,7 +122,7 @@ def ingest_documents(
         stats["low_quality"] = 0
     keys = {"indexed": "indexed", "duplicate": "duplicates", "low_quality": "low_quality"}
     for doc in docs:
-        status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, hybrid=hybrid)
+        status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, sync=sync, hybrid=hybrid)
         stats[keys[status]] += 1
         logger.info("%s %s", status.upper(), doc.doc_id)
     return stats
@@ -108,7 +133,8 @@ def make_crawler_ingest_fn(
     dedup: Deduplicator,
     min_quality: Optional[float] = None,
     chunk_size: Optional[int] = None,
-    hybrid: Optional[HybridSearch] = None,
+    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
 ):
     """Returns the (url, title, text, metadata) -> None callable CrawlPipeline
     expects as `ingest_fn`. Thread-safe: crawler workers call it concurrently,
@@ -118,7 +144,8 @@ def make_crawler_ingest_fn(
     def ingest_fn(url: str, title: str, text: str, metadata: dict) -> None:
         doc = IngestDoc(doc_id=f"web:{url}", title=title, content=text, doc_type="web", metadata=metadata)
         with lock:
-            status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, hybrid=hybrid)
+            # Support both `sync` and `hybrid` parameter names
+            status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, sync=sync, hybrid=hybrid)
         if status != "indexed":
             logger.info("%s skip %s", status.upper(), url)
 

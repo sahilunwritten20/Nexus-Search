@@ -11,10 +11,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from .bm25 import BM25Search
+from .embedders import HashEmbedder
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
-from .models import DocumentIn, ExplainRequest, ExplainResponse, SearchMetadata, SearchResponse, SearchResultOut
+from .models import DocumentIn, ExplainRequest, ExplainResponse, ExplainResult, SearchMetadata, SearchResponse, SearchResultOut
 from .storage import Storage
 from .vector_store import VectorStoreManager
 
@@ -83,11 +84,11 @@ def search(
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must not be empty")
     top_k = min(max(top_k, 1), 100)
-    
+
     # Validate weights
     if bm25_weight == 0 and vector_weight == 0:
         raise HTTPException(status_code=400, detail="At least one weight must be > 0")
-    
+
     # Create a new HybridSearch with custom weights for this request
     hybrid_searcher = HybridSearch(
         _storage,
@@ -96,27 +97,23 @@ def search(
         vector_store=_vector_store,
         db_path=os.environ.get("NEXUS_DB", "nexus_search.db"),
     )
-    
+
     search_mode = SearchMode(mode)
-    page = hybrid_searcher.search_page(q, top_k=top_k, offset=offset, mode=search_mode)
-    
+    page = hybrid_searcher.search_page(
+        q, top_k=top_k, offset=offset, mode=search_mode,
+        fusion=fusion, candidates=candidates, debug=debug,
+    )
+
     metadata = None
     if page.metadata:
         metadata = SearchMetadata(**page.metadata)
-    
-    results = [SearchResultOut(**r.__dict__) for r in page.results]
-    
-    if debug:
-        # Add debug info to results
-        for r in results:
-            pass  # Debug info already in SearchResultOut
-    
+
     return SearchResponse(
         query=q,
         total_results=page.total,
         offset=offset,
         top_k=top_k,
-        results=results,
+        results=[SearchResultOut(**r.__dict__) for r in page.results],
         metadata=metadata,
     )
 
@@ -131,8 +128,10 @@ def explain_search(req: ExplainRequest):
         search_mode = SearchMode(req.mode)
     except ValueError:
         raise HTTPException(status_code=400, detail="mode must be keyword, semantic, or hybrid")
+    if req.fusion not in ("rrf", "weighted"):
+        raise HTTPException(status_code=400, detail="fusion must be rrf or weighted")
 
-    explanation = _hybrid_searcher.explain(req.query, top_k=req.top_k, mode=search_mode)
+    explanation = _hybrid_searcher.explain(req.query, top_k=req.top_k, mode=search_mode, fusion=req.fusion)
     metadata = SearchMetadata(**explanation["metadata"]) if explanation["metadata"] else SearchMetadata(mode=req.mode)
 
     return ExplainResponse(
@@ -158,7 +157,7 @@ def health():
         "embedder": {
             "name": _vector_store.embedder.name,
             "dim": _vector_store.embedder.dim,
-            "degraded": isinstance(_vector_store.embedder, type) and "HashEmbedder" in type(_vector_store.embedder).__name__,
+            "degraded": isinstance(_vector_store.embedder, HashEmbedder),
         },
     }
 
@@ -172,10 +171,3 @@ def metrics():
         "embedding_sync": sync_stats,
         "vector_store": vector_stats,
     }
-
-
-@app.on_event("shutdown")
-def shutdown():
-    _embedding_sync.close()
-    _hybrid_searcher.close()
-    _storage.close()

@@ -23,6 +23,10 @@ class SearchResultOut(BaseModel):
     bm25_score: Optional[float] = None
     vector_score: Optional[float] = None
     source: Optional[str] = None
+    # Only populated when the request asked for debug info: each retriever's
+    # contribution to the final fused score (they sum to `score`).
+    bm25_normalized: Optional[float] = None
+    vector_normalized: Optional[float] = None
 
 
 class SearchMetadata(BaseModel):
@@ -33,6 +37,7 @@ class SearchMetadata(BaseModel):
     fallback: bool = False
     fallback_reason: Optional[str] = None
     latency_ms: int = 0
+    fusion: Optional[str] = None
 
 
 class SearchResponse(BaseModel):
@@ -48,11 +53,14 @@ class ExplainRequest(BaseModel):
     query: str
     top_k: int = 10
     mode: str = "hybrid"
+    fusion: str = "rrf"
 
 
 class ExplainResult(BaseModel):
     doc_id: str
     final_score: float
+    bm25_score: Optional[float] = None
+    vector_score: Optional[float] = None
     bm25_normalized: Optional[float] = None
     vector_normalized: Optional[float] = None
     source: str

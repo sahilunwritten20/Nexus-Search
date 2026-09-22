@@ -13,8 +13,10 @@ import time
 
 import yaml
 
+from ..core.embedding_sync import create_embedding_sync
 from ..core.indexer import Indexer
 from ..core.storage import Storage
+from ..core.vector_store import VectorStoreManager
 from ..ingestion.dedup import Deduplicator
 from ..ingestion.pipeline import make_crawler_ingest_fn
 from .pipeline import CrawlPipeline
@@ -38,6 +40,9 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
     storage = Storage(args.db)
     indexer = Indexer(storage)
     dedup = Deduplicator(args.db)
+    vector_store = VectorStoreManager(args.db)
+    sync = create_embedding_sync(vector_store, batch_size=32)
+    sync.attach(indexer)
     recrawl = _pick(args.recrawl_interval, config, "recrawl_interval", 0)
     if args.every and not recrawl:
         recrawl = args.every  # scheduled runs re-check old pages automatically
@@ -67,9 +72,12 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         stats["documents_in_index"] = storage.document_count()
         return stats
     finally:
+        sync.flush()
+        sync.close()
         pipeline.close()
         dedup.close()
         storage.close()
+        vector_store.close()
 
 
 def report(stats: dict, metrics_file: str | None) -> None:

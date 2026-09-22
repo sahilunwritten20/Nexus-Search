@@ -1,5 +1,7 @@
 """Tests for the new embedder layer (T1)."""
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -257,14 +259,14 @@ class TestEmbedderUnavailable(unittest.TestCase):
         
         with self.assertRaises(EmbedderUnavailable):
             raise EmbedderUnavailable("Model not found")
-
+    
     def test_st_embedder_raises_on_load_failure(self):
         """Test that ST embedder raises EmbedderUnavailable when model fails to load"""
         from nexus_search.core.embedders import SentenceTransformerEmbedder, EmbedderUnavailable
         
         with self.assertRaises(EmbedderUnavailable):
             SentenceTransformerEmbedder("nonexistent-model-that-does-not-exist-12345")
-
+    
     def test_no_silent_hash_fallback(self):
         """CRITICAL: Ensure hash vectors are NEVER stored under ST model name"""
         with patch.dict(os.environ, {"NEXUS_EMBEDDER": "st:nonexistent"}):
@@ -272,6 +274,79 @@ class TestEmbedderUnavailable(unittest.TestCase):
             
             with self.assertRaises(EmbedderUnavailable):
                 get_embedder()
+
+
+class TestHashEmbedderDeterminism(unittest.TestCase):
+    """Cross-process determinism tests for HashEmbedder.
+    
+    These tests run the embedder in a subprocess to verify that the same
+    text produces identical vectors across process boundaries.
+    """
+    
+    def _run_embedder_in_subprocess(self, text: str, dim: int = 384) -> list[float]:
+        """Run embedder in a separate process and return the embedding as a list."""
+        code = f"""
+import os
+os.environ["NEXUS_EMBEDDER"] = "hash:{dim}"
+import sys
+sys.path.insert(0, r"{os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))}")
+
+from nexus_search.core.embedders import HashEmbedder
+import numpy as np
+
+embedder = HashEmbedder(dim={dim})
+emb = embedder.embed_query({repr(text)})
+print(",".join(str(x) for x in emb.tolist()))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            self.fail(f"Subprocess failed: {result.stderr}")
+        return [float(x) for x in result.stdout.strip().split(",")]
+    
+    def test_hash_embedder_deterministic_across_processes(self):
+        """Same text should produce identical vectors in separate processes."""
+        test_texts = [
+            "hello world",
+            "machine learning and artificial intelligence",
+            "the quick brown fox jumps over the lazy dog",
+            "special chars: !@#$%^&*()",
+            "unicode: café 🌟 naïve",
+            "repeated word " * 10,
+        ]
+        
+        for text in test_texts:
+            # Run in two separate subprocesses
+            emb1 = self._run_embedder_in_subprocess(text)
+            emb2 = self._run_embedder_in_subprocess(text)
+            
+            self.assertEqual(
+                emb1, emb2,
+                f"Embedding for '{text}' differs across processes"
+            )
+    
+    def test_hash_embedder_consistent_dimensions(self):
+        """Embeddings should have correct dimension."""
+        for dim in [128, 256, 384, 512]:
+            emb = self._run_embedder_in_subprocess("test text", dim=dim)
+            self.assertEqual(len(emb), dim)
+    
+    def test_hash_embedder_unit_norm(self):
+        """Embeddings should be unit norm."""
+        import math
+        emb = self._run_embedder_in_subprocess("unit norm test")
+        norm = math.sqrt(sum(x*x for x in emb))
+        self.assertAlmostEqual(norm, 1.0, places=5)
+    
+    def test_hash_embedder_different_texts_different_vectors(self):
+        """Different texts should produce different vectors (with high probability)."""
+        emb1 = self._run_embedder_in_subprocess("text one")
+        emb2 = self._run_embedder_in_subprocess("text two")
+        self.assertNotEqual(emb1, emb2)
 
 
 if __name__ == "__main__":

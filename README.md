@@ -479,20 +479,27 @@ are implemented.
 ``` text
 nexus-search/
 │
-├── nexus_search/
-│   ├── ingestion/
-│   ├── crawler/
-│   ├── search/
-│   └── ...
+├── nexus_search/          # the package
+│   ├── core/              # tokenizer, storage, BM25, hybrid/vector search, API
+│   ├── ingestion/         # connectors, dedup, chunker, quality, pipeline
+│   ├── crawler/           # frontier, fetcher, politeness, security, pipeline
+│   └── evaluation/        # benchmark dataset + metrics runner
 │
-├── tests/
+├── tests/                 # test suite (core / ingestion / crawler / e2e)
+│   ├── core/
 │   ├── ingestion/
-│   ├── crawler/
-│   └── ...
+│   └── crawler/
 │
-├── crawler_config.yaml
-├── README.md
-└── ...
+├── docs/                  # phase plans & changelogs
+├── scripts/dev/           # local dev/debug scratch scripts (kept out of the way)
+│
+├── crawler_config.yaml    # crawler defaults
+├── requirements.txt
+├── pytest.ini
+├── seeds.example.txt      # copy to seeds.txt (git-ignored) to crawl
+├── .env.example           # copy to .env (git-ignored) for configuration
+├── SPEC.md
+└── README.md
 ```
 
 The repository structure will expand as semantic search, advanced

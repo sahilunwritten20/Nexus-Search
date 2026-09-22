@@ -10,6 +10,8 @@ os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
 from ..core.storage import Storage
 from ..core.indexer import Indexer
 from ..core.hybrid_search import HybridSearch, SearchMode, create_hybrid_search
+from ..core.vector_store import VectorStoreManager
+from ..core.embedding_sync import create_embedding_sync
 from ..ingestion.dedup import Deduplicator
 from ..ingestion.pipeline import ingest_documents
 from ..ingestion.types import IngestDoc
@@ -17,7 +19,7 @@ from .dataset import create_benchmark_dataset
 from .metrics import evaluate_all, compare_modes, print_comparison
 
 
-def build_search_functions(db_path: str = None) -> dict[str, Callable[[str, int], list[str]]]:
+def build_search_functions(db_path: str = None) -> tuple[dict[str, Callable[[str, int], list[str]]], HybridSearch, Storage, Deduplicator, VectorStoreManager]:
     """Create search functions for each mode."""
     if db_path is None:
         db_path = os.path.join(tempfile.mkdtemp(), "bench.db")
@@ -25,7 +27,10 @@ def build_search_functions(db_path: str = None) -> dict[str, Callable[[str, int]
     storage = Storage(db_path)
     indexer = Indexer(storage)
     dedup = Deduplicator(db_path)
-    hybrid = create_hybrid_search(storage, db_path=db_path)
+    vector_store = VectorStoreManager(db_path)
+    hybrid = create_hybrid_search(storage, vector_store=vector_store, db_path=db_path)
+    sync = create_embedding_sync(vector_store, batch_size=32)
+    sync.attach(indexer)
 
     # Index benchmark documents
     docs, _ = create_benchmark_dataset()
@@ -34,9 +39,9 @@ def build_search_functions(db_path: str = None) -> dict[str, Callable[[str, int]
         for d in docs
     ]
     ingest_documents(ingest_docs, indexer, dedup, min_quality=0.0, chunk_size=None)
-
-    # Wait a bit for embeddings to be generated
-    time.sleep(0.5)
+    
+    # Flush embeddings
+    sync.flush()
 
     def make_search_fn(mode: SearchMode):
         def search_fn(query: str, top_k: int) -> list[str]:
@@ -48,7 +53,7 @@ def build_search_functions(db_path: str = None) -> dict[str, Callable[[str, int]
         "keyword": make_search_fn(SearchMode.KEYWORD),
         "semantic": make_search_fn(SearchMode.SEMANTIC),
         "hybrid": make_search_fn(SearchMode.HYBRID),
-    }, hybrid, storage, dedup
+    }, hybrid, storage, dedup, vector_store, sync
 
 
 def run_benchmark(db_path: str = None) -> dict:
@@ -60,16 +65,28 @@ def run_benchmark(db_path: str = None) -> dict:
         for q in queries
     ]
 
-    search_fns, hybrid, storage, dedup = build_search_functions(db_path)
+    search_fns, hybrid, storage, dedup, vector_store, sync = build_search_functions(db_path)
 
     try:
+        # Verify vector coverage is 100%
+        vec_stats = vector_store.get_stats()
+        doc_count = storage.document_count()
+        if doc_count > 0:
+            coverage = vec_stats.get("count", 0) / doc_count
+            if coverage < 1.0:
+                print(f"WARNING: Vector coverage is {coverage:.1%} ({vec_stats.get('count', 0)}/{doc_count} docs)")
+                print("Refusing to print comparison numbers - vector coverage not 100%")
+                return {"error": "vector_coverage_not_100%", "coverage": coverage}
+        
         comparison = compare_modes(query_dicts, search_fns)
         print_comparison(comparison)
         return comparison
     finally:
+        sync.close()
         hybrid.close()
         storage.close()
         dedup.close()
+        vector_store.close()
 
 
 def run_quick_benchmark() -> dict:

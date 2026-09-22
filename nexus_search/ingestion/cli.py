@@ -8,9 +8,10 @@ Usage:
 import argparse
 import logging
 
-from ..core.hybrid_search import create_hybrid_search
+from ..core.embedding_sync import create_embedding_sync
 from ..core.indexer import Indexer
 from ..core.storage import Storage
+from ..core.vector_store import VectorStoreManager
 from .connectors.code import iter_code
 from .connectors.files import iter_files
 from .connectors.product import iter_products
@@ -32,7 +33,9 @@ def main():
     storage = Storage(args.db)
     indexer = Indexer(storage)
     dedup = Deduplicator(args.db)
-    hybrid = create_hybrid_search(storage, db_path=args.db)
+    vector_store = VectorStoreManager(args.db)
+    sync = create_embedding_sync(vector_store, batch_size=32)
+    sync.attach(indexer)
 
     if args.source == "files":
         docs = iter_files(args.path)
@@ -41,12 +44,14 @@ def main():
     else:
         docs = iter_products(args.path)
 
-    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size, hybrid=hybrid)
+    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size)
     print(f"Done: {stats}")
 
-    hybrid.close()
+    sync.flush()
+    sync.close()
     storage.close()
     dedup.close()
+    vector_store.close()
 
 
 if __name__ == "__main__":
