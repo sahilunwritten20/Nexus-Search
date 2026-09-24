@@ -1,6 +1,17 @@
 """Evaluation metrics for Nexus Search Phase 4."""
 import math
-from typing import Optional
+from typing import Optional, Union
+
+
+def to_doc_ids(retrieved: list[Union[str, object]]) -> list[str]:
+    """Accept plain doc_id strings OR ranked/hybrid result objects (anything
+    with a .doc_id, e.g. RankedResult), returning plain doc_ids. This keeps
+    every metric usable for both retrieval results and Stage-5 reranked
+    results without changing any metric's math."""
+    out = []
+    for item in retrieved:
+        out.append(item if isinstance(item, str) else getattr(item, "doc_id"))
+    return out
 
 
 def precision_at_k(relevant: set[str], retrieved: list[str], k: int) -> float:
@@ -54,12 +65,13 @@ def ndcg_at_k(relevant: dict[str, int], retrieved: list[str], k: int) -> float:
 
 def evaluate_query(
     query_relevant: dict[str, int],
-    retrieved: list[str],
+    retrieved: list,
     k_values: list[int] = None
 ) -> dict:
     if k_values is None:
         k_values = [1, 3, 5, 10, 20]
 
+    retrieved = to_doc_ids(retrieved)
     relevant_set = {doc_id for doc_id, rel in query_relevant.items() if rel > 0}
 
     results = {}

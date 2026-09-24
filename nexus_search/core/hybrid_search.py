@@ -11,6 +11,7 @@ from .bm25 import BM25Search, SearchResult
 from .embedders import EmbedderUnavailable
 from .embedding_sync import EmbeddingSync  # noqa: F401  (type hint for __init__)
 from .filters import matches_filters
+from .normalize import min_max_normalize
 from .query_parser import parse_query
 from .storage import Storage
 from .tokenizer import tokenize
@@ -59,17 +60,9 @@ class HybridSearchPage:
     metadata: dict = field(default_factory=dict)
 
 
-def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:
-    """Min-max normalize a score pool to [0, 1]."""
-    if not scores:
-        return {}
-    values = list(scores.values())
-    min_score = min(values)
-    max_score = max(values)
-    if max_score == min_score:
-        # All scores equal: give 1.0 if positive, 0.0 otherwise
-        return {k: (1.0 if v > 0 else 0.0) for k, v in scores.items()}
-    return {k: (v - min_score) / (max_score - min_score) for k, v in scores.items()}
+# Backward-compatible alias: the implementation lives in core/normalize.py
+# so hybrid fusion and the Phase 5 ranker share exactly one min-max.
+_normalize_scores = min_max_normalize
 
 
 def _rrf_fuse(bm25_results: dict[str, tuple[float, SearchResult]],
@@ -183,9 +176,11 @@ class HybridSearch:
         return min(max(top_k * 5, 50), 500)
 
     def _bm25_candidates(self, query: str, top_k: int, group_chunks: bool,
-                         candidates: Optional[int] = None) -> dict[str, tuple[float, SearchResult]]:
+                         candidates: Optional[int] = None,
+                         highlight: bool = False) -> dict[str, tuple[float, SearchResult]]:
         candidate_k = self._candidate_k(top_k, candidates)
-        page = self.bm25_search.search_page(query, top_k=candidate_k, offset=0, group_chunks=group_chunks)
+        page = self.bm25_search.search_page(query, top_k=candidate_k, offset=0,
+                                            group_chunks=group_chunks, highlight=highlight)
         return {r.doc_id: (r.score, r) for r in page.results}
 
     def _vector_candidates(self, query: str, top_k: int, group_chunks: bool,
@@ -224,11 +219,29 @@ class HybridSearch:
 
     # -------------------------------------------------------------- merge
 
-    def _vector_only_snippet(self, doc, parsed) -> str:
+    def _vector_only_snippet(self, doc, parsed, highlight: bool = False) -> str:
         """Query-focused snippet for vector-only hits — same helper BM25 uses."""
         terms = parsed.terms if parsed else []
         phrases = parsed.phrases if parsed else []
-        return self.bm25_search._snippet(doc, terms, phrases)
+        return self.bm25_search._snippet(doc, terms, phrases, highlight=highlight)
+
+    def _sort_raw(self, results: list, sort: str) -> list:
+        """Sort a candidate list (SearchResult or HybridSearchResult).
+
+        - "title": A→Z by title, ties broken by doc_id (deterministic)
+        - "freshness": newest first by documents.added_at; a doc missing from
+          storage sorts as age 0 → oldest. Stable, deterministic (doc_id tie-break)
+        Sorting happens within the current candidate pool (bounded by
+        `candidates`) — at prototype scale this is the corpus; at web scale
+        this is why sharded indices re-sort per shard."""
+        if sort == "title":
+            return sorted(results, key=lambda r: ((r.title or "").lower(), r.doc_id))
+        if sort == "freshness":
+            def added_at(r):
+                doc = self.storage.get_document(r.doc_id)
+                return doc.added_at if doc else 0.0
+            return sorted(results, key=lambda r: (-added_at(r), r.doc_id))
+        return results
 
     def _merge_results(
         self,
@@ -236,6 +249,7 @@ class HybridSearch:
         vector_results: dict[str, tuple[float, str]],
         fusion: str = "rrf",
         parsed=None,
+        highlight: bool = False,
     ) -> list[HybridSearchResult]:
         fused = _fuse(bm25_results, vector_results, fusion,
                       self.bm25_weight, self.vector_weight)
@@ -270,7 +284,7 @@ class HybridSearch:
                         doc_id=doc_id,
                         score=fused_score,
                         title=doc.title,
-                        snippet=self._vector_only_snippet(doc, parsed),
+                        snippet=self._vector_only_snippet(doc, parsed, highlight=highlight),
                         doc_type=doc.doc_type,
                         metadata=doc.metadata,
                         chunk_id=vector_results[doc_id][1] if vector_results[doc_id][1] != doc_id else None,
@@ -300,7 +314,8 @@ class HybridSearch:
     def _meta(mode_used: str, original_mode: SearchMode, start_time: float,
               fallback: bool = False, fallback_reason: Optional[str] = None,
               bm25_candidates: int = 0, vector_candidates: int = 0,
-              merged_candidates: int = 0, fusion: str = "rrf") -> dict:
+              merged_candidates: int = 0, fusion: str = "rrf",
+              sort: str = "relevance") -> dict:
         return {
             "mode": mode_used,
             "requested_mode": original_mode.value,
@@ -312,6 +327,7 @@ class HybridSearch:
             "vector_candidates": vector_candidates,
             "merged_candidates": merged_candidates,
             "fusion": fusion,
+            "sort": sort,
         }
 
     def search_page(
@@ -324,10 +340,19 @@ class HybridSearch:
         fusion: str = "rrf",
         candidates: Optional[int] = None,
         debug: bool = False,
+        understanding=None,
+        sort: str = "relevance",
+        highlight: bool = False,
     ) -> HybridSearchPage:
+        """`understanding` (Phase 5 QueryUnderstanding) is OPT-IN: when given,
+        retrieval uses its corrected/expanded effective terms (phrases and
+        filters preserved verbatim). When None — the default — behavior is
+        exactly the pre-Phase-5 behavior."""
         if top_k <= 0:
             return HybridSearchPage(total=0, results=[], metadata={"mode": mode.value, "fusion": fusion})
         offset = max(offset, 0)
+        if understanding is not None:
+            query = understanding.to_retrieval_query()
         start_time = time.time()
         original_mode = mode
 
@@ -335,20 +360,31 @@ class HybridSearch:
         allowed_filter = self._build_allowed_filter(parsed)
 
         if mode == SearchMode.KEYWORD:
-            page = self.bm25_search.search_page(query, top_k=top_k, offset=offset, group_chunks=group_chunks)
+            if sort in (None, "relevance"):
+                # exact pre-Phase-5 path: BM25 slices offset/top_k itself
+                page = self.bm25_search.search_page(query, top_k=top_k, offset=offset,
+                                                    group_chunks=group_chunks, highlight=highlight)
+                page_results = page.results
+            else:
+                # Non-relevance sort: order the full candidate pool first
+                # (bounded by `candidates`), then slice the page out of it.
+                pool_k = max(self._candidate_k(top_k, candidates), offset + top_k)
+                page = self.bm25_search.search_page(query, top_k=pool_k, offset=0,
+                                                    group_chunks=group_chunks, highlight=highlight)
+                page_results = self._sort_raw(page.results, sort)[offset:offset + top_k]
             results = [
                 HybridSearchResult(
                     doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
                     doc_type=r.doc_type, metadata=r.metadata, chunk_id=r.chunk_id,
                     matched_chunks=r.matched_chunks, bm25_score=r.score, source="bm25",
-                ) for r in page.results
+                ) for r in page_results
             ]
             return HybridSearchPage(
                 total=page.total,
                 results=results,
                 metadata=self._meta(mode.value, original_mode, start_time,
                                     bm25_candidates=page.total, merged_candidates=len(results),
-                                    fusion=fusion),
+                                    fusion=fusion, sort=sort),
             )
 
         if mode == SearchMode.SEMANTIC:
@@ -357,11 +393,11 @@ class HybridSearch:
             except EmbedderUnavailable as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                           start_time, f"embedder_unavailable: {exc}", fusion)
+                                           start_time, f"embedder_unavailable: {exc}", fusion, sort, highlight)
             except Exception as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                           start_time, f"vector_search_error: {exc}", fusion)
+                                           start_time, f"vector_search_error: {exc}", fusion, sort, highlight)
 
             fused = _fuse({}, vector_results, fusion, bm25_weight=0.0, vector_weight=self.vector_weight)
             merged = []
@@ -373,7 +409,7 @@ class HybridSearch:
                         doc_id=doc_id,
                         score=fused_score,
                         title=doc.title,
-                        snippet=self._vector_only_snippet(doc, parsed),
+                        snippet=self._vector_only_snippet(doc, parsed, highlight=highlight),
                         doc_type=doc.doc_type,
                         metadata=doc.metadata,
                         chunk_id=vr_doc_id if vr_doc_id != doc_id else None,
@@ -383,12 +419,13 @@ class HybridSearch:
                         source="vector",
                         vector_normalized=vector_contrib,
                     ))
+            merged = self._sort_raw(merged, sort)
             return HybridSearchPage(
                 total=len(merged),
                 results=merged[offset:offset + top_k],
                 metadata=self._meta(mode.value, original_mode, start_time,
                                     vector_candidates=len(vector_results),
-                                    merged_candidates=len(merged), fusion=fusion),
+                                    merged_candidates=len(merged), fusion=fusion, sort=sort),
             )
 
         # SearchMode.HYBRID
@@ -396,7 +433,8 @@ class HybridSearch:
         # failure cannot be "fixed" by falling back to BM25, so it propagates.
         bm25_results = {}
         if self.bm25_weight > 0:
-            bm25_results = self._bm25_candidates(query, top_k, group_chunks, candidates)
+            bm25_results = self._bm25_candidates(query, top_k, group_chunks, candidates,
+                                                 highlight=highlight)
 
         vector_results = {}
         try:
@@ -405,13 +443,15 @@ class HybridSearch:
         except EmbedderUnavailable as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                       start_time, f"embedder_unavailable: {exc}", fusion)
+                                       start_time, f"embedder_unavailable: {exc}", fusion, sort, highlight)
         except Exception as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                       start_time, f"vector_search_error: {exc}", fusion)
+                                       start_time, f"vector_search_error: {exc}", fusion, sort, highlight)
 
-        merged = self._merge_results(bm25_results, vector_results, fusion=fusion, parsed=parsed)
+        merged = self._merge_results(bm25_results, vector_results, fusion=fusion,
+                                     parsed=parsed, highlight=highlight)
+        merged = self._sort_raw(merged, sort)
         if not debug:
             # strip diagnostic numbers unless asked for
             for r in merged:
@@ -423,13 +463,15 @@ class HybridSearch:
             metadata=self._meta(SearchMode.HYBRID.value, original_mode, start_time,
                                 bm25_candidates=len(bm25_results),
                                 vector_candidates=len(vector_results),
-                                merged_candidates=len(merged), fusion=fusion),
+                                merged_candidates=len(merged), fusion=fusion, sort=sort),
         )
 
     def _bm25_fallback(self, query: str, top_k: int, offset: int, group_chunks: bool,
                        original_mode: SearchMode, start_time: float,
-                       reason: str, fusion: str) -> HybridSearchPage:
-        page = self.bm25_search.search_page(query, top_k=top_k, offset=offset, group_chunks=group_chunks)
+                       reason: str, fusion: str, sort: str = "relevance",
+                       highlight: bool = False) -> HybridSearchPage:
+        page = self.bm25_search.search_page(query, top_k=top_k, offset=offset,
+                                            group_chunks=group_chunks, highlight=highlight)
         results = [
             HybridSearchResult(
                 doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
@@ -443,7 +485,7 @@ class HybridSearch:
             metadata=self._meta("keyword", original_mode, start_time,
                                 fallback=True, fallback_reason=reason,
                                 bm25_candidates=page.total, merged_candidates=len(results),
-                                fusion=fusion),
+                                fusion=fusion, sort=sort),
         )
 
     def search(self, query: str, top_k: int = 10, mode: SearchMode = SearchMode.HYBRID) -> list[HybridSearchResult]:

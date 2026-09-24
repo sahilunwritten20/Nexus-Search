@@ -49,29 +49,69 @@ class BM25Search:
         return any(doc_tokens[i:i + n] == phrase for i in range(len(doc_tokens) - n + 1))
 
     @staticmethod
-    def _snippet(doc, terms: list[str], phrases: list[str], width: int = 200) -> str:
+    def _snippet(doc, terms: list[str], phrases: list[str], width: int = 200,
+                 highlight: bool = False, mark: tuple[str, str] = ("<mark>", "</mark>")) -> str:
+        """Query-focused snippet. highlight=True wraps matched terms/phrases
+        in <mark>..</mark> (configurable via `mark`). The window logic is
+        unchanged; highlighting is applied to the chosen window, so the two
+        modes can never disagree about WHERE the snippet comes from."""
         text = doc.content
         lowered = text.lower()
         positions = [lowered.find(p.lower()) for p in phrases if p]
         positions += [lowered.find(t.lower()) for t in terms if t]
         positions = [p for p in positions if p >= 0]
         if not positions:
-            return text[:width] + ("..." if len(text) > width else "")
-        start = max(0, min(positions) - width // 4)
-        snippet = text[start:start + width]
-        if start > 0:
-            snippet = "..." + snippet
-        if start + width < len(text):
-            snippet += "..."
+            snippet = text[:width] + ("..." if len(text) > width else "")
+        else:
+            start = max(0, min(positions) - width // 4)
+            snippet = text[start:start + width]
+            if start > 0:
+                snippet = "..." + snippet
+            if start + width < len(text):
+                snippet += "..."
+        if highlight:
+            snippet = BM25Search._highlight(snippet, terms, phrases, mark)
         return snippet
 
+    @staticmethod
+    def _highlight(snippet: str, terms: list[str], phrases: list[str],
+                   mark: tuple[str, str]) -> str:
+        """Wrap exact (case-insensitive) phrase/term matches in the window.
+        Longest-first so phrases win over their component words; text inside
+        an existing <mark> is not re-wrapped."""
+        import re
+        targets = sorted({p for p in phrases if p} | {t for t in terms if t},
+                         key=len, reverse=True)
+        if not targets:
+            return snippet
+        open_m, close_m = mark
+        pattern = re.compile("|".join(re.escape(t) for t in targets), re.IGNORECASE)
+
+        def wrap(match):
+            return open_m + match.group(0) + close_m
+
+        out, pos = [], 0
+        for m in pattern.finditer(snippet):
+            # skip matches inside an already-open mark region
+            opens = snippet.count(open_m, 0, m.start()) - snippet.count(close_m, 0, m.start())
+            if opens > 0:
+                continue
+            out.append(snippet[pos:m.start()])
+            out.append(wrap(m))
+            pos = m.end()
+        out.append(snippet[pos:])
+        return "".join(out)
+
     def search_page(
-        self, query: str, top_k: int = 10, offset: int = 0, group_chunks: bool = True
+        self, query: str, top_k: int = 10, offset: int = 0, group_chunks: bool = True,
+        highlight: bool = False,
     ) -> SearchPage:
         """Ranked page of results plus the total match count.
 
         group_chunks=True collapses all chunks of one parent into a single
         result (best chunk wins); False returns raw chunk-level hits.
+        highlight=False (default) returns plain snippets, byte-identical to
+        pre-Phase-5; True wraps matches in <mark> tags.
         """
         if top_k <= 0:
             return SearchPage(0)
@@ -146,7 +186,8 @@ class BM25Search:
                     doc_id=parent,
                     score=best_score,
                     title=best.title,
-                    snippet=self._snippet(best, parsed.terms, parsed.phrases),
+                    snippet=self._snippet(best, parsed.terms, parsed.phrases,
+                                          highlight=highlight),
                     doc_type=best.doc_type,
                     metadata=best.metadata,
                     chunk_id=best_id if best_id != parent else None,

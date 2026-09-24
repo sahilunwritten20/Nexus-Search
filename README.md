@@ -280,6 +280,22 @@ benchmarking used throughout the development process.
 -   Sorting
 -   Pagination Improvements
 
+### Test Status (per test file, measured)
+
+-   Query understanding (`tests/ranking/test_query_understanding.py`): 27 tests
+-   Signals (`tests/ranking/test_signals.py`): 24 tests
+-   Features + shared normalizers (`tests/ranking/test_features.py`): 7 tests
+-   Ranker / LTR framework / A-B instrumentation (`tests/ranking/test_ranker.py`): 18 tests
+-   Suggestions & UX internals (`tests/ranking/test_suggestions.py`): 12 tests
+-   API surface (`TestApiPhase5Ux` in `tests/core/test_api.py`): 12 tests
+-   Phase 5 total: 100 new tests, 0 failed (311 pre-existing Phase 1-4 tests still pass unchanged)
+
+Honest scope notes (per SPEC.md): learning-to-rank ships as framework +
+weighted-sum model only (no labeled data exists to train one); A/B ships as
+instrumentation (deterministic bucketing + query log) — real analysis needs
+production traffic; authority/popularity/click signals are placeholder
+interfaces awaiting Phase 6/7 data sources.
+
 ------------------------------------------------------------------------
 
 # Phase 6 --- Link Intelligence

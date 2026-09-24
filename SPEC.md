@@ -38,7 +38,7 @@ through Phase 7; Phase 8-10 is what changes that if/when it's needed.
 | 2 | Unified ingestion | **Done + upgraded** |
 | 3 | Crawler | **Done + upgraded** |
 | 4 | Hybrid BM25 + vector search | **Done + audited** |
-| 5 | Ranking | Planned |
+| 5 | Ranking | **Done + partial** — Learning-to-rank: framework + weighted-sum model only, no trained model (no labeled data exists yet). A/B: instrumentation only (bucketing + query log); analysis needs real production traffic |
 | 6 | Link intelligence | Planned |
 | 7 | AI-cited answers | Planned |
 | 8-10 | Production infra (Kafka/Redis/K8s/sharding/monitoring) | Planned — needs real cloud infra to run |
@@ -82,4 +82,4 @@ The foundation through Phase 4 supports:
 - debug/explain endpoint with real per-retriever score contributions
 - IR evaluation framework (precision@k, recall@k, MRR, NDCG) + latency benchmark
 
-The next major architectural jump is Phase 5: advanced ranking.
+The next major architectural jump is Phase 6: link intelligence.

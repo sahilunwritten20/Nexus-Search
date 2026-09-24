@@ -7,11 +7,15 @@ import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 
 from .bm25 import BM25Search
 from .embedders import HashEmbedder, EmbedderUnavailable
+from ..ranking.ab import ExperimentLog, assign_variant
+from ..ranking.query import understand_query
+from ..ranking.ranker import RankingWeights, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
@@ -31,6 +35,8 @@ async def lifespan(app: FastAPI):
         _embedding_sync.close()
     if _hybrid_searcher is not None:
         _hybrid_searcher.close()
+    if experiment_log is not None:
+        experiment_log.close()
     _storage.close()
 
 
@@ -61,6 +67,13 @@ else:
     _hybrid_searcher = None
     _embedding_sync = None
 
+# Phase 5 A/B query log — shipped as instrumentation; never gating a result.
+try:
+    experiment_log = ExperimentLog(_NEXUS_DB)
+except Exception as exc:  # logging must never take search down
+    logger.warning("Experiment log unavailable: %s", exc)
+    experiment_log = None
+
 
 def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
                        reason: str) -> SearchResponse:
@@ -80,12 +93,19 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
             source="bm25" if not fallback else "bm25_fallback",
         ) for r in page.results
     ]
+    has_more = (offset + len(results)) < page.total
+    next_cursor = None
+    if has_more:
+        import base64
+        next_cursor = base64.urlsafe_b64encode(
+            f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
     return SearchResponse(
         query=q, total_results=page.total, offset=offset, top_k=top_k, results=results,
         metadata=SearchMetadata(
             mode=mode_used, requested_mode=requested_mode, mode_used=mode_used,
             bm25_candidates=page.total, merged_candidates=len(results),
             fallback=fallback, fallback_reason=reason if fallback else None,
+            has_more=has_more, next_cursor=next_cursor,
         ),
     )
 
@@ -120,10 +140,41 @@ def search(
     fusion: str = Query(default="rrf", pattern="^(rrf|weighted)$"),
     candidates: int = Query(default=50, ge=1, le=500),
     debug: bool = Query(default=False),
+    rerank: Optional[bool] = Query(default=None),
+    session: Optional[str] = Query(default=None),
+    sort: str = Query(default="relevance", pattern="^(relevance|freshness|title)$"),
+    highlight: bool = Query(default=False),
+    facets: Optional[str] = Query(default=None),
+    cursor: Optional[str] = Query(default=None),
 ):
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must not be empty")
     top_k = min(max(top_k, 1), 100)
+
+    # Cursor pagination (ADDITIONAL to offset, never replacing it): the cursor
+    # is just a base64'd "offset:N" — stateless, resumable, honest. offset and
+    # cursor together -> cursor wins (documented).
+    if cursor:
+        import base64, binascii
+        try:
+            pad = "=" * (-len(cursor) % 4)
+            raw = base64.urlsafe_b64decode(cursor + pad).decode("ascii")
+            prefix, _, value = raw.partition(":")
+            if prefix != "offset" or not value.isdigit():
+                raise ValueError
+            offset = int(value)
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="invalid cursor")
+        offset = min(offset, 10_000)
+
+    # Phase 5 A/B instrumentation: `session=...` buckets the request into the
+    # deterministic rerank experiment (control/treatment). An explicit
+    # rerank=true/false always overrides the bucket. Default (no session, no
+    # rerank param) is OFF — identical behavior to pre-Phase-5.
+    variant = "off"
+    if session:
+        variant = assign_variant(session, ["control", "treatment"])
+    rerank_flag = rerank if rerank is not None else (variant == "treatment")
 
     # Validate weights
     if bm25_weight == 0 and vector_weight == 0:
@@ -146,19 +197,58 @@ def search(
     page = hybrid_searcher.search_page(
         q, top_k=top_k, offset=offset, mode=search_mode,
         fusion=fusion, candidates=candidates, debug=debug,
+        sort=sort, highlight=highlight,
     )
+
+    # Phase 5 OPT-IN re-ranking. rerank=False (the default) is a strict no-op:
+    # the page from search_page is returned byte-for-byte unchanged.
+    results = page.results
+    if rerank_flag:
+        understanding = understand_query(q, _storage)
+        ranked = rerank_results(results, q, storage=_storage, understanding=understanding)
+        results = [rr.result for rr in ranked]
+        # re-order done; replace scores with blended final scores
+        for out_result, ranked_result in zip(results, ranked):
+            out_result.score = ranked_result.final_score
+        if page.metadata is not None:
+            page.metadata = {**page.metadata, "reranked": True}
+        if experiment_log is not None:
+            experiment_log.record(q, variant, f"{mode}+rerank")
+    elif experiment_log is not None and variant != "off":
+        experiment_log.record(q, variant, mode)
 
     metadata = None
     if page.metadata:
         metadata = SearchMetadata(**page.metadata)
+
+    # Stage 4: has_more + next_cursor (computed, never persisted)
+    if metadata is not None:
+        metadata.has_more = (offset + len(results)) < page.total
+        if metadata.has_more:
+            import base64
+            nxt = base64.urlsafe_b64encode(f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
+            metadata.next_cursor = nxt
+
+    # Stage 4: facet counts — computed over the full match population (a fresh
+    # pass with top_k=total), NOT just the visible page, so counts are honest.
+    facet_out = None
+    if facets:
+        fields = [f.strip() for f in facets.split(",") if f.strip()]
+        full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), 500), offset=0,
+                                           mode=search_mode, fusion=fusion, candidates=candidates)
+        from ..core.filters import facet_counts
+        docs = [_storage.get_document(r.doc_id) for r in full.results]
+        docs = [d for d in docs if d is not None]
+        facet_out = facet_counts(docs, fields)
 
     return SearchResponse(
         query=q,
         total_results=page.total,
         offset=offset,
         top_k=top_k,
-        results=[SearchResultOut(**r.__dict__) for r in page.results],
+        results=[SearchResultOut(**r.__dict__) for r in results],
         metadata=metadata,
+        facets=facet_out,
     )
 
 
@@ -199,6 +289,23 @@ def explain_search(req: ExplainRequest):
         metadata=metadata,
         results=[ExplainResult(**r) for r in explanation["results"]],
     )
+
+
+@app.get("/suggest")
+def suggest(q: str, limit: int = Query(default=10, ge=1, le=50)):
+    """Autocomplete over the live index vocabulary — sorted-list + bisect
+    prefix scan (see ranking/suggestions.py for the no-trie rationale)."""
+    from ..ranking.suggestions import Suggester
+    return {"query": q, "suggestions": Suggester(_storage).suggest(q, limit=limit)}
+
+
+@app.get("/related")
+def related(q: str, limit: int = Query(default=5, ge=1, le=20)):
+    """Related searches: query-log co-occurrence when it exists, trigram
+    term-similarity fallback otherwise. Empty log never errors."""
+    from ..ranking.suggestions import Suggester
+    return {"query": q, "related": Suggester(_storage).related_searches(
+        q, experiment_log=experiment_log, limit=limit)}
 
 
 @app.get("/health")

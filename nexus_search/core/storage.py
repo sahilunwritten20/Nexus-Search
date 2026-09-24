@@ -128,6 +128,12 @@ class Storage:
         with self.lock:
             return [r[0] for r in self.conn.execute("SELECT doc_id FROM documents ORDER BY doc_id")]
 
+    def all_terms(self) -> list[str]:
+        """Sorted index vocabulary (distinct postings terms). Phase 5 query
+        understanding builds spelling/suggestion candidates from this."""
+        with self.lock:
+            return [r[0] for r in self.conn.execute("SELECT DISTINCT term FROM postings ORDER BY term")]
+
     def doc_ids_with_prefix(self, prefix: str) -> list[str]:
         with self.lock:
             return [
