@@ -1,0 +1,2479 @@
+{
+  "updatedAt": "2026-09-23T12:34:44.341Z",
+  "createdAt": "2026-09-23T12:31:16.296Z",
+  "id": "aWoo7BX2O2C5ZS5U",
+  "name": "Nexus Search Core",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "878031a6-0dc5-489d-a56f-9a16805c14d5",
+      "name": "Search API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        144
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nexus/search",
+        "responseMode": "responseNode"
+      },
+      "webhookId": "9ac033be-97a0-477b-8e34-e2ef4c9f96ae"
+    },
+    {
+      "id": "5e092216-438a-44f8-b85d-d8b7ac1987b6",
+      "name": "Parse Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        144
+      ],
+      "parameters": {
+        "jsCode": "const b = ($json.body && Object.keys($json.body).length) ? $json.body : $json;\nconst raw = String(b.q || b.query || \"\").trim();\nconst mode = [\"keyword\",\"semantic\",\"hybrid\"].includes(b.mode) ? b.mode : \"hybrid\";\nconst page = Math.max(1, parseInt(b.page, 10) || 1);\nconst pageSize = Math.min(50, Math.max(1, parseInt(b.pageSize, 10) || 10));\nconst topK = Math.min(100, Math.max(pageSize, parseInt(b.topK, 10) || 50));\nconst wantRag = b.rag === true || b.rag === \"true\";\n// query parser: extract \"quoted phrases\" and field:filters\nconst phrases = (raw.match(/\"([^\"]+)\"/g) || []).map(function(p){ return p.replace(/\"/g,\"\"); });\nconst filters = {};\nconst filterRe = /(\\w+):([^\\s]+)/g; let m;\nwhile ((m = filterRe.exec(raw)) !== null) { filters[m[1]] = m[2]; }\nlet cleaned = raw.replace(/\"[^\"]+\"/g, \" \").replace(/\\w+:[^\\s]+/g, \" \");\n// tokenizer + normalization\nconst stop = new Set([\"the\",\"a\",\"an\",\"of\",\"to\",\"and\",\"or\",\"in\",\"on\",\"for\",\"is\",\"are\"]);\nconst tokens = cleaned.toLowerCase().replace(/[^a-z0-9\\s]/g, \" \").split(/\\s+/).filter(function(t){ return t && !stop.has(t); });\nconst normalizedQuery = tokens.join(\" \") || raw.toLowerCase();\n// lightweight synonym expansion\nconst syn = { js: [\"javascript\"], ts: [\"typescript\"], db: [\"database\"], ml: [\"machine\",\"learning\"] };\nconst expansions = [];\ntokens.forEach(function(t){ if (syn[t]) { syn[t].forEach(function(s){ expansions.push(s); }); } });\n// naive language + intent detection\nconst language = /[^\\x00-\\x7F]/.test(raw) ? \"non-en\" : \"en\";\nconst intent = /\\b(how|what|why|when|who|where)\\b/i.test(raw) ? \"question\" : \"lookup\";\nreturn [{ json: { raw, normalizedQuery, tokens, phrases, filters, expansions, language, intent, mode, page, pageSize, topK, wantRag } }];"
+      }
+    },
+    {
+      "id": "ccfee637-79c7-4501-8efd-cda41766ccc4",
+      "name": "Cache Key",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        448,
+        144
+      ],
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.mode }}:{{ $json.normalizedQuery }}:{{ JSON.stringify($json.filters) }}:{{ $json.page }}",
+        "dataPropertyName": "cacheKey",
+        "encoding": "hex"
+      }
+    },
+    {
+      "id": "025a5ca2-fa36-4459-91e6-bbe27e9e50dc",
+      "name": "Cache Lookup",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        672,
+        144
+      ],
+      "parameters": {
+        "operation": "get",
+        "key": "=nexus:search:{{ $json.cacheKey }}",
+        "propertyName": "cached",
+        "keyType": "string"
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "ca10ee11-3b08-4c57-bec5-0b2ddb9b1d48",
+      "name": "Cache Hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        144
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "hit",
+              "leftValue": "={{ $json.cached }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "62282d15-dba7-4dad-a072-9873ff075a4d",
+      "name": "Respond Cached",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.cached }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "x-nexus-cache",
+                "value": "HIT"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "d2b63db1-ba66-4f48-8f4b-9166b7dbc1ed",
+      "name": "Fan Out Retrieval",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        528
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "79eaadfc-024a-4d15-aaca-09d965cf3b55",
+      "name": "BM25 Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        144
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, url, title, content, source, quality, popularity, updated_at, ts_rank_cd(to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content,'')), plainto_tsquery('english', $1)) AS bm25 FROM documents WHERE to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content,'')) @@ plainto_tsquery('english', $1) ORDER BY bm25 DESC LIMIT $2",
+        "options": {
+          "queryReplacement": "={{ $(\"Parse Query\").item.json.normalizedQuery }}, {{ $(\"Parse Query\").item.json.topK }}"
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "06e93372-5d91-4055-8fad-61cff96c79b6",
+      "name": "Embed Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        336
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"text-embedding-3-small\", input: $(\"Parse Query\").item.json.normalizedQuery }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "ac6512ad-d9d6-45d7-a404-8b5a10ab5d82",
+      "name": "BM25 Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        144
+      ],
+      "parameters": {
+        "jsCode": "const q = $(\"Parse Query\").first().json;\nconst items = $input.all();\nconst out = items.filter(function(i){ return i.json && i.json.id != null; }).map(function(i){\n  const d = i.json;\n  const title = String(d.title || \"\").toLowerCase();\n  const titleBoost = q.tokens.some(function(t){ return title.indexOf(t) >= 0; }) ? 1.5 : 1.0;\n  const phraseBoost = (q.phrases || []).some(function(p){ return String(d.content||\"\").toLowerCase().indexOf(p.toLowerCase()) >= 0; }) ? 1.3 : 1.0;\n  const bm25 = Number(d.bm25 || 0) * titleBoost * phraseBoost;\n  return { json: { id: d.id, url: d.url, title: d.title, content: d.content, source: d.source, quality: Number(d.quality||0.5), popularity: Number(d.popularity||0), updated_at: d.updated_at, bm25: bm25, semantic: 0, origin: \"bm25\" } };\n});\nreturn out;"
+      }
+    },
+    {
+      "id": "7f70c54e-1e19-4790-b857-fbf5f08ec807",
+      "name": "Merge Candidates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1792,
+        240
+      ],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "96612476-f4f5-4c09-8009-a548bee10838",
+      "name": "Qdrant Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        336
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "<__PLACEHOLDER_VALUE__Qdrant search URL, e.g. https://your-host:6333/collections/nexus/points/search__>",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $json.data[0].embedding, limit: $(\"Parse Query\").item.json.topK, with_payload: true }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "c01e58f3-29a6-4f36-bb60-0c1e68bc710e",
+      "name": "Semantic Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        336
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.first().json || {};\nconst hits = (res.result || res.points || []);\nconst out = hits.map(function(h){\n  const p = h.payload || {};\n  return { json: { id: p.docId || p.id || h.id, url: p.url || \"\", title: p.title || \"\", content: p.text || p.content || \"\", source: p.source || \"vector\", quality: Number(p.quality||0.5), popularity: Number(p.popularity||0), updated_at: p.updated_at || null, bm25: 0, semantic: Number(h.score||0), origin: \"semantic\" } };\n});\nreturn out.length ? out : [{ json: { __empty: true, bm25: 0, semantic: 0 } }];"
+      }
+    },
+    {
+      "id": "bed642c5-a0f6-44ef-81a8-e11d052d89ab",
+      "name": "Hybrid Fusion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        240
+      ],
+      "parameters": {
+        "jsCode": "const q = $(\"Parse Query\").first().json;\nconst rows = $input.all().map(function(i){ return i.json; }).filter(function(r){ return r && !r.__empty && r.id != null; });\n// score normalization (min-max) per signal\nfunction norm(vals){ const mn=Math.min.apply(null, vals); const mx=Math.max.apply(null, vals); const d=mx-mn; return function(v){ return d>0 ? (v-mn)/d : 0; }; }\nconst bm = rows.length ? norm(rows.map(function(r){return Number(r.bm25||0);})) : function(){return 0;};\nconst sm = rows.length ? norm(rows.map(function(r){return Number(r.semantic||0);})) : function(){return 0;};\n// candidate merging + duplicate removal by id\nconst byId = {};\nrows.forEach(function(r){\n  const k = String(r.id);\n  if (!byId[k]) { byId[k] = Object.assign({}, r, { nBm25: bm(Number(r.bm25||0)), nSem: sm(Number(r.semantic||0)) }); }\n  else { byId[k].nBm25 = Math.max(byId[k].nBm25, bm(Number(r.bm25||0))); byId[k].nSem = Math.max(byId[k].nSem, sm(Number(r.semantic||0))); }\n});\nlet merged = Object.keys(byId).map(function(k){ return byId[k]; });\n// weighting by mode, with BM25 fallback when no semantic signal\nconst hasSem = merged.some(function(r){ return r.nSem > 0; });\nlet wB = 0.5, wS = 0.5;\nif (q.mode === \"keyword\" || !hasSem) { wB = 1; wS = 0; }\nelse if (q.mode === \"semantic\") { wB = 0.15; wS = 0.85; }\nmerged.forEach(function(r){ r.fused = wB * r.nBm25 + wS * r.nSem; });\nmerged.sort(function(a,b){ return b.fused - a.fused; });\nreturn merged.slice(0, q.topK).map(function(r){ return { json: r }; });"
+      }
+    },
+    {
+      "id": "cb073abf-5540-49b3-8d66-a92056ffcb6b",
+      "name": "Advanced Ranking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        240
+      ],
+      "parameters": {
+        "jsCode": "const q = $(\"Parse Query\").first().json;\nconst now = Date.now();\n// configurable ranking weights\nconst W = { fused: 0.45, title: 0.12, url: 0.06, phrase: 0.08, freshness: 0.08, quality: 0.07, authority: 0.06, popularity: 0.08 };\nfunction authorityOf(u){ try { const h = new URL(u).hostname; if (/\\.(gov|edu)$/.test(h)) return 1; if (/wikipedia|github|docs\\./.test(h)) return 0.8; return 0.5; } catch(e){ return 0.4; } }\nconst rows = $input.all().map(function(i){ return i.json; });\nconst out = rows.map(function(r){\n  const title = String(r.title||\"\").toLowerCase();\n  const url = String(r.url||\"\").toLowerCase();\n  const titleMatch = q.tokens.filter(function(t){ return title.indexOf(t)>=0; }).length / Math.max(1, q.tokens.length);\n  const urlMatch = q.tokens.some(function(t){ return url.indexOf(t)>=0; }) ? 1 : 0;\n  const phraseMatch = (q.phrases||[]).some(function(p){ return String(r.content||\"\").toLowerCase().indexOf(p.toLowerCase())>=0; }) ? 1 : 0;\n  const ageDays = r.updated_at ? (now - new Date(r.updated_at).getTime())/86400000 : 365;\n  const freshness = Math.max(0, 1 - ageDays/365);\n  const quality = Number(r.quality||0.5);\n  const authority = authorityOf(r.url);\n  const popularity = Math.min(1, Number(r.popularity||0)/100);\n  const score = W.fused*Number(r.fused||0) + W.title*titleMatch + W.url*urlMatch + W.phrase*phraseMatch + W.freshness*freshness + W.quality*quality + W.authority*authority + W.popularity*popularity;\n  return { json: Object.assign({}, r, { titleMatch, urlMatch, phraseMatch, freshness, authority, score }) };\n});\nout.sort(function(a,b){ return b.json.score - a.json.score; });\nreturn out;"
+      }
+    },
+    {
+      "id": "9e1fc216-5b2c-4439-b4e2-5cb1b1a226b4",
+      "name": "Snippets & Paginate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        240
+      ],
+      "parameters": {
+        "jsCode": "const q = $(\"Parse Query\").first().json;\nconst rows = $input.all().map(function(i){ return i.json; });\nfunction snippet(text, tokens){\n  const t = String(text||\"\"); const low = t.toLowerCase();\n  let pos = -1; for (let i=0;i<tokens.length;i++){ const p = low.indexOf(tokens[i]); if (p>=0){ pos=p; break; } }\n  if (pos<0) pos=0; const start=Math.max(0,pos-60); const end=Math.min(t.length,pos+140);\n  let s = t.slice(start,end).trim(); if(start>0) s=\"...\"+s; if(end<t.length) s=s+\"...\"; return s;\n}\nconst total = rows.length;\nconst start = (q.page-1)*q.pageSize;\nconst pageRows = rows.slice(start, start+q.pageSize).map(function(r,idx){\n  return { rank: start+idx+1, id: r.id, url: r.url, title: r.title, score: Number((r.score||0).toFixed(4)), snippet: snippet(r.content, q.tokens) };\n});\n// facets over source\nconst facets = {}; rows.forEach(function(r){ const s=r.source||\"unknown\"; facets[s]=(facets[s]||0)+1; });\n// related searches + autocomplete suggestions\nconst related = (q.expansions||[]).concat(q.tokens.slice(0,2).map(function(t){ return t + \" tutorial\"; }));\nconst suggestions = q.tokens.map(function(t){ return q.normalizedQuery + \" \" + t; }).slice(0,5);\nconst payload = { query: q.raw, mode: q.mode, page: q.page, pageSize: q.pageSize, total: total, totalPages: Math.ceil(total/q.pageSize), results: pageRows, facets: facets, related: related, suggestions: suggestions };\nreturn [{ json: payload }];"
+      }
+    },
+    {
+      "id": "826bba00-9742-487d-96e0-640e739a54e5",
+      "name": "RAG Requested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2688,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "rag",
+              "leftValue": "={{ $(\"Parse Query\").item.json.wantRag }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c829e3be-8e54-4b1d-b945-7077e555c625",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        176
+      ],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst q = $(\"Parse Query\").first().json;\nconst ctx = (data.results||[]).slice(0,5).map(function(r,i){ return \"[\" + (i+1) + \"] \" + (r.title||\"\") + \" (\" + (r.url||\"\") + \")\\n\" + (r.snippet||\"\"); }).join(\"\\n\\n\");\nconst system = \"You are Nexus Search. Answer ONLY from the numbered sources. Cite sources as [n]. If the answer is not present, say you do not know.\";\nconst user = \"Question: \" + q.raw + \"\\n\\nSources:\\n\" + ctx;\nconst payload = { model: \"gpt-4o-mini\", temperature: 0.2, messages: [ { role: \"system\", content: system }, { role: \"user\", content: user } ] };\nreturn [{ json: { payload: payload, results: data.results, base: data } }];"
+      }
+    },
+    {
+      "id": "34ff5cf8-7072-4a3b-8e49-eda79ff5c123",
+      "name": "GPT Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3136,
+        176
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "id": "b0289611-e8de-44f8-a03b-39a5488c2265",
+      "name": "Citations & Confidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        176
+      ],
+      "parameters": {
+        "jsCode": "const resp = $json;\nconst base = $(\"Build Prompt\").first().json.base;\nconst results = $(\"Build Prompt\").first().json.results || [];\nlet answer = \"\";\ntry { answer = resp.choices[0].message.content || \"\"; } catch(e) { answer = \"\"; }\n// citation verification: keep only [n] that map to a real source\nconst cited = (answer.match(/\\[(\\d+)\\]/g) || []).map(function(x){ return parseInt(x.replace(/[^0-9]/g,\"\"),10); });\nconst uniqueCited = Array.from(new Set(cited)).filter(function(n){ return n>=1 && n<=results.length; });\nconst sources = uniqueCited.map(function(n){ const r = results[n-1]; return { n: n, title: r.title, url: r.url }; });\n// simple confidence: grounded citations vs. answer presence\nconst confidence = answer && sources.length ? Math.min(1, 0.4 + 0.15*sources.length) : (answer ? 0.3 : 0);\nconst out = Object.assign({}, base, { answer: answer, sources: sources, confidence: Number(confidence.toFixed(2)) });\nreturn [{ json: out }];"
+      }
+    },
+    {
+      "id": "5c27a0ec-02ce-4117-87c6-1a80e1da454e",
+      "name": "Cache Store",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3584,
+        240
+      ],
+      "parameters": {
+        "operation": "set",
+        "key": "=nexus:search:{{ $(\"Cache Key\").item.json.cacheKey }}",
+        "value": "={{ JSON.stringify($json) }}",
+        "keyType": "string"
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "578a6ca7-d3c6-437b-a88c-41049586f7de",
+      "name": "Respond Search",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3808,
+        240
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "x-nexus-cache",
+                "value": "MISS"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "2f50948d-f519-419c-a7ee-9a37ee4606b9",
+      "name": "Ingest API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        848
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nexus/ingest",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "webhookId": "c2034671-7466-4a0c-af6a-b7b2a9dfbe2e"
+    },
+    {
+      "id": "555bb119-2418-4a15-a6ad-ec13c20e1439",
+      "name": "Detect MIME & Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        848
+      ],
+      "parameters": {
+        "jsCode": "const b = ($json.body && Object.keys($json.body).length) ? $json.body : $json;\nconst name = String(b.filename || b.name || \"document.txt\");\nconst ext = (name.split(\".\").pop() || \"txt\").toLowerCase();\nconst map = { pdf:\"application/pdf\", csv:\"text/csv\", xlsx:\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\", xls:\"application/vnd.ms-excel\", html:\"text/html\", htm:\"text/html\", md:\"text/markdown\", json:\"application/json\", txt:\"text/plain\" };\nconst mime = b.mime || map[ext] || \"text/plain\";\nlet kind = \"text\";\nif (ext === \"pdf\") kind = \"pdf\";\nelse if ([\"xlsx\",\"xls\",\"csv\",\"ods\"].indexOf(ext) >= 0) kind = \"spreadsheet\";\nelse if ([\"html\",\"htm\"].indexOf(ext) >= 0) kind = \"html\";\nconst url = b.url || b.canonicalUrl || (\"nexus://upload/\" + name);\nlet canonical = url; try { const u = new URL(url); u.hash=\"\"; u.search=\"\"; canonical = u.toString(); } catch(e){}\nconst meta = { filename: name, ext: ext, mime: mime, kind: kind, canonical: canonical, source: b.source || \"upload\", ingestedAt: new Date().toISOString(), rawText: b.text || b.content || \"\" };\nreturn [{ json: meta }];"
+      }
+    },
+    {
+      "id": "67e45119-e131-4ee2-81e0-e1d804dbfb72",
+      "name": "Route By Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        448,
+        816
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "pdf",
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "spreadsheet",
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "spreadsheet",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "html",
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "html",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "text"
+        }
+      }
+    },
+    {
+      "id": "aacb6004-82d9-44dd-8129-3f9a17911664",
+      "name": "Extract PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        560
+      ],
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {
+          "joinPages": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7afe7876-4a1b-4970-aec2-17914c6abb95",
+      "name": "Extract Spreadsheet",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        752
+      ],
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8ec9bb44-c540-47ce-bb11-0f1f6b5b5781",
+      "name": "Extract HTML",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        944
+      ],
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "sourceData": "json",
+        "dataPropertyName": "rawText",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "title",
+              "returnValue": "text",
+              "returnArray": false
+            },
+            {
+              "key": "body",
+              "cssSelector": "body",
+              "returnValue": "text",
+              "returnArray": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "a6150309-1a66-4ab7-82c7-10e048975e71",
+      "name": "Extract Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        1136
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(function(i){ const m=i.json; return { json: Object.assign({}, m, { extractedText: String(m.rawText||\"\") }) }; });"
+      }
+    },
+    {
+      "id": "59855fb0-25fb-4b70-8bd4-dccc7359b4ff",
+      "name": "Build Document Model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        848
+      ],
+      "parameters": {
+        "jsCode": "const meta = $(\"Detect MIME & Metadata\").first().json;\nconst src = $json;\nlet text = \"\";\nif (typeof src.text === \"string\" && src.text) text = src.text;\nelse if (src.extractedText) text = src.extractedText;\nelse if (src.body) text = String(src.title? (src.title+\"\\n\"+src.body):src.body);\nelse if (Array.isArray(src.data)) text = src.data.map(function(r){ return Object.values(r).join(\" \"); }).join(\"\\n\");\nelse text = String(meta.rawText||\"\");\ntext = text.replace(/\\s+/g,\" \").trim();\n// content quality scoring\nconst words = text ? text.split(\" \").length : 0;\nconst uniq = new Set(text.toLowerCase().split(\" \")).size;\nconst diversity = words ? uniq/words : 0;\nlet quality = Math.min(1, (words/800)*0.6 + diversity*0.4);\nif (words < 20) quality = 0.1;\nconst title = src.title || meta.filename;\nconst doc = { canonical: meta.canonical, url: meta.canonical, title: title, source: meta.source, mime: meta.mime, kind: meta.kind, ingestedAt: meta.ingestedAt, wordCount: words, quality: Number(quality.toFixed(3)), content: text };\nreturn [{ json: doc }];"
+      }
+    },
+    {
+      "id": "2bdf6c80-b0ac-45e6-91f3-b708ef0eeeb4",
+      "name": "Content Hash",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        848
+      ],
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.content }}",
+        "dataPropertyName": "hash",
+        "encoding": "hex"
+      }
+    },
+    {
+      "id": "3e03c24f-c535-4b19-b204-2aea8555ce8e",
+      "name": "Dedup Lookup",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        848
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id FROM documents WHERE content_hash = $1 LIMIT 1",
+        "options": {
+          "queryReplacement": "={{ $json.hash }}"
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "ad106c9f-710d-4e7d-bd0b-d6e172aad814",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        848
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dup",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "677e7ba0-bb24-4dc4-82c6-d59f0e2d0cd1",
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1792,
+        752
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: \"duplicate\", id: $json.id }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "37bf7071-fa64-46d0-8d97-eb19e2d24a29",
+      "name": "Chunk Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        944
+      ],
+      "parameters": {
+        "jsCode": "const d = $(\"Content Hash\").first().json;\nconst text = String(d.content||\"\");\nconst size = 800; const overlap = 120;\nconst chunks = [];\nlet i = 0, idx = 0;\nwhile (i < text.length) { const end = Math.min(text.length, i+size); chunks.push({ index: idx, text: text.slice(i, end) }); idx++; i = end - overlap; if (i < 0) i = 0; if (end === text.length) break; }\nif (!chunks.length) chunks.push({ index: 0, text: text });\nconst doc = Object.assign({}, d, { chunks: chunks, chunkCount: chunks.length });\nreturn [{ json: doc }];"
+      }
+    },
+    {
+      "id": "2f6f590a-66c3-4cd0-b29f-1fe60a757469",
+      "name": "Store Document",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2016,
+        848
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO documents (url, title, content, content_hash, source, quality, updated_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) ON CONFLICT (content_hash) DO UPDATE SET updated_at = NOW() RETURNING id",
+        "options": {
+          "queryReplacement": "={{ $json.canonical }}, {{ $json.title }}, {{ $json.content }}, {{ $json.hash }}, {{ $json.source }}, {{ $json.quality }}"
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "bd453d74-f24f-436b-8dff-5cebc349f12d",
+      "name": "Split Chunks",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        2016,
+        1040
+      ],
+      "parameters": {
+        "fieldToSplitOut": "chunks",
+        "include": "selectedOtherFields",
+        "fieldsToInclude": "hash,canonical,title",
+        "options": {
+          "destinationFieldName": "chunk"
+        }
+      }
+    },
+    {
+      "id": "2cfd5cfc-03c7-498c-ae0a-2768921ddc36",
+      "name": "Embed Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        1040
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"text-embedding-3-small\", input: $json.chunk.text }) }}",
+        "options": {
+          "timeout": 20000,
+          "batching": {
+            "batch": {
+              "batchSize": 16,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "320450fb-9936-4f22-a71b-e5029951fb4a",
+      "name": "Qdrant Upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2464,
+        1040
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "<__PLACEHOLDER_VALUE__Qdrant upsert URL, e.g. https://your-host:6333/collections/nexus/points__>",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: [ { id: $(\"Split Chunks\").item.json.chunk.index, vector: $json.data[0].embedding, payload: { docId: $(\"Split Chunks\").item.json.hash, url: $(\"Split Chunks\").item.json.canonical, title: $(\"Split Chunks\").item.json.title, text: $(\"Split Chunks\").item.json.chunk.text } } ] }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "6dacec50-91ec-4d26-a5e7-5be87decb963",
+      "name": "Respond Ingested",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2688,
+        1040
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: \"ingested\", hash: $(\"Content Hash\").item.json.hash, chunks: $(\"Chunk Document\").item.json.chunkCount }) }}",
+        "options": {
+          "responseCode": 201
+        }
+      }
+    },
+    {
+      "id": "0cbfb2d3-aed1-4706-b070-4dbe18455ce6",
+      "name": "Crawl Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1552
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d1e64454-7dde-4fa2-882e-d1f1e8936239",
+      "name": "Fetch URL Frontier",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        1552
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT url, etag, last_modified FROM crawl_frontier WHERE status = 'pending' AND (next_crawl_at IS NULL OR next_crawl_at <= NOW()) ORDER BY priority DESC, next_crawl_at ASC NULLS FIRST LIMIT 20"
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "eca8ed76-337f-4225-8110-c5f9445874bf",
+      "name": "Split URLs",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        448,
+        1552
+      ],
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "include": "noOtherFields"
+      }
+    },
+    {
+      "id": "2b58440d-c641-426c-8703-7183131043f1",
+      "name": "Normalize & SSRF Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        1552
+      ],
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst out = [];\nconst domainCount = {};\nitems.forEach(function(i){\n  let raw = String((i.json.url != null ? i.json.url : i.json) || \"\");\n  let ok = true, host = \"\";\n  try { const u = new URL(raw); u.hash=\"\"; host = u.hostname; \n    if (u.protocol !== \"http:\" && u.protocol !== \"https:\") ok = false;\n    if (/^(localhost|127\\.|10\\.|192\\.168\\.|169\\.254\\.|0\\.)/.test(host) || host.endsWith(\".internal\")) ok = false;\n    const c = (domainCount[host]||0)+1; domainCount[host]=c; if (c > 5) ok = false;\n    raw = u.toString();\n  } catch(e){ ok = false; }\n  out.push({ json: { url: raw, host: host, allowed: ok, etag: i.json.etag || \"\", last_modified: i.json.last_modified || \"\" } });\n});\nreturn out;"
+      }
+    },
+    {
+      "id": "78c89d75-1399-4d75-b762-58b5effd37de",
+      "name": "Fetch robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        1552
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ new URL($json.url).origin }}/robots.txt",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f3c17642-5458-4657-8537-1e7a089019a2",
+      "name": "Parse robots.txt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        1552
+      ],
+      "parameters": {
+        "jsCode": "const src = $(\"Normalize & SSRF Guard\").item.json;\nconst body = String($json.data || $json.body || \"\");\nlet disallow = [];\nlet active = false;\nbody.split(/\\r?\\n/).forEach(function(line){\n  const l = line.trim(); if (!l || l[0]===\"#\") return;\n  const m = l.match(/^([a-zA-Z-]+):\\s*(.*)$/); if (!m) return;\n  const key = m[1].toLowerCase(); const val = m[2].trim();\n  if (key === \"user-agent\") active = (val === \"*\" || /nexus/i.test(val));\n  else if (key === \"disallow\" && active && val) disallow.push(val);\n});\nlet path = \"/\"; try { path = new URL(src.url).pathname; } catch(e){}\nconst blocked = disallow.some(function(d){ return path.indexOf(d) === 0; });\nconst allowed = src.allowed && !blocked;\nreturn [{ json: Object.assign({}, src, { allowed: allowed }) }];"
+      }
+    },
+    {
+      "id": "d3258467-a3d2-4a0d-bba1-aa248947c2e8",
+      "name": "Crawl Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        1552
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "allow",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "0ab09a11-281e-4b2b-b1b4-05a4078480af",
+      "name": "Fetch Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1568,
+        1456
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "NexusSearchBot/1.0"
+            },
+            {
+              "name": "If-None-Match",
+              "value": "={{ $json.etag }}"
+            },
+            {
+              "name": "If-Modified-Since",
+              "value": "={{ $json.last_modified }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "47fc943d-9269-432f-81d8-1616003c2306",
+      "name": "Skip URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        1648
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { skipped: true, url: $json.url, reason: \"disallowed_or_ssrf\" } }];"
+      }
+    },
+    {
+      "id": "b4b6494d-21c5-4078-a365-fbf8a53979fb",
+      "name": "Content Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1792,
+        1456
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "code",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 304,
+              "operator": {
+                "type": "number",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "cefce35a-b672-4b5b-a2db-2d1e3dcd148e",
+      "name": "Extract Page HTML",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        2016,
+        1360
+      ],
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "sourceData": "json",
+        "dataPropertyName": "data",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "title",
+              "returnValue": "text",
+              "returnArray": false
+            },
+            {
+              "key": "text",
+              "cssSelector": "body",
+              "returnValue": "text",
+              "returnArray": false
+            },
+            {
+              "key": "links",
+              "cssSelector": "a",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "1b9c7ceb-8c0d-4a30-a0bd-17ea38ced706",
+      "name": "Mark Unchanged",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2016,
+        1552
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE crawl_frontier SET status='pending', next_crawl_at = NOW() + INTERVAL '1 day' WHERE url = $1",
+        "options": {
+          "queryReplacement": "={{ $(\"Parse robots.txt\").item.json.url }}"
+        }
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9c65ccd7-1c36-4551-ae4a-38d7dbd6b153",
+      "name": "Extract Links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        1360
+      ],
+      "parameters": {
+        "jsCode": "const src = $(\"Parse robots.txt\").item.json;\nconst pageUrl = src.url;\nlet base; try { base = new URL(pageUrl); } catch(e){ base = null; }\nconst links = ($json.links || []).filter(Boolean);\nconst edges = [];\nlinks.forEach(function(href){\n  try {\n    const u = new URL(href, base ? base.href : undefined); u.hash=\"\";\n    if (u.protocol!==\"http:\" && u.protocol!==\"https:\") return;\n    const internal = base && u.hostname === base.hostname;\n    edges.push({ from: pageUrl, to: u.toString(), host: u.hostname, internal: internal });\n  } catch(e){}\n});\nconst doc = { url: pageUrl, title: $json.title || \"\", text: String($json.text||\"\"), outgoing: edges.length, edges: edges };\nreturn [{ json: doc }];"
+      }
+    },
+    {
+      "id": "b7bc3d9b-935e-4c11-a448-899cc29bd51a",
+      "name": "Store Page & Links",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2464,
+        1360
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO pages (url, title, text, outgoing, crawled_at) VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (url) DO UPDATE SET title=EXCLUDED.title, text=EXCLUDED.text, outgoing=EXCLUDED.outgoing, crawled_at=NOW()",
+        "options": {
+          "queryReplacement": "={{ $json.url }}, {{ $json.title }}, {{ $json.text }}, {{ $json.outgoing }}"
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "cd73b7a4-0688-4a59-a6e0-f44f24db85f5",
+      "name": "Crawl Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2688,
+        1360
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "webhookId": "343983cd-2385-4946-81c6-b9ecab762bcd"
+    },
+    {
+      "id": "0316993d-8ef1-48a8-a1c4-0ae8dd02ab38",
+      "name": "Update Frontier",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2912,
+        1360
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO crawl_frontier (url, status, priority, next_crawl_at) SELECT unnest($1::text[]), 'pending', 1, NOW() + INTERVAL '1 day' ON CONFLICT (url) DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ \"{\" + ($(\"Extract Links\").item.json.edges || []).filter(function(e){return e.internal;}).slice(0,20).map(function(e){return e.to;}).join(\",\") + \"}\" }}"
+        }
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "1995e0be-7248-4a4a-ad3c-f81d841a22de",
+      "name": "Crawl Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3136,
+        1360
+      ],
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst pages = items.length;\nconst links = items.reduce(function(a,i){ return a + Number(i.json.outgoing||0); }, 0);\nreturn [{ json: { crawledPages: pages, discoveredLinks: links, at: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "e2b86868-2f79-4b1b-95e9-c24299da2e36",
+      "name": "PageRank Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1872
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7758d64b-8760-4173-868c-2b164fa64d54",
+      "name": "Load Link Graph",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        1872
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT from_url, to_url, internal FROM links LIMIT 50000"
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "80be67a9-52f1-46c5-9a79-dcf6ba9e1ef9",
+      "name": "Compute PageRank",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        1872
+      ],
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(function(i){ return i.json; });\nconst outLinks = {}; const inDeg = {}; const nodes = new Set();\nrows.forEach(function(r){ if(!r.from_url||!r.to_url) return; nodes.add(r.from_url); nodes.add(r.to_url); (outLinks[r.from_url]=outLinks[r.from_url]||[]).push(r.to_url); inDeg[r.to_url]=(inDeg[r.to_url]||0)+1; });\nconst N = nodes.size || 1; const d = 0.85; const list = Array.from(nodes);\nlet pr = {}; list.forEach(function(n){ pr[n] = 1/N; });\nfor (let iter=0; iter<20; iter++){\n  const next = {}; let dangling = 0;\n  list.forEach(function(n){ if(!(outLinks[n]&&outLinks[n].length)) dangling += pr[n]; });\n  list.forEach(function(n){ next[n] = (1-d)/N + d*dangling/N; });\n  list.forEach(function(n){ const outs = outLinks[n]||[]; const share = outs.length ? pr[n]/outs.length : 0; outs.forEach(function(t){ next[t] = (next[t]||(1-d)/N) + d*share; }); });\n  pr = next;\n}\n// dead-link & orphan detection + domain authority\nconst domScore = {};\nconst out = list.map(function(n){\n  let host=\"\"; try { host = new URL(n).hostname; } catch(e){}\n  const orphan = !(inDeg[n]>0);\n  const dead = !(outLinks[n] && outLinks[n].length);\n  const spam = (outLinks[n]||[]).length > 200 ? 1 : 0;\n  domScore[host] = (domScore[host]||0) + pr[n];\n  return { url: n, host: host, pagerank: pr[n], inLinks: inDeg[n]||0, orphan: orphan, deadEnd: dead, spam: spam };\n});\nout.forEach(function(o){ o.domainAuthority = Number((domScore[o.host]||0).toFixed(6)); });\nout.sort(function(a,b){ return b.pagerank - a.pagerank; });\nreturn out.slice(0, 5000).map(function(o){ return { json: o }; });"
+      }
+    },
+    {
+      "id": "56bb75b8-cc0c-4dd9-9821-919018d738f4",
+      "name": "Store PageRank",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        672,
+        1872
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO page_scores (url, pagerank, in_links, domain_authority, orphan, dead_end, spam, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (url) DO UPDATE SET pagerank=EXCLUDED.pagerank, in_links=EXCLUDED.in_links, domain_authority=EXCLUDED.domain_authority, orphan=EXCLUDED.orphan, dead_end=EXCLUDED.dead_end, spam=EXCLUDED.spam, updated_at=NOW()",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ $json.url }}, {{ $json.pagerank }}, {{ $json.inLinks }}, {{ $json.domainAuthority }}, {{ $json.orphan }}, {{ $json.deadEnd }}, {{ $json.spam }}"
+        }
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "af775186-8607-48e0-b4ef-b21680d05756",
+      "name": "PageRank Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        896,
+        1872
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Select alert channel"
+        },
+        "messageType": "text",
+        "text": "=Nexus PageRank refreshed. Top page: {{ $json.url }} (PR {{ $json.pagerank }}).",
+        "otherOptions": {},
+        "authentication": "oAuth2"
+      },
+      "credentials": {},
+      "executeOnce": true,
+      "onError": "continueRegularOutput",
+      "webhookId": "ec93ca8f-4b7d-491f-b129-4f6888e1d4d2"
+    },
+    {
+      "id": "ab00062f-e9a5-49ea-9528-dbf89681bbd6",
+      "name": "Metrics Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        2192
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d8b28f5b-e492-4718-845d-ed632e61e10c",
+      "name": "Collect Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        2192
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT count(*) FROM documents) AS documents, (SELECT count(*) FROM pages) AS pages, (SELECT count(*) FROM crawl_frontier WHERE status='pending') AS pending_urls, (SELECT count(*) FROM error_log WHERE created_at > NOW() - INTERVAL '15 minutes') AS recent_errors"
+      },
+      "credentials": {},
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "id": "b1fcd67a-ca8f-4948-a6dd-baee76cbbe98",
+      "name": "Redis Health",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        448,
+        2192
+      ],
+      "parameters": {
+        "operation": "info"
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "515e946e-c6e4-4050-94b7-c705c69c4ccd",
+      "name": "Build Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        2192
+      ],
+      "parameters": {
+        "jsCode": "const m = $(\"Collect Metrics\").first().json || {};\nconst redis = $json || {};\nconst documents = Number(m.documents||0);\nconst pages = Number(m.pages||0);\nconst pending = Number(m.pending_urls||0);\nconst errors = Number(m.recent_errors||0);\nconst redisUp = !!(redis.redis_version || redis.uptime_in_seconds || Object.keys(redis).length);\n// prometheus-style exposition (structured logging)\nconst prometheus = [\n  \"nexus_documents_total \" + documents,\n  \"nexus_pages_total \" + pages,\n  \"nexus_frontier_pending \" + pending,\n  \"nexus_errors_15m \" + errors,\n  \"nexus_redis_up \" + (redisUp?1:0)\n].join(\"\\n\");\nconst unhealthy = errors > 20 || !redisUp;\nreturn [{ json: { documents: documents, pages: pages, pending: pending, errors: errors, redisUp: redisUp, unhealthy: unhealthy, prometheus: prometheus, at: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "778a5b3c-5d2c-4457-9df2-c4528ceeb704",
+      "name": "Store Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        896,
+        2192
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO metrics (documents, pages, pending_urls, recent_errors, redis_up, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
+        "options": {
+          "queryReplacement": "={{ $json.documents }}, {{ $json.pages }}, {{ $json.pending }}, {{ $json.errors }}, {{ $json.redisUp }}"
+        }
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d2ddcee3-ac52-4062-aa26-64c3137740dd",
+      "name": "Unhealthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        2192
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "un",
+              "leftValue": "={{ $json.unhealthy }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "fbec8cfe-19d5-49c2-9c60-a09bbd8a9d9d",
+      "name": "Fan Out Alerts",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1344,
+        2480
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "56663acb-3af4-4681-9d0b-656cab2606f6",
+      "name": "Alert Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        2096
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Select alert channel"
+        },
+        "messageType": "text",
+        "text": "=Nexus health alert: errors(15m)={{ $json.errors }}, redisUp={{ $json.redisUp }}, pending={{ $json.pending }}.",
+        "otherOptions": {},
+        "authentication": "oAuth2"
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput",
+      "webhookId": "51a5665e-b5fe-40c9-83a6-ab338074b3dd"
+    },
+    {
+      "id": "663fcf75-fcb2-431a-add7-e32dba374c01",
+      "name": "Alert Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1344,
+        2288
+      ],
+      "parameters": {
+        "fromEmail": "<__PLACEHOLDER_VALUE__alerts@yourdomain.com__>",
+        "toEmail": "<__PLACEHOLDER_VALUE__oncall@yourdomain.com__>",
+        "subject": "Nexus Search health alert",
+        "emailFormat": "text",
+        "text": "=Nexus health alert at {{ $json.at }}.\nErrors(15m): {{ $json.errors }}\nRedis up: {{ $json.redisUp }}\nPending URLs: {{ $json.pending }}\nDocuments: {{ $json.documents }}",
+        "options": {}
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput",
+      "webhookId": "8d2402c1-feda-464d-b6df-bf5f84bf8c33"
+    },
+    {
+      "id": "bb26006e-18c7-4dff-b156-de45a87cb05b",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        2608
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "c7a8d479-aa71-471a-bbc6-51463efa554b",
+      "name": "Dead-letter Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        2608
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO error_log (workflow, node, message, stack, execution_id, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
+        "options": {
+          "queryReplacement": "={{ $json.workflow?.name || \"nexus\" }}, {{ $json.execution?.lastNodeExecuted || \"unknown\" }}, {{ ($json.execution?.error?.message || \"error\").toString().slice(0,500) }}, {{ ($json.execution?.error?.stack || \"\").toString().slice(0,1000) }}, {{ $json.execution?.id || \"\" }}"
+        }
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "43bfa87a-6022-4f4d-873b-ed2b0e460710",
+      "name": "Error Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        448,
+        2512
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Select alert channel"
+        },
+        "messageType": "text",
+        "text": "=Nexus workflow error in node \"{{ $json.execution?.lastNodeExecuted }}\": {{ $json.execution?.error?.message }}",
+        "otherOptions": {},
+        "authentication": "oAuth2"
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput",
+      "webhookId": "fbbc3c0b-59bc-47c4-81db-e98b21c52b37"
+    },
+    {
+      "id": "4a5e67f3-6b6b-45a0-ab3e-30d6aed593bb",
+      "name": "Error Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        448,
+        2704
+      ],
+      "parameters": {
+        "fromEmail": "<__PLACEHOLDER_VALUE__alerts@yourdomain.com__>",
+        "toEmail": "<__PLACEHOLDER_VALUE__oncall@yourdomain.com__>",
+        "subject": "=Nexus error: {{ $json.execution?.lastNodeExecuted }}",
+        "emailFormat": "text",
+        "text": "=Workflow: {{ $json.workflow?.name }}\nNode: {{ $json.execution?.lastNodeExecuted }}\nError: {{ $json.execution?.error?.message }}\nExecution: {{ $json.execution?.id }}",
+        "options": {}
+      },
+      "credentials": {},
+      "onError": "continueRegularOutput",
+      "webhookId": "53c06ca8-83ea-4d23-8b91-df14c33d1c96"
+    }
+  ],
+  "connections": {
+    "Search API": {
+      "main": [
+        [
+          {
+            "node": "Parse Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Query": {
+      "main": [
+        [
+          {
+            "node": "Cache Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Key": {
+      "main": [
+        [
+          {
+            "node": "Cache Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Lookup": {
+      "main": [
+        [
+          {
+            "node": "Cache Hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Hit?": {
+      "main": [
+        [
+          {
+            "node": "Respond Cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fan Out Retrieval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Retrieval": {
+      "main": [
+        [
+          {
+            "node": "BM25 Candidates",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Embed Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BM25 Candidates": {
+      "main": [
+        [
+          {
+            "node": "BM25 Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Query": {
+      "main": [
+        [
+          {
+            "node": "Qdrant Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BM25 Score": {
+      "main": [
+        [
+          {
+            "node": "Merge Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Candidates": {
+      "main": [
+        [
+          {
+            "node": "Hybrid Fusion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Search": {
+      "main": [
+        [
+          {
+            "node": "Semantic Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Semantic Score": {
+      "main": [
+        [
+          {
+            "node": "Merge Candidates",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Hybrid Fusion": {
+      "main": [
+        [
+          {
+            "node": "Advanced Ranking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Advanced Ranking": {
+      "main": [
+        [
+          {
+            "node": "Snippets & Paginate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Snippets & Paginate": {
+      "main": [
+        [
+          {
+            "node": "RAG Requested?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG Requested?": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cache Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "GPT Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT Answer": {
+      "main": [
+        [
+          {
+            "node": "Citations & Confidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Citations & Confidence": {
+      "main": [
+        [
+          {
+            "node": "Cache Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Store": {
+      "main": [
+        [
+          {
+            "node": "Respond Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest API": {
+      "main": [
+        [
+          {
+            "node": "Detect MIME & Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect MIME & Metadata": {
+      "main": [
+        [
+          {
+            "node": "Route By Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Type": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Spreadsheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract HTML",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF": {
+      "main": [
+        [
+          {
+            "node": "Build Document Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Spreadsheet": {
+      "main": [
+        [
+          {
+            "node": "Build Document Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract HTML": {
+      "main": [
+        [
+          {
+            "node": "Build Document Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text": {
+      "main": [
+        [
+          {
+            "node": "Build Document Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Document Model": {
+      "main": [
+        [
+          {
+            "node": "Content Hash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Content Hash": {
+      "main": [
+        [
+          {
+            "node": "Dedup Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup Lookup": {
+      "main": [
+        [
+          {
+            "node": "Is Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Chunk Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Document": {
+      "main": [
+        [
+          {
+            "node": "Store Document",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Chunks": {
+      "main": [
+        [
+          {
+            "node": "Embed Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Chunks": {
+      "main": [
+        [
+          {
+            "node": "Qdrant Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Upsert": {
+      "main": [
+        [
+          {
+            "node": "Respond Ingested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch URL Frontier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch URL Frontier": {
+      "main": [
+        [
+          {
+            "node": "Split URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split URLs": {
+      "main": [
+        [
+          {
+            "node": "Normalize & SSRF Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & SSRF Guard": {
+      "main": [
+        [
+          {
+            "node": "Fetch robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Parse robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Crawl Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Content Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Content Changed?": {
+      "main": [
+        [
+          {
+            "node": "Extract Page HTML",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Unchanged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Page HTML": {
+      "main": [
+        [
+          {
+            "node": "Extract Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Links": {
+      "main": [
+        [
+          {
+            "node": "Store Page & Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Page & Links": {
+      "main": [
+        [
+          {
+            "node": "Crawl Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl Delay": {
+      "main": [
+        [
+          {
+            "node": "Update Frontier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Frontier": {
+      "main": [
+        [
+          {
+            "node": "Crawl Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PageRank Schedule": {
+      "main": [
+        [
+          {
+            "node": "Load Link Graph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Link Graph": {
+      "main": [
+        [
+          {
+            "node": "Compute PageRank",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute PageRank": {
+      "main": [
+        [
+          {
+            "node": "Store PageRank",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store PageRank": {
+      "main": [
+        [
+          {
+            "node": "PageRank Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrics Schedule": {
+      "main": [
+        [
+          {
+            "node": "Collect Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Metrics": {
+      "main": [
+        [
+          {
+            "node": "Redis Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Health": {
+      "main": [
+        [
+          {
+            "node": "Build Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Metrics": {
+      "main": [
+        [
+          {
+            "node": "Store Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Metrics": {
+      "main": [
+        [
+          {
+            "node": "Unhealthy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unhealthy?": {
+      "main": [
+        [
+          {
+            "node": "Fan Out Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Alerts": {
+      "main": [
+        [
+          {
+            "node": "Alert Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Dead-letter Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead-letter Log": {
+      "main": [
+        [
+          {
+            "node": "Error Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "nodeGroups": [
+    {
+      "id": "fd13835c-f708-41b6-8db1-7af034a860ab",
+      "name": "Search & rank API",
+      "nodeIds": [
+        "5e092216-438a-44f8-b85d-d8b7ac1987b6",
+        "ccfee637-79c7-4501-8efd-cda41766ccc4",
+        "025a5ca2-fa36-4459-91e6-bbe27e9e50dc",
+        "ca10ee11-3b08-4c57-bec5-0b2ddb9b1d48",
+        "62282d15-dba7-4dad-a072-9873ff075a4d",
+        "79eaadfc-024a-4d15-aaca-09d965cf3b55",
+        "ac6512ad-d9d6-45d7-a404-8b5a10ab5d82",
+        "06e93372-5d91-4055-8fad-61cff96c79b6",
+        "96612476-f4f5-4c09-8009-a548bee10838",
+        "c01e58f3-29a6-4f36-bb60-0c1e68bc710e",
+        "7f70c54e-1e19-4790-b857-fbf5f08ec807",
+        "bed642c5-a0f6-44ef-81a8-e11d052d89ab",
+        "cb073abf-5540-49b3-8d66-a92056ffcb6b",
+        "9e1fc216-5b2c-4439-b4e2-5cb1b1a226b4",
+        "826bba00-9742-487d-96e0-640e739a54e5",
+        "c829e3be-8e54-4b1d-b945-7077e555c625",
+        "34ff5cf8-7072-4a3b-8e49-eda79ff5c123",
+        "b0289611-e8de-44f8-a03b-39a5488c2265",
+        "5c27a0ec-02ce-4117-87c6-1a80e1da454e",
+        "578a6ca7-d3c6-437b-a88c-41049586f7de",
+        "d2b63db1-ba66-4f48-8f4b-9166b7dbc1ed"
+      ],
+      "description": "Search endpoint: tokenize the query, run BM25 + Qdrant semantic retrieval, fuse and rank, snippet+paginate, optional GPT answer with citations, R"
+    },
+    {
+      "id": "e63eb029-144c-4537-b36a-f5e7f998c2d3",
+      "name": "Unified ingestion",
+      "nodeIds": [
+        "555bb119-2418-4a15-a6ad-ec13c20e1439",
+        "67e45119-e131-4ee2-81e0-e1d804dbfb72",
+        "aacb6004-82d9-44dd-8129-3f9a17911664",
+        "7afe7876-4a1b-4970-aec2-17914c6abb95",
+        "8ec9bb44-c540-47ce-bb11-0f1f6b5b5781",
+        "a6150309-1a66-4ab7-82c7-10e048975e71",
+        "59855fb0-25fb-4b70-8bd4-dccc7359b4ff",
+        "2bdf6c80-b0ac-45e6-91f3-b708ef0eeeb4",
+        "3e03c24f-c535-4b19-b204-2aea8555ce8e",
+        "ad106c9f-710d-4e7d-bd0b-d6e172aad814",
+        "677e7ba0-bb24-4dc4-82c6-d59f0e2d0cd1",
+        "37bf7071-fa64-46d0-8d97-eb19e2d24a29",
+        "2f6f590a-66c3-4cd0-b29f-1fe60a757469",
+        "bd453d74-f24f-436b-8dff-5cebc349f12d",
+        "2cfd5cfc-03c7-498c-ae0a-2768921ddc36",
+        "320450fb-9936-4f22-a71b-e5029951fb4a",
+        "6dacec50-91ec-4d26-a5e7-5be87decb963"
+      ],
+      "description": "Accepts uploads, detects type, extracts text (PDF/spreadsheet/HTML/text), scores quality, dedupes by hash, stores in Postgres and embeds chunks i"
+    },
+    {
+      "id": "74252dec-34d5-4619-8b65-056bca57e3d4",
+      "name": "Web crawler",
+      "nodeIds": [
+        "d1e64454-7dde-4fa2-882e-d1f1e8936239",
+        "eca8ed76-337f-4225-8110-c5f9445874bf",
+        "2b58440d-c641-426c-8703-7183131043f1",
+        "78c89d75-1399-4d75-b762-58b5effd37de",
+        "f3c17642-5458-4657-8537-1e7a089019a2",
+        "d3258467-a3d2-4a0d-bba1-aa248947c2e8",
+        "47fc943d-9269-432f-81d8-1616003c2306",
+        "0ab09a11-281e-4b2b-b1b4-05a4078480af",
+        "b4b6494d-21c5-4078-a365-fbf8a53979fb",
+        "1b9c7ceb-8c0d-4a30-a0bd-17ea38ced706",
+        "cefce35a-b672-4b5b-a2db-2d1e3dcd148e",
+        "9c65ccd7-1c36-4551-ae4a-38d7dbd6b153",
+        "b7bc3d9b-935e-4c11-a448-899cc29bd51a",
+        "cd73b7a4-0688-4a59-a6e0-f44f24db85f5",
+        "0316993d-8ef1-48a8-a1c4-0ae8dd02ab38",
+        "1995e0be-7248-4a4a-ad3c-f81d841a22de"
+      ],
+      "description": "Polls the URL frontier, normalizes + SSRF-guards URLs, honors robots.txt and ETag/Last-Modified, fetches pages, extracts links and stores the gra"
+    },
+    {
+      "id": "944a4c5e-7de1-4c26-bb01-a4ae5ae93a83",
+      "name": "Link graph & PageRank",
+      "nodeIds": [
+        "7758d64b-8760-4173-868c-2b164fa64d54",
+        "80be67a9-52f1-46c5-9a79-dcf6ba9e1ef9",
+        "56bb75b8-cc0c-4dd9-9821-919018d738f4",
+        "af775186-8607-48e0-b4ef-b21680d05756"
+      ],
+      "description": "Daily job: loads the link graph, computes PageRank, domain authority, orphan/dead-link/spam flags, persists scores and posts a summary to Slack."
+    },
+    {
+      "id": "909ed761-aeff-4b72-80c2-979aeee11d90",
+      "name": "Monitoring & alerts",
+      "nodeIds": [
+        "d8b28f5b-e492-4718-845d-ed632e61e10c",
+        "b1fcd67a-ca8f-4948-a6dd-baee76cbbe98",
+        "515e946e-c6e4-4050-94b7-c705c69c4ccd",
+        "778a5b3c-5d2c-4457-9df2-c4528ceeb704",
+        "d2ddcee3-ac52-4062-aa26-64c3137740dd",
+        "fbec8cfe-19d5-49c2-9c60-a09bbd8a9d9d",
+        "56663acb-3af4-4681-9d0b-656cab2606f6",
+        "663fcf75-fcb2-431a-add7-e32dba374c01"
+      ],
+      "description": "Every 15 min: gathers document/crawl/error counts and Redis health, emits Prometheus-style metrics, and alerts Slack + email when thresholds brea"
+    },
+    {
+      "id": "b4ec055d-98a6-400e-84bf-0c6b142517cc",
+      "name": "Error handling & dead-letter",
+      "nodeIds": [
+        "c7a8d479-aa71-471a-bbc6-51463efa554b",
+        "43bfa87a-6022-4f4d-873b-ed2b0e460710",
+        "4a5e67f3-6b6b-45a0-ab3e-30d6aed593bb"
+      ],
+      "description": "Catches any workflow failure, writes it to the dead-letter/audit log, and notifies the team via Slack and email."
+    }
+  ],
+  "pinData": {},
+  "versionId": "08cd17f5-8f8b-4def-b170-c2e641305556",
+  "activeVersionId": null,
+  "versionCounter": 4,
+  "triggerCount": 0,
+  "sourceWorkflowId": null,
+  "tags": [],
+  "parentFolder": null,
+  "activeVersion": null,
+  "homeProject": {
+    "id": "Qn8Ru0uRtUxIWo2T",
+    "type": "personal",
+    "name": "SAHIL GUPTA <sahilguptaengineer20@gmail.com>",
+    "icon": null
+  },
+  "sharedWithProjects": [],
+  "usedCredentials": [],
+  "scopes": [
+    "execution:reveal",
+    "workflow:create",
+    "workflow:delete",
+    "workflow:disableRedaction",
+    "workflow:enableRedaction",
+    "workflow:execute",
+    "workflow:execute-chat",
+    "workflow:export",
+    "workflow:import",
+    "workflow:list",
+    "workflow:move",
+    "workflow:publish",
+    "workflow:read",
+    "workflow:share",
+    "workflow:unpublish",
+    "workflow:unshare",
+    "workflow:update"
+  ],
+  "checksum": "e36c76b14a2c8d63954c1777309ba98aaa2be4aeb67fc4734b88e94fc0f637f2"
+}
