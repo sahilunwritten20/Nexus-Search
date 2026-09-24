@@ -170,6 +170,17 @@ class SentenceTransformerEmbedder(Embedder):
                 except Exception as exc:
                     logger.error("Failed to load sentence-transformers model '%s': %s", self._model_name, exc)
                     raise EmbedderUnavailable(f"Cannot load model '{self._model_name}': {exc}")
+
+    def _probe_dim(self) -> int:
+        """Ensure the model is loaded and return its dimension.
+
+        The lazy-init counterpart to __init__'s eager load: safe to call at
+        any time, reloads only if the model/dim are actually missing
+        (get_embedder()-style double-checked locking via _load_model's lock).
+        """
+        if self._model is None or self._dim is None:
+            self._load_model()
+        return self._dim
     
     @property
     def name(self) -> str:
@@ -264,15 +275,6 @@ def reset_embedder():
     global _embedder_instance
     with _embedder_lock:
         _embedder_instance = None
-
-
-# For backward compatibility - will be removed
-def create_embedding_manager(db_path: str = "nexus_search.db", model: str = "sentence-transformers/all-MiniLM-L6-v2"):
-    """Deprecated: Use EmbeddingSync with get_embedder() instead."""
-    import warnings
-    warnings.warn("create_embedding_manager is deprecated", DeprecationWarning, stacklevel=2)
-    from nexus_search.core.embeddings import EmbeddingManager
-    return EmbeddingManager(db_path, model)
 
 
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

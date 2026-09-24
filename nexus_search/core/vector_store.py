@@ -338,17 +338,20 @@ class VectorStoreManager:
         self.store = VectorStore(db_path, embedder)
         self.embedder = self.store.embedder
     
-    def upsert(self, doc_id: str, text: str, doc_type: str = "", language: str = ""):
-        """Generate embedding for text and store it."""
+    def upsert(self, doc_id: str, text: str, doc_type: str = "", language: str = "") -> str:
+        """Generate embedding for text and store it.
+
+        Returns "created" (new vector), "updated" (content changed, vector
+        re-embedded), or "unchanged" (content hash matched — no work done)."""
         content_hash = self._content_hash(text)
-        # Check if already up to date
         existing_hash = self.store.get_content_hash(doc_id)
         if existing_hash == content_hash:
-            return  # No change
-        
+            return "unchanged"
+
         # Generate embedding
         vector = self.embedder.embed_query(text)
         self.store.add(doc_id, vector, content_hash, doc_type, language)
+        return "updated" if existing_hash is not None else "created"
     
     def upsert_batch(self, items: list[tuple[str, str, str, str]]):
         """Batch upsert: items = [(doc_id, text, doc_type, language), ...]"""

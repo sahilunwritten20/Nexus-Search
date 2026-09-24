@@ -76,6 +76,26 @@ def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optiona
     return indexed_ids
 
 
+def _canonical_target_exists(indexer: Indexer, doc: IngestDoc) -> bool:
+    """True when this page declares a canonical URL that DIFFERS from the
+    crawled URL and the canonical target is already in the index.
+
+    The crawler stores web pages as 'web:<url>'; a page whose canonical URL
+    points elsewhere is the same document wearing a second address — indexing
+    it again would create a near-duplicate result. This dedup signal is
+    ADDITIVE to content-hash dedup (different content can still be a
+    canonical duplicate), and only applies to crawled/web metadata."""
+    canonical = str(doc.metadata.get("canonical_url") or "")
+    url = str(doc.metadata.get("url") or "")
+    if not canonical or not url or canonical == url:
+        return False
+    target_id = f"web:{canonical}"
+    if indexer.storage.get_document(target_id) is not None:
+        return True
+    # Chunked parents have no parent row, only chunk rows.
+    return bool(indexer.storage.chunk_ids(target_id))
+
+
 def ingest_one(
     doc: IngestDoc,
     indexer: Indexer,
@@ -85,9 +105,13 @@ def ingest_one(
     sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
     hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
 ) -> str:
-    """Dedup -> quality gate -> (chunk) -> index -> register -> embed.
-    Returns 'indexed', 'duplicate' or 'low_quality'."""
+    """Dedup (content-hash + canonical URL) -> quality gate -> (chunk) ->
+    index -> register -> embed. Returns 'indexed', 'duplicate' or 'low_quality'."""
     if dedup.is_duplicate(doc.content):
+        return "duplicate"
+    if _canonical_target_exists(indexer, doc):
+        logger.info("DUPLICATE canonical %s (already indexed as %s)",
+                    doc.metadata.get("url"), doc.metadata.get("canonical_url"))
         return "duplicate"
     quality = content_quality_score(doc.content)
     if min_quality is not None and quality < min_quality:

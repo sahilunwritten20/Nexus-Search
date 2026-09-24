@@ -40,8 +40,14 @@ class Base(unittest.TestCase):
         self.indexer = Indexer(self.storage)
         self.dedup = Deduplicator(self.path)
         self.vs = VectorStoreManager(self.path)
+        self._extra_closers = []  # extra stores/syncs created inside a test
 
     def tearDown(self):
+        for closer in self._extra_closers:
+            try:
+                closer.close()
+            except Exception:
+                pass
         self.vs.close()
         self.storage.close()
         self.dedup.close()
@@ -429,6 +435,395 @@ class TestEmbeddingSyncWiring(Base):
         self.indexer.delete_document("d1")
         self.assertEqual(self.vs.get_stats()["count"], 0)
         sync.close()
+
+
+class _CountingEmbedder:
+    """Deterministic embedder that records how it was called."""
+
+    name = "counting:16"
+    dim = 16
+
+    def __init__(self):
+        self.embed_documents_calls: list[int] = []
+        self.embed_query_calls = 0
+
+    def _vec(self, text: str) -> np.ndarray:
+        v = np.zeros(self.dim, dtype=np.float32)
+        v[hash(text) % self.dim] = 1.0
+        return v
+
+    def embed_documents(self, texts, batch_size=32):
+        self.embed_documents_calls.append(len(texts))
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text):
+        self.embed_query_calls += 1
+        return self._vec(text)
+
+
+class _BatchFailingEmbedder(_CountingEmbedder):
+    def embed_documents(self, texts, batch_size=32):
+        self.embed_documents_calls.append(len(texts))
+        raise RuntimeError("batch encoder blew up")
+
+    def embed_query(self, text):
+        self.embed_query_calls += 1
+        return self._vec(text)
+
+
+class _UnavailableEmbedder(_CountingEmbedder):
+    def embed_documents(self, texts, batch_size=32):
+        raise EmbedderUnavailable("model is down")
+
+    def embed_query(self, text):
+        raise EmbedderUnavailable("model is down")
+
+
+class TestBatchFlushing(Base):
+    """Regression: _flush_locked batched per-item (N embed_query calls) instead
+    of one embed_documents call. Pins the real batching behavior + fallbacks."""
+
+    def _sync_with(self, embedder, batch_size=32):
+        # Fresh store so the fake embedder's dim/model don't fight the
+        # HashEmbedder-shaped matrix the base fixture loaded.
+        vs = VectorStoreManager(self.path, embedder=embedder)
+        sync = EmbeddingSync(vs, batch_size=batch_size)
+        sync.attach(self.indexer)
+        self._extra_closers.extend([sync, vs])
+        return sync, vs
+
+    def test_full_batch_uses_embed_documents_once(self):
+        counter = _CountingEmbedder()
+        sync, fvs = self._sync_with(counter)
+        for i in range(5):
+            self.indexer.add_document(f"b{i}", f"batch doc {i} content", title="B")
+        sync.flush()
+        self.assertEqual(counter.embed_documents_calls, [5])  # ONE call, 5 texts
+        self.assertEqual(counter.embed_query_calls, 0)
+        self.assertEqual(fvs.get_stats()["count"], 5)
+        self.assertEqual(sync.get_stats()["indexed"], 5)
+
+    def test_stats_still_track_updates_through_batch(self):
+        counter = _CountingEmbedder()
+        sync, fvs = self._sync_with(counter)
+        self.indexer.add_document("d", "version one", title="T")
+        self.indexer.add_document("d", "version two changed", title="T")
+        sync.flush()
+        stats = sync.get_stats()
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["updated"], 1)
+        self.assertEqual(fvs.get_stats()["count"], 1)
+
+    def test_batch_failure_falls_back_to_per_item(self):
+        embedder = _BatchFailingEmbedder()
+        sync, fvs = self._sync_with(embedder)
+        for i in range(4):
+            self.indexer.add_document(f"f{i}", f"fallback doc {i}", title="F")
+        sync.flush()
+        self.assertEqual(embedder.embed_documents_calls, [4])  # batch was tried
+        self.assertEqual(embedder.embed_query_calls, 4)        # then per-item
+        self.assertEqual(fvs.get_stats()["count"], 4)
+        self.assertEqual(sync.get_stats()["errors"], 0)
+        self.assertEqual(sync.get_stats()["indexed"], 4)
+
+    def test_unavailable_embedder_batch_counts_errors(self):
+        embedder = _UnavailableEmbedder()
+        sync, fvs = self._sync_with(embedder)
+        for i in range(3):
+            self.indexer.add_document(f"u{i}", f"dead model doc {i}", title="U")
+        sync.flush()
+        self.assertEqual(sync.get_stats()["errors"], 3)
+        self.assertEqual(fvs.get_stats()["count"], 0)
+        self.assertEqual(self.storage.document_count(), 3)  # indexing itself unaffected
+
+    def test_deletes_still_processed_with_batch_upserts(self):
+        counter = _CountingEmbedder()
+        sync, fvs = self._sync_with(counter)
+        self.indexer.add_document("x", "to be deleted", title="X")
+        self.indexer.add_document("y", "to be kept", title="Y")
+        self.indexer.delete_document("x")
+        sync.flush()
+        self.assertEqual(fvs.get_stats()["count"], 1)
+        self.assertEqual(sync.get_stats()["deleted"], 1)
+
+
+class TestCrawlerCliEmbeddingSync(Base):
+    """Regression coverage: crawler/cli.py wires EmbeddingSync via
+    create_embedding_sync — crawled pages must end up embedded, exactly
+    like ingestion-sourced documents."""
+
+    _PAGES = {
+        "/": (
+            "<html><head><title>Crawler Home</title></head><body>"
+            "<h1>Nexus crawler sync test</h1>"
+            "<p>Landing page about indexed crawlers and embeddings.</p>"
+            '<a href="/one">One</a>'
+            "</body></html>"
+        ),
+        "/one": (
+            "<html><head><title>Page One</title></head><body>"
+            "<p>Second page with distinct synchronized vocabulary.</p>"
+            "</body></html>"
+        ),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        pages = cls._PAGES
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/robots.txt":
+                    body = b"User-agent: *\nAllow: /\n"
+                elif self.path in pages:
+                    body = pages[self.path].encode("utf-8")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                return
+
+        cls.server = HTTPServer(("127.0.0.1", 0), Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base_url = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def test_crawl_embeds_crawled_documents(self):
+        from nexus_search.core.embedding_sync import create_embedding_sync
+        from nexus_search.crawler.pipeline import CrawlPipeline
+        from nexus_search.ingestion.pipeline import make_crawler_ingest_fn
+
+        # Exactly the wiring crawler/cli.py run_once() builds:
+        # sync attached to the indexer, ingest fn from make_crawler_ingest_fn.
+        sync = create_embedding_sync(self.vs, batch_size=32)
+        sync.attach(self.indexer)
+
+        frontier_db = os.path.join(self.dir, "frontier.db")
+        pipeline = CrawlPipeline(
+            db_path=frontier_db,
+            allowed_domains=["127.0.0.1"],
+            max_pages=10,
+            max_depth=1,
+            concurrency=2,
+            ingest_fn=make_crawler_ingest_fn(self.indexer, self.dedup),
+            allow_private_hosts=True,  # local test server, like the e2e tests
+        )
+        pipeline.seed([self.base_url])
+
+        try:
+            result = pipeline.run()
+            sync.flush()  # cli.py flushes at the end of a run
+        finally:
+            sync.close()
+
+        self.assertGreaterEqual(result["crawled"], 2)
+        self.assertEqual(self.storage.document_count(), result["crawled"])
+        # Every crawled document has a corresponding vector
+        self.assertEqual(self.vs.get_stats()["count"], self.storage.document_count())
+        self.assertEqual(sync.get_stats()["errors"], 0)
+        # And is actually findable through the vector side
+        hits = self.vs.search("distinct synchronized vocabulary", top_k=5)
+        self.assertTrue(any(h.doc_id.startswith("web:") for h in hits))
+
+
+class TestVectorMaintenance(Base):
+    """reindex_embeddings: backfill + orphan GC + stale-model cleanup."""
+
+    def test_backfill_restores_missing_vectors(self):
+        self.add("d1", "alpha beta", "D1")
+        self.add("d2", "gamma delta", "D2")
+        self.assertEqual(self.vs.get_stats()["count"], 2)
+        # Simulate lost embedding (e.g. earlier embedding failure)
+        self.vs.store.remove("d1")
+        self.assertEqual(self.vs.get_stats()["count"], 1)
+
+        from nexus_search.core.vector_maintenance import reindex_embeddings
+        stats = reindex_embeddings(self.storage, self.vs)
+        self.assertEqual(self.vs.get_stats()["count"], 2)
+        self.assertEqual(stats["embedded"], 1)
+        self.assertEqual(stats["unchanged"], 1)
+
+    def test_reindex_is_idempotent(self):
+        self.add("d1", "alpha beta", "D1")
+        from nexus_search.core.vector_maintenance import reindex_embeddings
+        reindex_embeddings(self.storage, self.vs)
+        second = reindex_embeddings(self.storage, self.vs)
+        self.assertEqual(second["embedded"], 0)
+        self.assertEqual(second["unchanged"], 1)
+
+    def test_orphan_vectors_are_garbage_collected(self):
+        self.add("d1", "alpha beta", "D1")
+        # orphan row: doc deleted but vector left behind (simulate)
+        self.storage.conn.execute("DELETE FROM documents WHERE doc_id = 'd1'")
+        self.storage.conn.commit()
+        from nexus_search.core.vector_maintenance import reindex_embeddings
+        stats = reindex_embeddings(self.storage, self.vs)
+        self.assertEqual(stats["orphans_removed"], 1)
+        self.assertEqual(self.vs.get_stats()["count"], 0)
+
+    def test_stale_model_rows_dropped_or_kept(self):
+        self.add("d1", "alpha beta", "D1")
+        # insert a row under an old model name
+        import time as _t
+        self.vs.store.conn.execute(
+            "INSERT INTO doc_vectors (doc_id, model, dim, content_hash, vector, updated_at) "
+            "VALUES ('d1', 'st:old-model', 384, 'x', ?, ?)",
+            (b"\x00" * 384 * 4, _t.time()))
+        self.vs.store.conn.commit()
+
+        from nexus_search.core.vector_maintenance import reindex_embeddings
+        kept = reindex_embeddings(self.storage, self.vs, drop_stale_models=False)
+        n = self.vs.store.conn.execute("SELECT COUNT(*) FROM doc_vectors").fetchone()[0]
+        self.assertEqual(n, 2)  # old row kept
+        self.assertEqual(kept["stale_models_removed"], 0)
+        dropped = reindex_embeddings(self.storage, self.vs, drop_stale_models=True)
+        n = self.vs.store.conn.execute("SELECT COUNT(*) FROM doc_vectors").fetchone()[0]
+        self.assertEqual(n, 1)
+        self.assertEqual(dropped["stale_models_removed"], 1)
+
+    def test_maintenance_cli_smoke(self):
+        self.add("d1", "alpha beta", "D1")
+        from nexus_search.core.vector_maintenance import main
+        self.assertEqual(main([self.path]), 0)
+
+
+class TestPhraseConsistencyAcrossRetrievers(Base):
+    def test_hyphenated_text_satisfies_phrase_on_both_paths(self):
+        # BM25 tokenizes "machine-learning" -> phrase matches; the vector
+        # path must agree (previously it used substring matching).
+        self.add("H", "machine-learning systems are useful", "H")
+        page = self.make_hybrid().search_page('"machine learning"', mode=SearchMode.SEMANTIC)
+        self.assertIn("H", [r.doc_id for r in page.results])
+
+
+class TestUpsertTriState(Base):
+    def test_created_updated_unchanged(self):
+        self.assertEqual(self.vs.upsert("d1", "alpha text", "text", ""), "created")
+        self.assertEqual(self.vs.upsert("d1", "alpha text", "text", ""), "unchanged")
+        self.assertEqual(self.vs.upsert("d1", "changed beta text", "text", ""), "updated")
+
+    def test_sync_counts_updates(self):
+        sync = EmbeddingSync(self.vs, batch_size=1)
+        sync.attach(self.indexer)
+        self.indexer.add_document("d1", "first version", title="T")
+        self.indexer.add_document("d1", "second version", title="T")
+        stats = sync.get_stats()
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["updated"], 1)
+        sync.close()
+
+
+class TestApiHybridWeightsAndDegradedBoot(unittest.TestCase):
+    """API-level: explain honors per-request weights; broken embedder at boot
+    degrades to keyword-only instead of crashing."""
+
+    def _reload_api(self, embedder: str):
+        import importlib
+        from nexus_search.core import embedders
+        os.environ["NEXUS_EMBEDDER"] = embedder
+        embedders.reset_embedder()
+        from nexus_search.core import api
+        importlib.reload(api)
+        return api
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self._TestClient = TestClient
+        self.dir = tempfile.mkdtemp()
+        os.environ["NEXUS_DB"] = os.path.join(self.dir, "api.db")
+        self._saved_embedder = os.environ.get("NEXUS_EMBEDDER", "hash:384")
+
+    def tearDown(self):
+        import importlib
+        from nexus_search.core import embedders, api
+        os.environ["NEXUS_EMBEDDER"] = self._saved_embedder
+        embedders.reset_embedder()
+        importlib.reload(api)
+        for _ in range(10):
+            try:
+                shutil.rmtree(self.dir)
+                break
+            except PermissionError:
+                time.sleep(0.05)
+
+    def test_explain_honors_per_request_weights(self):
+        api = self._reload_api("hash:384")
+        client = self._TestClient(api.app)
+        client.post("/documents", json={"doc_id": "a", "content": "alpha beta content", "title": "A"})
+        client.post("/documents", json={"doc_id": "b", "content": "alpha", "title": "B"})
+        r = client.post("/search/explain", json={"query": "alpha", "mode": "hybrid",
+                                                 "bm25_weight": 0.0, "vector_weight": 1.0})
+        self.assertEqual(r.status_code, 200)
+        for row in r.json()["results"]:
+            self.assertEqual(row["source"], "vector")  # bm25 retriever disabled by weight
+        bad = client.post("/search/explain", json={"query": "alpha", "bm25_weight": 0, "vector_weight": 0})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_fallback_metadata_survives_pydantic_to_wire(self):
+        """Regression: requested_mode/mode_used used to be dropped by extra=ignore.
+        This hits the real HTTP layer, not the internal dataclass."""
+        api = self._reload_api("hash:384")
+        client = self._TestClient(api.app)
+        client.post("/documents", json={"doc_id": "a", "content": "alpha content", "title": "A"})
+
+        api._vector_store.embedder = _ExplodingEmbedder()  # runtime vector failure
+        body = client.get("/search", params={"q": "alpha", "mode": "hybrid"}).json()
+        meta = body["metadata"]
+        self.assertEqual(meta["requested_mode"], "hybrid")
+        self.assertEqual(meta["mode_used"], "keyword")
+        self.assertTrue(meta["fallback"])
+        self.assertIn("embedder_unavailable", meta["fallback_reason"])
+
+        sem = client.get("/search", params={"q": "alpha", "mode": "semantic"}).json()
+        self.assertEqual(sem["metadata"]["requested_mode"], "semantic")
+        self.assertEqual(sem["metadata"]["mode_used"], "keyword")
+
+    def test_normal_mode_metadata_fields_present(self):
+        api = self._reload_api("hash:384")
+        client = self._TestClient(api.app)
+        client.post("/documents", json={"doc_id": "a", "content": "alpha content", "title": "A"})
+        meta = client.get("/search", params={"q": "alpha", "mode": "keyword"}).json()["metadata"]
+        self.assertEqual(meta["requested_mode"], "keyword")
+        self.assertEqual(meta["mode_used"], "keyword")
+        self.assertFalse(meta["fallback"])
+
+    def test_api_boots_degraded_when_embedder_fails(self):
+        api = self._reload_api("st:nonexistent-model-does-not-exist-42")
+        client = self._TestClient(api.app)
+        client.post("/documents", json={"doc_id": "a", "content": "alpha beta content", "title": "A"})
+
+        health = client.get("/health").json()
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["embedder"]["name"], "unavailable")
+        self.assertIn("embedder_unavailable", health["embedder"]["error"])
+
+        # keyword still fully works
+        kw = client.get("/search", params={"q": "alpha", "mode": "keyword"}).json()
+        self.assertFalse(kw["metadata"]["fallback"])
+        self.assertEqual(kw["results"][0]["doc_id"], "a")
+
+        # hybrid/semantic honestly report the fallback
+        hy = client.get("/search", params={"q": "alpha", "mode": "hybrid"}).json()
+        self.assertTrue(hy["metadata"]["fallback"])
+        self.assertIn("embedder_unavailable", hy["metadata"]["fallback_reason"])
+        self.assertEqual(hy["results"][0]["doc_id"], "a")
+        self.assertEqual(hy["results"][0]["source"], "bm25_fallback")
+
+        self.assertEqual(client.get("/metrics").status_code, 200)
 
 
 class TestConcurrency(Base):

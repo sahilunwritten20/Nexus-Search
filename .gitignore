@@ -13,8 +13,11 @@ env/
 .env.*
 !.env.example
 
-# Databases / local data
+# Databases / local data (incl. SQLite journal/WAL sidecars)
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 

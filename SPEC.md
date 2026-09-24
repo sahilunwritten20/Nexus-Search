@@ -37,7 +37,7 @@ through Phase 7; Phase 8-10 is what changes that if/when it's needed.
 | 1 | Search core | **Done + upgraded** |
 | 2 | Unified ingestion | **Done + upgraded** |
 | 3 | Crawler | **Done + upgraded** |
-| 4 | Hybrid BM25 + vector search | Next |
+| 4 | Hybrid BM25 + vector search | **Done + audited** |
 | 5 | Ranking | Planned |
 | 6 | Link intelligence | Planned |
 | 7 | AI-cited answers | Planned |
@@ -46,9 +46,9 @@ through Phase 7; Phase 8-10 is what changes that if/when it's needed.
 See the main README for what's actually in Phases 1-3 as built.
 
 
-## Phase 1-3 upgrade contract
+## Phase 1-4 upgrade contract
 
-Before Phase 4 begins, the foundation supports:
+The foundation through Phase 4 supports:
 
 ### Phase 1
 - BM25 lexical retrieval
@@ -74,4 +74,12 @@ Before Phase 4 begins, the foundation supports:
 - canonical URL extraction
 - real crawler → ingestion → index → BM25 integration
 
-The next major architectural jump is Phase 4: hybrid lexical + semantic retrieval.
+### Phase 4
+- embedder abstraction (deterministic hash-based offline embedder + sentence-transformers backend, selected via `NEXUS_EMBEDDER`)
+- SQLite-backed vector store with content-hash incremental updates
+- RRF and weighted score fusion
+- keyword / semantic / hybrid search modes with BM25 fallback on vector failure
+- debug/explain endpoint with real per-retriever score contributions
+- IR evaluation framework (precision@k, recall@k, MRR, NDCG) + latency benchmark
+
+The next major architectural jump is Phase 5: advanced ranking.

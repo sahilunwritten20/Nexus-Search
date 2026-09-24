@@ -1,14 +1,19 @@
-"""End-to-end crawler tests for Nexus Search."""
+"""End-to-end crawler tests for Nexus Search.
 
+Plain unittest.TestCase: must load and run under BOTH
+`python -m pytest` and `python -m unittest discover -s tests -v`
+without pytest (or any optional dependency) installed.
+"""
+
+import shutil
+import tempfile
 import threading
 import time
+import unittest
 from http.server import (
     BaseHTTPRequestHandler,
     HTTPServer,
 )
-from pathlib import Path
-
-import pytest
 
 from nexus_search.crawler.pipeline import (
     CrawlPipeline,
@@ -199,396 +204,378 @@ class TestHandler(BaseHTTPRequestHandler):
         format,
         *args,
     ):
-        # Keep pytest output clean.
+        # Keep test output clean.
         return
 
 
 # ============================================================
-# FIXTURE
+# END-TO-END CRAWL TEST CASE
 # ============================================================
 
 
-@pytest.fixture
-def test_server():
+class TestEndToEndCrawler(unittest.TestCase):
+    """The 5 end-to-end crawler scenarios, sharing one local HTTP server."""
 
-    server = HTTPServer(
-        (
-            "127.0.0.1",
-            0,
-        ),
-        TestHandler,
-    )
-
-    thread = threading.Thread(
-        target=server.serve_forever,
-        daemon=True,
-    )
-
-    thread.start()
-
-    base_url = (
-        f"http://127.0.0.1:"
-        f"{server.server_port}"
-    )
-
-    yield base_url
-
-    server.shutdown()
-    server.server_close()
-
-    thread.join(timeout=2)
-
-
-# ============================================================
-# BASIC END-TO-END CRAWL
-# ============================================================
-
-
-def test_full_crawl(
-    test_server,
-    tmp_path,
-):
-
-    frontier_db = (
-        tmp_path
-        / "frontier.db"
-    )
-
-    documents = []
-
-    def ingest_fn(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        documents.append(
-            {
-                "url": url,
-                "title": title,
-                "text": text,
-                "metadata": metadata,
-            }
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(
+            (
+                "127.0.0.1",
+                0,
+            ),
+            TestHandler,
         )
 
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=10,
-        max_depth=2,
-        concurrency=2,
-        ingest_fn=ingest_fn,
-
-        # Required because the test server
-        # intentionally runs on localhost.
-        allow_private_hosts=True,
-    )
-
-    pipeline.seed(
-        [
-            test_server
-        ]
-    )
-
-    result = pipeline.run()
-
-    assert result["crawled"] >= 4
-
-    assert len(documents) >= 4
-
-    urls = {
-        document["url"]
-        for document in documents
-    }
-
-    assert (
-        f"{test_server}/"
-        in urls
-    )
-
-    assert (
-        f"{test_server}/page1"
-        in urls
-    )
-
-    assert (
-        f"{test_server}/page2"
-        in urls
-    )
-
-    assert (
-        f"{test_server}/page3"
-        in urls
-    )
-
-    assert all(
-        document["title"]
-        for document in documents
-    )
-
-
-# ============================================================
-# DEPTH LIMIT
-# ============================================================
-
-
-def test_crawl_depth_limit(
-    test_server,
-    tmp_path,
-):
-
-    frontier_db = (
-        tmp_path
-        / "depth.db"
-    )
-
-    documents = []
-
-    def ingest_fn(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        documents.append(
-            metadata["depth"]
+        cls.server_thread = threading.Thread(
+            target=cls.server.serve_forever,
+            daemon=True,
         )
 
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=10,
-        max_depth=0,
-        concurrency=2,
-        ingest_fn=ingest_fn,
-        allow_private_hosts=True,
-    )
+        cls.server_thread.start()
 
-    pipeline.seed(
-        [
-            test_server
-        ]
-    )
-
-    result = pipeline.run()
-
-    assert result["crawled"] == 1
-
-    assert documents == [0]
-
-
-# ============================================================
-# DOMAIN LIMIT
-# ============================================================
-
-
-def test_domain_limit(
-    test_server,
-    tmp_path,
-):
-
-    frontier_db = (
-        tmp_path
-        / "domain_limit.db"
-    )
-
-    documents = []
-
-    def ingest_fn(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        documents.append(url)
-
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=10,
-        max_depth=2,
-        concurrency=2,
-        ingest_fn=ingest_fn,
-        max_pages_per_domain=2,
-        allow_private_hosts=True,
-    )
-
-    pipeline.seed(
-        [
-            test_server
-        ]
-    )
-
-    result = pipeline.run()
-
-    assert result["crawled"] <= 2
-
-    assert len(documents) <= 2
-
-
-# ============================================================
-# ETAG / LAST-MODIFIED RECrawl
-# ============================================================
-
-
-def test_incremental_recrawl(
-    test_server,
-    tmp_path,
-):
-
-    frontier_db = (
-        tmp_path
-        / "recrawl.db"
-    )
-
-    first_documents = []
-
-    def first_ingest(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        first_documents.append(
-            url
+        cls.server_url = (
+            f"http://127.0.0.1:"
+            f"{cls.server.server_port}"
         )
 
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=1,
-        max_depth=0,
-        concurrency=1,
-        ingest_fn=first_ingest,
-        allow_private_hosts=True,
-    )
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.server_thread.join(timeout=2)
 
-    pipeline.seed(
-        [
-            test_server
-        ]
-    )
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
 
-    first_result = pipeline.run()
+    def tearDown(self):
+        for _ in range(10):
+            try:
+                shutil.rmtree(self.tmpdir)
+                break
+            except PermissionError:
+                time.sleep(0.05)
 
-    assert first_result["crawled"] == 1
+    # ------------------------------------------------ basic crawl
 
-    assert len(first_documents) == 1
+    def test_full_crawl(self):
 
-    # Give SQLite enough time so the
-    # second crawl has a different timestamp.
-    time.sleep(0.01)
-
-    second_documents = []
-
-    def second_ingest(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        second_documents.append(
-            url
+        frontier_db = (
+            self.tmpdir
+            + "/frontier.db"
         )
 
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=1,
-        max_depth=0,
-        concurrency=1,
-        ingest_fn=second_ingest,
-        recrawl_interval=0.0,
-        allow_private_hosts=True,
-    )
+        documents = []
 
-    # Explicitly queue the URL again.
-    pipeline.frontier.add(
-        test_server,
-        depth=0,
-        priority=10,
-        allow_visited=True,
-    )
+        def ingest_fn(
+            url,
+            title,
+            text,
+            metadata,
+        ):
 
-    second_result = pipeline.run()
+            documents.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "text": text,
+                    "metadata": metadata,
+                }
+            )
 
-    assert (
-        second_result["not_modified"]
-        == 1
-    )
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=10,
+            max_depth=2,
+            concurrency=2,
+            ingest_fn=ingest_fn,
 
-    assert (
-        second_result["crawled"]
-        == 0
-    )
+            # Required because the test server
+            # intentionally runs on localhost.
+            allow_private_hosts=True,
+        )
 
-    assert second_documents == []
+        pipeline.seed(
+            [
+                self.server_url
+            ]
+        )
+
+        result = pipeline.run()
+
+        assert result["crawled"] >= 4
+
+        assert len(documents) >= 4
+
+        urls = {
+            document["url"]
+            for document in documents
+        }
+
+        assert (
+            f"{self.server_url}/"
+            in urls
+        )
+
+        assert (
+            f"{self.server_url}/page1"
+            in urls
+        )
+
+        assert (
+            f"{self.server_url}/page2"
+            in urls
+        )
+
+        assert (
+            f"{self.server_url}/page3"
+            in urls
+        )
+
+        assert all(
+            document["title"]
+            for document in documents
+        )
+
+    # ------------------------------------------------ depth limit
+
+    def test_crawl_depth_limit(self):
+
+        frontier_db = (
+            self.tmpdir
+            + "/depth.db"
+        )
+
+        documents = []
+
+        def ingest_fn(
+            url,
+            title,
+            text,
+            metadata,
+        ):
+
+            documents.append(
+                metadata["depth"]
+            )
+
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=10,
+            max_depth=0,
+            concurrency=2,
+            ingest_fn=ingest_fn,
+            allow_private_hosts=True,
+        )
+
+        pipeline.seed(
+            [
+                self.server_url
+            ]
+        )
+
+        result = pipeline.run()
+
+        assert result["crawled"] == 1
+
+        assert documents == [0]
+
+    # ------------------------------------------------ domain limit
+
+    def test_domain_limit(self):
+
+        frontier_db = (
+            self.tmpdir
+            + "/domain_limit.db"
+        )
+
+        documents = []
+
+        def ingest_fn(
+            url,
+            title,
+            text,
+            metadata,
+        ):
+
+            documents.append(url)
+
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=10,
+            max_depth=2,
+            concurrency=2,
+            ingest_fn=ingest_fn,
+            max_pages_per_domain=2,
+            allow_private_hosts=True,
+        )
+
+        pipeline.seed(
+            [
+                self.server_url
+            ]
+        )
+
+        result = pipeline.run()
+
+        assert result["crawled"] <= 2
+
+        assert len(documents) <= 2
+
+    # ------------------------------------- etag / last-modified recrawl
+
+    def test_incremental_recrawl(self):
+
+        frontier_db = (
+            self.tmpdir
+            + "/recrawl.db"
+        )
+
+        first_documents = []
+
+        def first_ingest(
+            url,
+            title,
+            text,
+            metadata,
+        ):
+
+            first_documents.append(
+                url
+            )
+
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=1,
+            max_depth=0,
+            concurrency=1,
+            ingest_fn=first_ingest,
+            allow_private_hosts=True,
+        )
+
+        pipeline.seed(
+            [
+                self.server_url
+            ]
+        )
+
+        first_result = pipeline.run()
+
+        assert first_result["crawled"] == 1
+
+        assert len(first_documents) == 1
+
+        # Give SQLite enough time so the
+        # second crawl has a different timestamp.
+        time.sleep(0.01)
+
+        second_documents = []
+
+        def second_ingest(
+            url,
+            title,
+            text,
+            metadata,
+        ):
+
+            second_documents.append(
+                url
+            )
+
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=1,
+            max_depth=0,
+            concurrency=1,
+            ingest_fn=second_ingest,
+            recrawl_interval=0.0,
+            allow_private_hosts=True,
+        )
+
+        # Explicitly queue the URL again.
+        pipeline.frontier.add(
+            self.server_url,
+            depth=0,
+            priority=10,
+            allow_visited=True,
+        )
+
+        second_result = pipeline.run()
+
+        assert (
+            second_result["not_modified"]
+            == 1
+        )
+
+        assert (
+            second_result["crawled"]
+            == 0
+        )
+
+        assert second_documents == []
+
+    # -------------------------------------------- SSRF protection
+
+    def test_private_host_is_blocked(self):
+
+        frontier_db = (
+            self.tmpdir
+            + "/security.db"
+        )
+
+        documents = []
+
+        def ingest_fn(
+            url,
+            title,
+            text,
+            metadata,
+        ):
+
+            documents.append(url)
+
+        pipeline = CrawlPipeline(
+            db_path=str(frontier_db),
+            allowed_domains=[
+                "127.0.0.1"
+            ],
+            max_pages=10,
+            max_depth=1,
+            concurrency=1,
+            ingest_fn=ingest_fn,
+
+            # Production/default security behavior.
+            allow_private_hosts=False,
+        )
+
+        pipeline.seed(
+            [
+                "http://127.0.0.1:9999"
+            ]
+        )
+
+        result = pipeline.run()
+
+        assert result["crawled"] == 0
+
+        assert result["skipped"] == 0
+
+        assert len(documents) == 0
 
 
-# ============================================================
-# SSRF PROTECTION
-# ============================================================
-
-
-def test_private_host_is_blocked(
-    tmp_path,
-):
-
-    frontier_db = (
-        tmp_path
-        / "security.db"
-    )
-
-    documents = []
-
-    def ingest_fn(
-        url,
-        title,
-        text,
-        metadata,
-    ):
-
-        documents.append(url)
-
-    pipeline = CrawlPipeline(
-        db_path=str(frontier_db),
-        allowed_domains=[
-            "127.0.0.1"
-        ],
-        max_pages=10,
-        max_depth=1,
-        concurrency=1,
-        ingest_fn=ingest_fn,
-
-        # Production/default security behavior.
-        allow_private_hosts=False,
-    )
-
-    pipeline.seed(
-        [
-            "http://127.0.0.1:9999"
-        ]
-    )
-
-    result = pipeline.run()
-
-    assert result["crawled"] == 0
-
-    assert result["skipped"] == 0
-
-    assert len(documents) == 0
+if __name__ == "__main__":
+    unittest.main()

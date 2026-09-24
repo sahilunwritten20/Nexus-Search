@@ -31,6 +31,8 @@ class SearchResultOut(BaseModel):
 
 class SearchMetadata(BaseModel):
     mode: str = "keyword"
+    requested_mode: Optional[str] = None  # what the client asked for
+    mode_used: Optional[str] = None       # what actually ran (differs on fallback)
     bm25_candidates: int = 0
     vector_candidates: int = 0
     merged_candidates: int = 0
@@ -54,6 +56,8 @@ class ExplainRequest(BaseModel):
     top_k: int = 10
     mode: str = "hybrid"
     fusion: str = "rrf"
+    bm25_weight: float = Field(default=1.0, ge=0)
+    vector_weight: float = Field(default=1.0, ge=0)
 
 
 class ExplainResult(BaseModel):

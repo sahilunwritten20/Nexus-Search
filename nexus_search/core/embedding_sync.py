@@ -84,35 +84,85 @@ class EmbeddingSync:
             if len(self._queue) >= self.batch_size:
                 self._flush_locked()
     
+    def _bump(self, state: str) -> None:
+        """Count one successfully processed upsert by its tri-state."""
+        with self._stats_lock:
+            if state == "updated":
+                self._stats.updated += 1
+            elif state == "created":
+                self._stats.indexed += 1
+            # "unchanged": no work was needed, count nothing
+
+    def _bump_error(self) -> None:
+        with self._stats_lock:
+            self._stats.errors += 1
+
     def _flush_locked(self) -> None:
         """Flush the queue (must hold _queue_lock)."""
         if not self._queue:
             return
-        
+
         items = self._queue
         self._queue = []
-        
-        # Process outside the lock to avoid blocking indexing
-        # (but we need to process errors without raising)
-        for op, doc_id, text, doc_type, language in items:
+
+        upserts = [(doc_id, text, doc_type, language)
+                   for op, doc_id, text, doc_type, language in items if op == "upsert"]
+        deletes = [doc_id for op, doc_id, *_ in items if op == "delete"]
+
+        # Upserts go through the TRUE batch path: one embed_documents() call
+        # per flush instead of one embed_query() call per document.
+        if upserts:
+            # Pre-compute per-item states so stats stay accurate (the batch
+            # path silently no-ops unchanged docs via the content-hash gate).
+            # Sequential-aware: repeated upserts for the same doc_id within one
+            # flush see the state left by the previous item ("created" then
+            # "updated"), exactly like per-item processing would.
+            running: dict[str, Optional[str]] = {}
+
+            def state_of(doc_id: str, text: str) -> Optional[str]:
+                new_hash = self.vector_store._content_hash(text)
+                old_hash = running.get(doc_id, self.vector_store.store.get_content_hash(doc_id))
+                running[doc_id] = new_hash
+                if old_hash == new_hash:
+                    return "unchanged"
+                return "updated" if old_hash is not None else "created"
+
             try:
-                if op == "upsert":
-                    self.vector_store.upsert(doc_id, text, doc_type, language)
-                    with self._stats_lock:
-                        self._stats.indexed += 1
-                elif op == "delete":
-                    self.vector_store.delete(doc_id)
-                    with self._stats_lock:
-                        self._stats.deleted += 1
+                states = [(doc_id, state_of(doc_id, text)) for doc_id, text, _, _ in upserts]
+                self.vector_store.upsert_batch(upserts)
+                for _, state in states:
+                    self._bump(state)
             except EmbedderUnavailable as exc:
-                logger.warning("Embedder unavailable, skipping embedding for %s: %s", doc_id, exc)
-                with self._stats_lock:
-                    self._stats.errors += 1
+                # The model itself is down: retrying item-by-item cannot help.
+                logger.warning("Embedder unavailable, batch embedding skipped for %s: %s",
+                               [d for d, *_ in upserts], exc)
+                for _ in upserts:
+                    self._bump_error()
             except Exception as exc:
-                logger.exception("Failed to process embedding for %s: %s", doc_id, exc)
+                # Partial/one-off failure: fall back to per-item isolation so a
+                # single bad document cannot take down the whole batch.
+                logger.exception("Batch embedding failed, retrying per-item: %s", exc)
+                for doc_id, text, doc_type, language in upserts:
+                    try:
+                        self._bump(self.vector_store.upsert(doc_id, text, doc_type, language))
+                    except EmbedderUnavailable as exc2:
+                        logger.warning("Embedder unavailable, skipping embedding for %s: %s",
+                                       doc_id, exc2)
+                        self._bump_error()
+                    except Exception as exc2:
+                        logger.exception("Failed to process embedding for %s: %s", doc_id, exc2)
+                        self._bump_error()
+
+        # Deletes are cheap single-row ops; batching them buys nothing.
+        for doc_id in deletes:
+            try:
+                self.vector_store.delete(doc_id)
                 with self._stats_lock:
-                    self._stats.errors += 1
-        
+                    self._stats.deleted += 1
+            except Exception as exc:
+                logger.exception("Failed to delete embedding for %s: %s", doc_id, exc)
+                self._bump_error()
+
         self._stats.last_flush = time.time()
     
     def flush(self) -> None:

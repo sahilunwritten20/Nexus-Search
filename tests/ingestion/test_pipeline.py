@@ -68,6 +68,59 @@ class TestIngestDocuments(unittest.TestCase):
         self.assertEqual(self.storage.document_count(), 1)
 
 
+class TestCanonicalDedup(unittest.TestCase):
+    """Canonical URL dedup signal (additive to content-hash dedup)."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.storage = Storage(self.path)
+        self.indexer = Indexer(self.storage)
+        self.dedup = Deduplicator(self.path)
+        self.ingest_fn = make_crawler_ingest_fn(self.indexer, self.dedup)
+
+    def tearDown(self):
+        self.storage.close()
+        self.dedup.close()
+        os.remove(self.path)
+
+    def _crawl(self, url, text, canonical=None):
+        self.ingest_fn(url, "Title", text,
+                       {"url": url, "canonical_url": canonical or url})
+
+    def test_same_canonical_different_content_is_deduped(self):
+        self._crawl("https://example.com/page", "original body here")
+        # Variant URL declaring the same canonical, with DIFFERENT content
+        self._crawl("https://example.com/page?utm_source=email",
+                    "different tracking-laden body",
+                    canonical="https://example.com/page")
+        self.assertEqual(self.storage.document_count(), 1)
+        self.assertIsNone(
+            self.storage.get_document("web:https://example.com/page?utm_source=email"))
+
+    def test_different_canonical_same_content_still_dedupes_via_hash(self):
+        self._crawl("https://example.com/a", "identical body")
+        self._crawl("https://example.com/b", "identical body",
+                    canonical="https://example.com/b")  # canonical == own url
+        self.assertEqual(self.storage.document_count(), 1)  # content-hash path
+
+    def test_no_canonical_tag_is_unaffected(self):
+        self.ingest_fn("https://example.com/none", "T", "no canonical page", {})
+        self.assertIsNotNone(
+            self.storage.get_document("web:https://example.com/none"))
+
+    def test_canonical_target_can_be_a_chunked_parent(self):
+        # Chunked pages have no parent row, only chunks — dedup must see them.
+        ingest_chunked = make_crawler_ingest_fn(self.indexer, self.dedup, chunk_size=50)
+        ingest_chunked("https://example.com/long", "T", "word " * 100,
+                       {"url": "https://example.com/long",
+                        "canonical_url": "https://example.com/long"})
+        self._crawl("https://example.com/long?ref=x", "totally other text",
+                    canonical="https://example.com/long")
+        self.assertIsNone(
+            self.storage.get_document("web:https://example.com/long?ref=x"))
+
+
 class TestCrawlerIngestAdapter(unittest.TestCase):
     """This is the actual Phase 3 <-> Phase 2 integration point."""
 

@@ -189,7 +189,7 @@ class TestFrontier(unittest.TestCase):
             "Wed, 01 Jan 2025 00:00:00 GMT"
         )
 
-    def test_recrawl_due_requeues_old_url(self):
+    def test_recrawl_due_urls_lists_old_url_without_requeueing(self):
         self.frontier.add(
             "https://example.com/a",
             depth=0
@@ -202,19 +202,33 @@ class TestFrontier(unittest.TestCase):
             content_hash="abc"
         )
 
-        count = self.frontier.recrawl_due(
+        urls = self.frontier.recrawl_due_urls(
             interval_seconds=0
         )
 
         self.assertEqual(
-            count,
-            1
+            urls,
+            ["https://example.com/a"]
         )
+
+        # Read-only: nothing put back into the frontier by the query itself.
+        self.assertEqual(
+            self.frontier.pending_count(),
+            0
+        )
+
+        # The caller re-queues through the single choke point.
+        for url in urls:
+            self.frontier.add(url, depth=0, priority=5, allow_visited=True)
 
         self.assertEqual(
             self.frontier.pending_count(),
             1
         )
+
+    def test_recrawl_due_urls_rejects_negative_interval(self):
+        with self.assertRaises(ValueError):
+            self.frontier.recrawl_due_urls(-1)
 
     def test_mark_not_modified_keeps_content_hash(self):
         self.frontier.add(

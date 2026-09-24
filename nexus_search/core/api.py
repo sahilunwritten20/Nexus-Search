@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from .bm25 import BM25Search
-from .embedders import HashEmbedder
+from .embedders import HashEmbedder, EmbedderUnavailable
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
@@ -27,27 +27,67 @@ async def lifespan(app: FastAPI):
     # Startup
     yield
     # Shutdown
-    _embedding_sync.close()
-    _hybrid_searcher.close()
+    if _embedding_sync is not None:
+        _embedding_sync.close()
+    if _hybrid_searcher is not None:
+        _hybrid_searcher.close()
     _storage.close()
 
 
 app = FastAPI(title="Nexus Search — Core", version="0.4.0", lifespan=lifespan)
 
-_storage = Storage(os.environ.get("NEXUS_DB", "nexus_search.db"))
+_NEXUS_DB = os.environ.get("NEXUS_DB", "nexus_search.db")
+_storage = Storage(_NEXUS_DB)
 _indexer = Indexer(_storage)
 _bm25_searcher = BM25Search(_storage)
 
-_vector_store = VectorStoreManager(os.environ.get("NEXUS_DB", "nexus_search.db"))
-_hybrid_searcher = create_hybrid_search(
-    _storage, 
-    vector_store=_vector_store, 
-    db_path=os.environ.get("NEXUS_DB", "nexus_search.db")
-)
+# Boot resilience: if the embedder can't load, start in keyword-only
+# (degraded) mode instead of crashing at import. Every semantic/hybrid
+# request then reports fallback=true with the real reason, and /health
+# reports degraded. We do NOT silently swap in the hash embedder.
+try:
+    _vector_store = VectorStoreManager(_NEXUS_DB)
+    _vector_error = None
+except EmbedderUnavailable as exc:
+    logger.error("Vector subsystem unavailable at startup: %s", exc)
+    _vector_store = None
+    _vector_error = f"embedder_unavailable: {exc}"
 
-# EmbeddingSync for incremental updates
-_embedding_sync = EmbeddingSync(_vector_store, batch_size=1)
-_embedding_sync.attach(_indexer)
+if _vector_store is not None:
+    _hybrid_searcher = create_hybrid_search(_storage, vector_store=_vector_store, db_path=_NEXUS_DB)
+    _embedding_sync = EmbeddingSync(_vector_store, batch_size=1)
+    _embedding_sync.attach(_indexer)
+else:
+    _hybrid_searcher = None
+    _embedding_sync = None
+
+
+def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
+                       reason: str) -> SearchResponse:
+    """BM25-only response used when the vector subsystem never came up."""
+    if requested_mode == "keyword":
+        fallback = False
+        mode_used = "keyword"
+    else:
+        fallback = True
+        mode_used = "keyword"
+    page = _bm25_searcher.search_page(q, top_k=top_k, offset=offset)
+    results = [
+        SearchResultOut(
+            doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
+            doc_type=r.doc_type, metadata=r.metadata, chunk_id=r.chunk_id,
+            matched_chunks=r.matched_chunks, bm25_score=r.score,
+            source="bm25" if not fallback else "bm25_fallback",
+        ) for r in page.results
+    ]
+    return SearchResponse(
+        query=q, total_results=page.total, offset=offset, top_k=top_k, results=results,
+        metadata=SearchMetadata(
+            mode=mode_used, requested_mode=requested_mode, mode_used=mode_used,
+            bm25_candidates=page.total, merged_candidates=len(results),
+            fallback=fallback, fallback_reason=reason if fallback else None,
+        ),
+    )
 
 
 @app.post("/documents", status_code=201)
@@ -89,13 +129,17 @@ def search(
     if bm25_weight == 0 and vector_weight == 0:
         raise HTTPException(status_code=400, detail="At least one weight must be > 0")
 
+    # Degraded boot: vector subsystem never came up -> honest keyword-only
+    if _vector_store is None:
+        return _keyword_only_page(q, top_k, offset, mode, _vector_error)
+
     # Create a new HybridSearch with custom weights for this request
     hybrid_searcher = HybridSearch(
         _storage,
         bm25_weight=bm25_weight,
         vector_weight=vector_weight,
         vector_store=_vector_store,
-        db_path=os.environ.get("NEXUS_DB", "nexus_search.db"),
+        db_path=_NEXUS_DB,
     )
 
     search_mode = SearchMode(mode)
@@ -130,8 +174,23 @@ def explain_search(req: ExplainRequest):
         raise HTTPException(status_code=400, detail="mode must be keyword, semantic, or hybrid")
     if req.fusion not in ("rrf", "weighted"):
         raise HTTPException(status_code=400, detail="fusion must be rrf or weighted")
+    if req.bm25_weight == 0 and req.vector_weight == 0:
+        raise HTTPException(status_code=400, detail="At least one weight must be > 0")
 
-    explanation = _hybrid_searcher.explain(req.query, top_k=req.top_k, mode=search_mode, fusion=req.fusion)
+    if _hybrid_searcher is None:
+        kw = _keyword_only_page(req.query, req.top_k, 0, req.mode, _vector_error)
+        return ExplainResponse(
+            query=req.query, mode=req.mode, metadata=kw.metadata,
+            results=[ExplainResult(doc_id=r.doc_id, final_score=r.score, bm25_score=r.bm25_score,
+                                   source=r.source or "bm25_fallback", title=r.title,
+                                   chunk_id=r.chunk_id) for r in kw.results],
+        )
+
+    # Per-request weights, same as /search
+    searcher = HybridSearch(_storage, bm25_weight=req.bm25_weight,
+                            vector_weight=req.vector_weight,
+                            vector_store=_vector_store, db_path=_NEXUS_DB)
+    explanation = searcher.explain(req.query, top_k=req.top_k, mode=search_mode, fusion=req.fusion)
     metadata = SearchMetadata(**explanation["metadata"]) if explanation["metadata"] else SearchMetadata(mode=req.mode)
 
     return ExplainResponse(
@@ -144,11 +203,20 @@ def explain_search(req: ExplainRequest):
 
 @app.get("/health")
 def health():
+    if _vector_store is None:
+        return {
+            "status": "degraded",
+            "documents": _storage.document_count(),
+            "vectors": 0,
+            "coverage": 0.0,
+            "embedder": {"name": "unavailable", "dim": None, "degraded": True,
+                         "error": _vector_error},
+        }
     vector_stats = _vector_store.get_stats()
     vector_count = vector_stats.get("count", 0)
     doc_count = _storage.document_count()
     coverage = vector_count / doc_count if doc_count > 0 else 1.0
-    
+
     return {
         "status": "ok" if coverage >= 0.9 else "degraded",
         "documents": doc_count,
@@ -165,8 +233,8 @@ def health():
 @app.get("/metrics")
 def metrics():
     """Prometheus-style metrics endpoint."""
-    sync_stats = _embedding_sync.get_stats()
-    vector_stats = _vector_store.get_stats()
+    sync_stats = _embedding_sync.get_stats() if _embedding_sync is not None else None
+    vector_stats = _vector_store.get_stats() if _vector_store is not None else None
     return {
         "embedding_sync": sync_stats,
         "vector_store": vector_stats,

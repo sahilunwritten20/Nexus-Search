@@ -7,12 +7,13 @@ from typing import Optional, Callable
 
 import numpy as np
 
-from .bm25 import BM25Search, SearchResult, SearchPage
-from .embedders import get_embedder, EmbedderUnavailable
-from .embedding_sync import EmbeddingSync
+from .bm25 import BM25Search, SearchResult
+from .embedders import EmbedderUnavailable
+from .embedding_sync import EmbeddingSync  # noqa: F401  (type hint for __init__)
 from .filters import matches_filters
 from .query_parser import parse_query
 from .storage import Storage
+from .tokenizer import tokenize
 from .vector_store import VectorStoreManager
 
 logger = logging.getLogger("nexus_search.hybrid")
@@ -198,6 +199,10 @@ class HybridSearch:
         vector_results = self.vector_store.search(query_text, top_k=candidate_k, allowed=allowed_filter)
 
         results = {}
+        # Tokenize required phrases once — matches BM25's phrase semantics
+        # (token sequence, not substring), so "machine-learning" satisfies
+        # the phrase "machine learning" on BOTH retrievers.
+        phrase_tokens = [t for t in (tokenize(p) for p in parsed.phrases) if t]
         for vr in vector_results:
             parent = vr.doc_id
             # Get parent doc for chunk grouping
@@ -205,13 +210,13 @@ class HybridSearch:
                 doc = self.storage.get_document(parent)
                 if doc:
                     parent = doc.metadata.get("parent_id", parent)
-            # Apply required phrases from the parsed query (substring check on raw text)
-            if parsed.phrases:
+            # Apply required phrases from the parsed query
+            if phrase_tokens:
                 doc = self.storage.get_document(vr.doc_id)
                 if doc is None:
                     continue
-                doc_text = f"{doc.title} {doc.content}"
-                if not all(phrase.lower() in doc_text.lower() for phrase in parsed.phrases):
+                doc_tokens = tokenize(f"{doc.title} {doc.content}")
+                if not all(BM25Search._has_phrase(doc_tokens, ph) for ph in phrase_tokens):
                     continue  # Skip docs that don't contain required phrases
             if parent not in results or vr.score > results[parent][0]:
                 results[parent] = (vr.score, vr.doc_id)
@@ -219,11 +224,18 @@ class HybridSearch:
 
     # -------------------------------------------------------------- merge
 
+    def _vector_only_snippet(self, doc, parsed) -> str:
+        """Query-focused snippet for vector-only hits — same helper BM25 uses."""
+        terms = parsed.terms if parsed else []
+        phrases = parsed.phrases if parsed else []
+        return self.bm25_search._snippet(doc, terms, phrases)
+
     def _merge_results(
         self,
         bm25_results: dict[str, tuple[float, SearchResult]],
         vector_results: dict[str, tuple[float, str]],
         fusion: str = "rrf",
+        parsed=None,
     ) -> list[HybridSearchResult]:
         fused = _fuse(bm25_results, vector_results, fusion,
                       self.bm25_weight, self.vector_weight)
@@ -258,7 +270,7 @@ class HybridSearch:
                         doc_id=doc_id,
                         score=fused_score,
                         title=doc.title,
-                        snippet=doc.content[:200] + ("..." if len(doc.content) > 200 else ""),
+                        snippet=self._vector_only_snippet(doc, parsed),
                         doc_type=doc.doc_type,
                         metadata=doc.metadata,
                         chunk_id=vector_results[doc_id][1] if vector_results[doc_id][1] != doc_id else None,
@@ -361,7 +373,7 @@ class HybridSearch:
                         doc_id=doc_id,
                         score=fused_score,
                         title=doc.title,
-                        snippet=doc.content[:200] + ("..." if len(doc.content) > 200 else ""),
+                        snippet=self._vector_only_snippet(doc, parsed),
                         doc_type=doc.doc_type,
                         metadata=doc.metadata,
                         chunk_id=vr_doc_id if vr_doc_id != doc_id else None,
@@ -399,7 +411,7 @@ class HybridSearch:
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
                                        start_time, f"vector_search_error: {exc}", fusion)
 
-        merged = self._merge_results(bm25_results, vector_results, fusion=fusion)
+        merged = self._merge_results(bm25_results, vector_results, fusion=fusion, parsed=parsed)
         if not debug:
             # strip diagnostic numbers unless asked for
             for r in merged:

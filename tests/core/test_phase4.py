@@ -6,8 +6,6 @@ import unittest
 # Use hash embedder for offline tests
 os.environ["NEXUS_EMBEDDER"] = "hash:384"
 
-from nexus_search.core.embeddings import EmbeddingManager, EmbeddingCache, create_embedding_manager
-from nexus_search.core.vector_index import VectorIndexManager, create_vector_index
 from nexus_search.core.hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from nexus_search.core.storage import Storage
 from nexus_search.core.indexer import Indexer
@@ -18,112 +16,6 @@ from nexus_search.evaluation.metrics import (
     precision_at_k, recall_at_k, mrr, ndcg_at_k, evaluate_query
 )
 from nexus_search.evaluation.dataset import create_benchmark_dataset
-
-
-class TestEmbeddings(unittest.TestCase):
-    def setUp(self):
-        fd, self.path = tempfile.mkstemp(suffix='.db')
-        os.close(fd)
-
-    def tearDown(self):
-        os.unlink(self.path)
-
-    def test_embedding_manager_creation(self):
-        mgr = create_embedding_manager(self.path)
-        self.assertIsNotNone(mgr)
-        mgr.close()
-
-    def test_embed_and_cache(self):
-        mgr = create_embedding_manager(self.path)
-        emb1 = mgr.get_or_compute("doc1", "hello world")
-        emb2 = mgr.get_or_compute("doc1", "hello world")
-        self.assertEqual(list(emb1), list(emb2))
-        mgr.close()
-
-    def test_different_content_different_embedding(self):
-        mgr = create_embedding_manager(self.path)
-        emb1 = mgr.get_or_compute("doc1", "hello world")
-        emb2 = mgr.get_or_compute("doc2", "goodbye world")
-        self.assertNotEqual(list(emb1), list(emb2))
-        mgr.close()
-
-    def test_batch_embedding(self):
-        mgr = create_embedding_manager(self.path)
-        items = [("d1", "text one"), ("d2", "text two"), ("d3", "text three")]
-        embeddings = mgr.batch_get_or_compute(items)
-        self.assertEqual(len(embeddings), 3)
-        mgr.close()
-
-    def test_invalidate(self):
-        mgr = create_embedding_manager(self.path)
-        mgr.get_or_compute("doc1", "hello")
-        mgr.invalidate("doc1")
-        stats = mgr.get_stats()
-        self.assertEqual(stats["total"], 0)
-        mgr.close()
-
-    def test_embedding_cache_stats(self):
-        mgr = create_embedding_manager(self.path)
-        mgr.get_or_compute("doc1", "text")
-        mgr.get_or_compute("doc2", "other")
-        stats = mgr.get_stats()
-        self.assertEqual(stats["total"], 2)
-        mgr.close()
-
-
-class TestVectorIndex(unittest.TestCase):
-    def setUp(self):
-        fd, self.path = tempfile.mkstemp(suffix='.db')
-        os.close(fd)
-
-    def tearDown(self):
-        os.unlink(self.path)
-
-    def test_vector_index_creation(self):
-        idx = create_vector_index(self.path)
-        self.assertIsNotNone(idx)
-        idx.close()
-
-    def test_add_and_search(self):
-        idx = create_vector_index(self.path)
-        import numpy as np
-        emb = np.array([1.0, 0.0, 0.0] + [0.0] * 381, dtype=np.float32)
-        idx.upsert("doc1", emb, "hash1")
-        results = idx.search(emb, top_k=5)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].doc_id, "doc1")
-        idx.close()
-
-    def test_delete(self):
-        idx = create_vector_index(self.path)
-        import numpy as np
-        emb = np.array([1.0, 0.0, 0.0] + [0.0] * 381, dtype=np.float32)
-        idx.upsert("doc1", emb, "hash1")
-        idx.delete("doc1")
-        results = idx.search(emb, top_k=5)
-        self.assertEqual(len(results), 0)
-        idx.close()
-
-    def test_search_by_doc_id(self):
-        idx = create_vector_index(self.path)
-        import numpy as np
-        emb1 = np.array([1.0, 0.0, 0.0] + [0.0] * 381, dtype=np.float32)
-        emb2 = np.array([0.0, 1.0, 0.0] + [0.0] * 381, dtype=np.float32)
-        idx.upsert("doc1", emb1, "hash1")
-        idx.upsert("doc2", emb2, "hash2")
-        results = idx.search_by_doc_id("doc1", top_k=5)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].doc_id, "doc2")
-        idx.close()
-
-    def test_stats(self):
-        idx = create_vector_index(self.path)
-        import numpy as np
-        emb = np.array([1.0, 0.0, 0.0] + [0.0] * 381, dtype=np.float32)
-        idx.upsert("doc1", emb, "hash1")
-        stats = idx.get_stats()
-        self.assertEqual(stats["count"], 1)
-        idx.close()
 
 
 class TestHybridSearch(unittest.TestCase):

@@ -521,80 +521,6 @@ class Frontier:
             return row
 
     # ================================================================
-    # Recrawl
-    # ================================================================
-
-    def recrawl_due(
-        self,
-        interval_seconds: float,
-    ) -> int:
-        """
-        Find URLs whose recrawl interval has expired.
-
-        URLs are immediately placed back into the pending queue.
-
-        Returns the number of URLs requeued.
-        """
-
-        if interval_seconds < 0:
-            raise ValueError(
-                "interval_seconds cannot be negative"
-            )
-
-        cutoff = (
-            time.time()
-            - interval_seconds
-        )
-
-        with self.lock:
-
-            rows = self.conn.execute(
-                """
-                SELECT url
-                FROM visited
-                WHERE last_crawled_at <= ?
-                """,
-                (cutoff,),
-            ).fetchall()
-
-            count = 0
-
-            for row in rows:
-
-                url = row[0]
-
-                # Don't insert duplicates.
-                cursor = self.conn.execute(
-                    """
-                    INSERT OR IGNORE INTO frontier (
-                        url,
-                        depth,
-                        priority,
-                        status,
-                        added_at
-                    )
-                    VALUES (
-                        ?,
-                        0,
-                        5,
-                        'pending',
-                        ?
-                    )
-                    """,
-                    (
-                        url,
-                        time.time(),
-                    ),
-                )
-
-                if cursor.rowcount > 0:
-                    count += 1
-
-            self.conn.commit()
-
-            return count
-
-    # ================================================================
     # Recrawl URLs
     # ================================================================
 
@@ -603,9 +529,12 @@ class Frontier:
         interval_seconds: float,
     ) -> list[str]:
         """
-        Return URLs that are due for recrawling.
+        Return URLs whose recrawl interval has expired.
 
-        Unlike recrawl_due(), this method does not modify the frontier.
+        This is the single recrawl-query API — it does NOT modify the
+        frontier; the caller (CrawlPipeline._queue_recrawls) re-adds the
+        URLs with fresh priority/depth via add(..., allow_visited=True),
+        so the policies for requeuing live in exactly one place.
         """
 
         if interval_seconds < 0:

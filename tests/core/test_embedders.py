@@ -198,6 +198,55 @@ class TestSentenceTransformerEmbedder(unittest.TestCase):
             self.assertAlmostEqual(norm, 1.0, places=5)
 
 
+class TestProbeDimLandmine(unittest.TestCase):
+    """Regression: dim/embed_documents/embed_query called _probe_dim() when
+    the model state was None, but _probe_dim didn't exist -> AttributeError
+    landmine. Uses a fake sentence_transformers module — no download."""
+
+    def _patch_fake_st(self):
+        """Patch sys.modules with a fake sentence_transformers for the test's life."""
+        import types
+        from unittest.mock import patch
+
+        class _FakeST:
+            def __init__(self, name):
+                self.name = name
+
+            def encode(self, texts, **kwargs):
+                return np.ones((len(texts), 8), dtype=np.float32)
+
+        patcher = patch.dict("sys.modules",
+                             {"sentence_transformers": types.SimpleNamespace(SentenceTransformer=_FakeST)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _make_embedder(self):
+        from nexus_search.core.embedders import SentenceTransformerEmbedder
+        return SentenceTransformerEmbedder("fake/model")
+
+    def test_dim_recovers_from_none_state(self):
+        self._patch_fake_st()
+        emb = self._make_embedder()
+        self.assertEqual(emb.dim, 8)
+        # Simulate the exact state that would have hit the missing _probe_dim:
+        emb._dim = None
+        emb._model = None
+        self.assertEqual(emb.dim, 8)          # lazy reload via _probe_dim
+        self.assertTrue(hasattr(emb, "_probe_dim"))
+
+    def test_embed_paths_recover_from_none_state(self):
+        self._patch_fake_st()
+        emb = self._make_embedder()
+        emb._dim = None
+        emb._model = None
+        docs = emb.embed_documents(["a", "b"])
+        self.assertEqual(len(docs), 2)
+        self.assertEqual(docs[0].shape[0], 8)
+        emb._dim = None
+        emb._model = None
+        self.assertEqual(emb.embed_query("q").shape[0], 8)
+
+
 class TestEmbedderConfig(unittest.TestCase):
     """Test embedder configuration via environment variable."""
     

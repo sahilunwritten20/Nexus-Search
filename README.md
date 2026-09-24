@@ -86,7 +86,7 @@ benchmarking used throughout the development process.
 
 ### Test Status
 
--   48 tests passed (core: tokenizer, storage, indexer, BM25, query parser, API)
+-   48 tests passed (tokenizer 9, storage 10, indexer 6, BM25 11, query features 5, API 7)
 -   0 tests failed
 
 ------------------------------------------------------------------------
@@ -120,8 +120,8 @@ benchmarking used throughout the development process.
 
 ### Test Status
 
--   Full ingestion test suite completed
--   59 tests passed
+-   63 tests passed (chunker 6, code 4, files 6, mime 5, pipeline+dedup+canonical 14, product 11, quality 5, web 11, web metadata 1)
+-   0 tests failed
 
 ------------------------------------------------------------------------
 
@@ -160,14 +160,17 @@ benchmarking used throughout the development process.
 -   Crawl metrics
 -   End-to-end crawler testing
 
-### Test Status
+### Test Status (per test file, measured)
 
--   Frontier tests completed
--   10 Frontier tests passed
--   Core crawler: 27 tests (fetcher, politeness, sitemap, URL utils, scheduler, metrics, DNS pinning)
--   Security/SSRF: 10 tests (security, DNS pinning validation)
--   End-to-end: 5 integration tests (full crawl, depth limit, domain limit, incremental recrawl, private host blocked)
--   Chunk lifecycle + regressions: 24 tests (grouping, cascade delete, crawl-path chunking, index hooks, fetcher/crawler/politeness/dedup regressions)
+-   Frontier: 11 tests
+-   URL utils: 10 tests
+-   Politeness (robots.txt / crawl-delay): 8 tests
+-   Security/SSRF: 6 tests + DNS pinning: 4 tests
+-   Fetcher: 4 tests, Sitemap: 2 tests, Scheduler: 4 tests, Metrics: 5 tests
+-   End-to-end (local test server): 5 integration tests (full crawl, depth limit, domain limit, incremental recrawl, private host blocked)
+-   Chunk lifecycle: 12 tests (grouping, cascade delete, crawl-path chunking, index hooks)
+-   Regressions: 19 tests (fetcher/crawler/politeness/dedup/ingest failure paths)
+-   Phase 3 total: 90 tests, 0 failed
 
 ------------------------------------------------------------------------
 
@@ -218,6 +221,13 @@ benchmarking used throughout the development process.
 -   Search Metadata
 -   Debug Search Explanation
 -   Automated Tests
+
+### Test Status (per test file, measured)
+
+-   Embedder layer: 20 tests (hash embedder, config, determinism; sentence-transformers cases env-gated)
+-   Phase 4 core (hybrid search, fusion math, evaluation metrics, dataset, integration): 18 tests
+-   Audit & validation (vector lifecycle, normalization, weight consistency, dedup merging, fallback, batch embedding, maintenance, concurrency, API wiring): 72 tests
+-   Phase 4 total: 110 tests, 0 failed
 
 ------------------------------------------------------------------------
 

@@ -20,9 +20,18 @@ class PolitenessManager:
         self._lock = threading.Lock()
 
     def register_robots_txt(self, domain: str, content: str):
-        """Call once per domain after fetching (or failing to fetch) /robots.txt.
-        Pass an empty string if the fetch failed — this fails open, matching
-        the convention that a missing robots.txt means "crawling is allowed."
+        """Call once per domain after fetching /robots.txt.
+
+        `content` semantics, as produced by Fetcher.fetch_robots():
+        - ""        -> robots.txt confirmed ABSENT (4xx): fail OPEN, matching
+          the convention that a missing robots.txt means crawling is allowed.
+        - anything  -> parse as robots.txt rules normally.
+        IMPORTANT: an UNREACHABLE robots.txt (5xx, timeout, DNS failure) is
+        NOT passed here as "". The caller (crawler/pipeline.py::_ensure_robots)
+        makes that decision itself and fails CLOSED by registering a
+        synthetic "_ROBOTS_UNREACHABLE" ruleset that disallows the whole
+        domain for the run. This class does not fail open on fetch errors;
+        do not change _ensure_robots without understanding that contract.
         """
         rp = urllib.robotparser.RobotFileParser()
         rp.parse(content.splitlines())
