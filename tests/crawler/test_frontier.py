@@ -189,6 +189,13 @@ class TestFrontier(unittest.TestCase):
             "Wed, 01 Jan 2025 00:00:00 GMT"
         )
 
+    def test_priority_beats_depth_in_next_batch(self):
+        self.frontier.add("https://example.com/low", depth=0, priority=0)
+        self.frontier.add("https://example.com/high", depth=3, priority=10)
+        batch = self.frontier.next_batch(2)
+        self.assertEqual(batch[0].url, "https://example.com/high")
+        self.assertEqual(batch[1].url, "https://example.com/low")
+
     def test_recrawl_due_urls_lists_old_url_without_requeueing(self):
         self.frontier.add(
             "https://example.com/a",
@@ -270,6 +277,42 @@ class TestFrontier(unittest.TestCase):
             data[2],
             '"new"'
         )
+
+
+class TestFrontierPrioritization(unittest.TestCase):
+    """Build-out #19: domain boosts flow into frontier ordering."""
+
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.frontier = Frontier(self.db_path)
+
+    def tearDown(self):
+        self.frontier.close()
+        os.remove(self.db_path)
+
+    def test_boosted_domain_ranked_first(self):
+        self.frontier.add("https://slow.example/a", depth=1, priority=0)
+        self.frontier.add("https://fast.example/b", depth=1, priority=5)
+        first = self.frontier.next_batch(1)[0]
+        self.assertEqual(first.url, "https://fast.example/b")
+
+    def test_equal_priority_falls_back_to_depth_asc(self):
+        self.frontier.add("https://x.example/deep", depth=2, priority=0)
+        self.frontier.add("https://x.example/shallow", depth=1, priority=0)
+        first = self.frontier.next_batch(1)[0]
+        self.assertEqual(first.url, "https://x.example/shallow")
+
+    def test_pipeline_applies_domain_boost(self):
+        from nexus_search.crawler.pipeline import CrawlPipeline
+        pipe = CrawlPipeline(
+            db_path=self.db_path,
+            allow_private_hosts=True,
+            domain_boosts={"vip.example": 7},
+        )
+        self.assertEqual(pipe._url_priority("vip.example"), 7)
+        self.assertEqual(pipe._url_priority("random.example"), 0)
+        pipe.close()
 
 
 if __name__ == "__main__":

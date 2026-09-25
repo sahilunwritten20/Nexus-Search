@@ -33,6 +33,14 @@ def default_ingest(url: str, title: str, text: str, metadata: dict) -> None:
 
 
 class CrawlPipeline:
+    """The crawler. NOTE on scale/fairness (deliberate, documented limit):
+    politeness and per-domain counters (`domain_lock`, `domain_counts`) are
+    IN-PROCESS. Two crawler processes pointed at the same DB frontier share
+    queued URLs but do NOT coordinate crawl-delay — running N workers → N×
+    the request rate a site owner agreed to. Run one process per crawl, or
+    move coordination to a shared store (see Phase 8's distributed plan;
+    blocking fix is out of scope here by explicit design)."""
+
     def __init__(
         self,
         db_path: str = "crawler.db",
@@ -45,8 +53,28 @@ class CrawlPipeline:
         recrawl_interval: float = 0,
         allow_private_hosts: bool = False,
         default_crawl_delay: float = 1.0,
-        user_agent: str = DEFAULT_USER_AGENT,
+        user_agent: Optional[str] = None,
+        domain_boosts: Optional[dict[str, int]] = None,
+        render_js: bool = False,
     ):
+        # queue-order tuning: priority = base + domain boost. "Important"
+        # sources outrank long-tail discoveries at thousands of queued URLs
+        # (the frontier alone is FIFO-by-depth). Freshness need adds on for
+        # recrawls (stale visited pages requeue above fresh ones).
+        self.domain_boosts = domain_boosts or {}
+        # A crawler that can't identify itself is not welcome on the public
+        # web: refuse to run production crawls with a placeholder/no UA.
+        # With allow_private_hosts=True (local dev & tests) we still default,
+        # but LOUDLY.
+        if not user_agent or "example.com/bot" in user_agent:
+            if not allow_private_hosts:
+                raise ValueError(
+                    "crawler user_agent must be set to a real bot contact "
+                    "(crawler_config.yaml or --user-agent); the placeholder "
+                    "is refused on the public crawl path")
+            logger.warning("no real user_agent configured; using placeholder "
+                           "(allowed only because allow_private_hosts=True)")
+            user_agent = DEFAULT_USER_AGENT
         self.frontier = Frontier(db_path)
         self.politeness = PolitenessManager(
             user_agent=user_agent.split()[0].split("/")[0],  # robots.txt product token
@@ -57,6 +85,7 @@ class CrawlPipeline:
             user_agent=user_agent,
             url_validator=None if allow_private_hosts else validate_url,  # checks redirect hops too
             dns_pin=None if allow_private_hosts else pin_dns_for_url,  # closes DNS-rebinding window
+            render_js=render_js,
         )
         self.allowed_domains = set(allowed_domains or [])
         self.max_pages = max_pages
@@ -215,9 +244,18 @@ class CrawlPipeline:
                 # URL is actually processed (one lookup per fetch, not per link).
                 if urlsplit(link).scheme not in ("http", "https"):
                     continue
-                if not self._domain_allowed(get_domain(link)):
+                link_domain = get_domain(link)
+                if not self._domain_allowed(link_domain):
                     continue
-                self.frontier.add(link, depth=entry.depth + 1, base=entry.url)
+                self.frontier.add(link, depth=entry.depth + 1, base=entry.url,
+                                  priority=self._url_priority(link_domain))
+
+    def _url_priority(self, domain: str) -> int:
+        """Discovered-link priority: config boost per domain. Kept deliberately
+        simple — a real learned/authority model is Phase 6's link graph, and a
+        hand-tuned placeholder precariously close to "completeness theater"
+        would say so instead of pretending to be one."""
+        return int(self.domain_boosts.get(domain, 0))
 
     # ---------------------------------------------------------------- run
 

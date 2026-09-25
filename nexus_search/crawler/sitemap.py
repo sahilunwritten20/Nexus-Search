@@ -28,3 +28,61 @@ def parse_sitemap(xml_text: str) -> list[str]:
 def parse_sitemap_index(xml_text: str) -> list[str]:
     """Child sitemap URLs from a <sitemapindex>."""
     return _locs(xml_text, "{*}sitemap/{*}loc")
+
+
+def parse_sitemap_extended(xml_text: str) -> list[dict]:
+    """A <urlset> including news:news and video:video extension metadata.
+
+    Returns [{"loc", "news"?: {...}, "video"?: [...]}]. The bare <loc> list
+    is unchanged in semantic — extensions enrich, they don't filter. Missing
+    or malformed extension blocks simply don't appear (parse never raises)."""
+    root = _root(xml_text)
+    if root is None:
+        return []
+    out: list[dict] = []
+    for url_el in root.findall("{*}url"):
+        loc_el = url_el.find("{*}loc")
+        if loc_el is None or not loc_el.text or not loc_el.text.strip():
+            continue
+        entry: dict = {"loc": loc_el.text.strip()}
+        news_el = url_el.find(
+            "{http://www.google.com/schemas/sitemap-news/0.9}news")
+        if news_el is not None:
+            news: dict = {}
+            title_el = news_el.find(
+                "{http://www.google.com/schemas/sitemap-news/0.9}title")
+            pub_el = news_el.find(
+                "{http://www.google.com/schemas/sitemap-news/0.9}publication_date")
+            pub_name_el = news_el.find(
+                "{http://www.google.com/schemas/sitemap-news/0.9}publication/"
+                "{http://www.google.com/schemas/sitemap-news/0.9}name")
+            if title_el is not None and title_el.text:
+                news["title"] = title_el.text
+            if pub_el is not None and pub_el.text:
+                news["publication_date"] = pub_el.text
+            if pub_name_el is not None and pub_name_el.text:
+                news["publication"] = pub_name_el.text
+            if news:
+                entry["news"] = news
+        videos = []
+        for vid_el in url_el.findall(
+                "{http://www.google.com/schemas/sitemap-video/1.1}video"):
+            video: dict = {}
+            t_el = vid_el.find(
+                "{http://www.google.com/schemas/sitemap-video/1.1}title")
+            thumb_el = vid_el.find(
+                "{http://www.google.com/schemas/sitemap-video/1.1}thumbnail_loc")
+            dur_el = vid_el.find(
+                "{http://www.google.com/schemas/sitemap-video/1.1}duration")
+            if t_el is not None and t_el.text:
+                video["title"] = t_el.text
+            if thumb_el is not None and thumb_el.text:
+                video["thumbnail"] = thumb_el.text
+            if dur_el is not None and dur_el.text:
+                video["duration"] = dur_el.text
+            if video:
+                videos.append(video)
+        if videos:
+            entry["video"] = videos
+        out.append(entry)
+    return list({e["loc"]: e for e in out}.values())  # dedupe by loc, keep first

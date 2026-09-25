@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 
 from nexus_search.crawler.url_utils import get_domain, normalize_url
@@ -53,6 +55,41 @@ class TestGetDomain(unittest.TestCase):
 
     def test_lowercases(self):
         self.assertEqual(get_domain("https://Example.COM/x"), "example.com")
+
+
+class TestTrackingParams(unittest.TestCase):
+    """utm_/fbclid/gclid etc. are stripped at normalization (build-out #20)."""
+
+    def test_utm_params_stripped(self):
+        self.assertEqual(
+            normalize_url("https://x.com/p?utm_source=nw&utm_medium=email"),
+            "https://x.com/p",
+        )
+
+    def test_fbclid_gclid_stripped(self):
+        self.assertEqual(
+            normalize_url("https://x.com/p?fbclid=abc&gclid=def"),
+            "https://x.com/p",
+        )
+
+    def test_real_params_kept(self):
+        self.assertEqual(
+            normalize_url("https://x.com/p?id=1&utm_campaign=x&q=2"),
+            "https://x.com/p?id=1&q=2",
+        )
+
+    def test_tracking_variants_collapse_to_one_frontier_entry(self):
+        fdb = os.path.join(tempfile.mkdtemp(), "f.db")
+        from nexus_search.crawler.frontier import Frontier
+        fr = Frontier(fdb)
+        try:
+            first = fr.add("https://example.com/p?utm_source=a", depth=0)
+            second = fr.add("https://example.com/p?fbclid=zzz", depth=0)
+            bare = fr.add("https://example.com/p", depth=0)
+            self.assertEqual([first, second, bare], [True, False, False])
+            self.assertEqual(fr.pending_count(), 1)
+        finally:
+            fr.close()
 
 
 if __name__ == "__main__":

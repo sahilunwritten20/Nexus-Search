@@ -46,14 +46,43 @@ class Fetcher:
         url_validator: Optional[Callable[[str], bool]] = None,
         max_bytes: int = MAX_BYTES,
         dns_pin: Optional[Callable[[str], ContextManager]] = None,
+        render_js: bool = False,
     ):
         self.timeout = timeout
         self.max_retries = max_retries
         self.url_validator = url_validator  # e.g. security.validate_url
         self.max_bytes = max_bytes
         self.dns_pin = dns_pin  # e.g. security.pin_dns_for_url
+        self.render_js = render_js  # opt-in headless-browser path (SPA sites)
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
+
+    def _render_with_browser(self, url: str) -> Optional[str]:
+        """Headless-browser render for JS-heavy pages (Playwright).
+
+        Deliberately OPTIONAL: Playwright+Chromium is a heavyweight browser,
+        not a test dependency. If it isn't installed, we log the limitation
+        and return None so the caller falls back to the plain HTTP body —
+        honest degradation, matching the OCR path's stance (no fake DOM)."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.warning("render_js=True but playwright is not installed; "
+                           "falling back to plain HTTP GET for %s", url)
+            return None
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(user_agent=str(self.session.headers.get("user-agent")))
+                    page.goto(url, timeout=int(self.timeout * 1000),
+                              wait_until="networkidle")
+                    return page.content()
+                finally:
+                    browser.close()
+        except Exception as exc:
+            logger.warning("JS render failed for %s: %s", url, exc)
+            return None
 
     # ---------------------------------------------------------- internals
 
@@ -165,6 +194,12 @@ class Fetcher:
                     )
 
                 html = self._read_text(resp)
+                if self.render_js and html:
+                    # Plain HTML always comes first; only a JS render attempt
+                    # REPLACES it when the browser path actually produced one.
+                    rendered = self._render_with_browser(final_url)
+                    if rendered is not None and len(rendered.encode("utf-8", "ignore")) <= self.max_bytes:
+                        html = rendered
                 return FetchResult(
                     url=url, status_code=status, html=html, error=None, elapsed=elapsed,
                     etag=resp_etag, last_modified=resp_lm, final_url=final_url,

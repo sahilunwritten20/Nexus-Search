@@ -85,6 +85,7 @@ class TestDnsPinning(unittest.TestCase):
         pipe = CrawlPipeline(
             db_path=os.path.join(tempfile.mkdtemp(), "f.db"), allow_private_hosts=False,
             max_pages=3, max_depth=0, concurrency=1, default_crawl_delay=0.0,
+            user_agent="NexusSearchBot/0.1 (+https://nexus-search.example/bot)",
             ingest_fn=lambda u, t, x, m: titles.append(t),
         )
         with mock.patch.object(security, "_real_getaddrinfo", self._fake_dns(["127.0.0.1"])), \

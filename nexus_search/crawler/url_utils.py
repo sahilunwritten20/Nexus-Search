@@ -29,10 +29,27 @@ def normalize_url(url: str, base: str | None = None) -> str:
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
 
-    query_pairs = sorted(parse_qsl(parts.query, keep_blank_values=True))
+    # Tracking params are pure noise — they change nothing server-side but
+    # would each queue a "new" URL otherwise (post-fetch hash dedup was the
+    # only guard, after paying for the fetch). Strip them at canonicalization.
+    query_pairs = [
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not _is_tracking_param(k)
+    ]
+    query_pairs.sort()
     query = urlencode(query_pairs)
 
     return urlunsplit((scheme, netloc, path, query, ""))
+
+
+_TRACKING_PREFIXES = ("utm_",)
+_TRACKING_EXACT = {"gclid", "fbclid", "dclid", "msclkid", "mc_cid", "mc_eid",
+                   "igshid", "ref", "spm", "yclid", "wickedid", "ttclid"}
+
+
+def _is_tracking_param(name: str) -> bool:
+    n = name.lower()
+    return n.startswith(_TRACKING_PREFIXES) or n in _TRACKING_EXACT
 
 
 def get_domain(url: str) -> str:
