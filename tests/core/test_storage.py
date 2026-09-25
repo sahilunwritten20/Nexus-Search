@@ -69,6 +69,28 @@ class TestStorage(unittest.TestCase):
     def test_average_length_empty_corpus(self):
         self.assertEqual(self.storage.average_length(), 0.0)
 
+    def test_upsert_with_postings_is_atomic(self):
+        """A failure mid-postings-insert must roll back BOTH the document row
+        and any postings rows already written in that transaction."""
+        # A None term in the batch makes sqlite fail on the SECOND
+        # executemany row — after the document row AND the first postings row
+        # have already been written inside the transaction. Genuine failure,
+        # nothing mocked.
+        with self.assertRaises(Exception):
+            self.storage.upsert_document_with_postings(
+                "boom", "T", "content about ok", "text", 2, {},
+                term_freqs={"ok": 1, None: 1},
+            )
+        # row must NOT be left behind half-written
+        self.assertIsNone(self.storage.get_document("boom"))
+        self.assertEqual(self.storage.postings_for_term("ok"), [])
+
+        # sanity: the normal path still works, and DB is usable after rollback
+        self.storage.upsert_document_with_postings(
+            "ok", "T", "content", "text", 1, {}, {"ok": 1})
+        self.assertIsNotNone(self.storage.get_document("ok"))
+        self.assertEqual(self.storage.postings_for_term("ok"), [("ok", 1)])
+
     def test_average_length_computed_correctly(self):
         self.storage.upsert_document("d1", "T", "C", "text", 10, {})
         self.storage.upsert_document("d2", "T", "C", "text", 20, {})

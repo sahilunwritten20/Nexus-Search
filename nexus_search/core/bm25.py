@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .filters import matches_filters
-from .query_parser import parse_query
+from .query_parser import boolean_match, parse_query
 from .storage import Storage
 from .tokenizer import tokenize
 
@@ -153,11 +153,17 @@ class BM25Search:
         ranked = []
         for doc_id, score in scores.items():
             doc = get(doc_id)
+            doc_tokens_cache = None
             if phrases:  # quoted phrases are REQUIRED, matched as token sequences
-                doc_tokens = tokenize(f"{doc.title} {doc.content}")
-                if not all(self._has_phrase(doc_tokens, ph) for ph in phrases):
+                doc_tokens_cache = tokenize(f"{doc.title} {doc.content}")
+                if not all(self._has_phrase(doc_tokens_cache, ph) for ph in phrases):
                     continue
                 score *= PHRASE_BOOST ** len(phrases)
+            if parsed.has_boolean:
+                if doc_tokens_cache is None:
+                    doc_tokens_cache = tokenize(f"{doc.title} {doc.content}")
+                if not boolean_match(parsed, doc_tokens_cache, tokenize(doc.title)):
+                    continue
             if unique_terms:
                 title_terms = set(tokenize(doc.title))
                 hits = sum(1 for t in unique_terms if t in title_terms)

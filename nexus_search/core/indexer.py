@@ -48,13 +48,13 @@ class Indexer:
         same doc_id replaces its previous content and postings entirely."""
         tokens = tokenize(f"{title} {content}")
         term_freqs = Counter(tokens)
-        with self.storage.lock:  # API threads / crawler workers share one connection
-            self.storage.upsert_document(
-                doc_id=doc_id, title=title, content=content, doc_type=doc_type,
-                length=len(tokens), metadata=metadata or {},
-            )
-            self.storage.add_postings(doc_id, dict(term_freqs))
-            self.storage.commit()
+        # one explicit transaction: the document row and its postings are
+        # written atomically (crash-proof against a shared connection's
+        # commit landing between the two writes)
+        self.storage.upsert_document_with_postings(
+            doc_id=doc_id, title=title, content=content, doc_type=doc_type,
+            length=len(tokens), metadata=metadata or {}, term_freqs=dict(term_freqs),
+        )
         self._emit("indexed", doc_id)
 
     def delete_document(self, doc_id: str) -> bool:

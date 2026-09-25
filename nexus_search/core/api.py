@@ -9,10 +9,12 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.security.api_key import APIKeyHeader
 
 from .bm25 import BM25Search
 from .embedders import HashEmbedder, EmbedderUnavailable
+from .query_cache import QueryCache
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
 from ..ranking.ranker import RankingWeights, rerank as rerank_results
@@ -74,6 +76,9 @@ except Exception as exc:  # logging must never take search down
     logger.warning("Experiment log unavailable: %s", exc)
     experiment_log = None
 
+# Query cache: TTL-bounded, and cleared on every write (see query_cache.py)
+_query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5")))
+
 
 def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
                        reason: str) -> SearchResponse:
@@ -110,22 +115,46 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
     )
 
 
-@app.post("/documents", status_code=201)
+# ---------------------------------------------------------------------------
+# AuthN: write endpoints require an API key when NEXUS_API_KEY is set.
+# Read-only /search and friends stay open (aligns with how this prototype is
+# meant to be embedded). If NEXUS_API_KEY is unset the app runs OPEN — that is
+# deliberate for local dev, and it is LOUD, not silent:
+_API_KEY = os.environ.get("NEXUS_API_KEY", "")
+if not _API_KEY:
+    logger.warning("NEXUS_API_KEY is not set — write endpoints are UNAUTHENTICATED "
+                   "(dev mode). Set it before exposing this API beyond localhost.")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
+    """401 when the server is configured with a key and the caller's doesn't
+    match. Constant-time compare; missing config = open dev mode."""
+    if not _API_KEY:
+        return  # dev mode, open by explicit configuration
+    import hmac
+    if api_key is None or not hmac.compare_digest(api_key, _API_KEY):
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+
+
+@app.post("/documents", status_code=201, dependencies=[Depends(require_api_key)])
 def add_document(doc: DocumentIn):
     try:
         _indexer.add_document(
             doc_id=doc.doc_id, content=doc.content, title=doc.title,
             doc_type=doc.doc_type, metadata=doc.metadata,
         )
+        _query_cache.clear()  # writes invalidate cached pages
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
     return {"doc_id": doc.doc_id, "status": "indexed"}
 
 
-@app.delete("/documents/{doc_id}")
+@app.delete("/documents/{doc_id}", dependencies=[Depends(require_api_key)])
 def delete_document(doc_id: str):
     if not _indexer.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="Document not found")
+    _query_cache.clear()  # writes invalidate cached pages
     return {"doc_id": doc_id, "status": "deleted"}
 
 
@@ -194,22 +223,32 @@ def search(
     )
 
     search_mode = SearchMode(mode)
-    page = hybrid_searcher.search_page(
-        q, top_k=top_k, offset=offset, mode=search_mode,
-        fusion=fusion, candidates=candidates, debug=debug,
-        sort=sort, highlight=highlight,
+
+    cache_key = QueryCache.key_of(
+        q, top_k=top_k, offset=offset, mode=mode, bm25_weight=bm25_weight,
+        vector_weight=vector_weight, fusion=fusion, candidates=candidates,
+        debug=debug, sort=sort, highlight=highlight, rerank=rerank_flag,
     )
+    cached_page = _query_cache.get(cache_key)
+    if cached_page is not None:
+        page = cached_page
+    else:
+        page = hybrid_searcher.search_page(
+            q, top_k=top_k, offset=offset, mode=search_mode,
+            fusion=fusion, candidates=candidates, debug=debug,
+            sort=sort, highlight=highlight,
+        )
+        _query_cache.set(cache_key, page)
 
     # Phase 5 OPT-IN re-ranking. rerank=False (the default) is a strict no-op:
     # the page from search_page is returned byte-for-byte unchanged.
+    import dataclasses
     results = page.results
     if rerank_flag:
         understanding = understand_query(q, _storage)
         ranked = rerank_results(results, q, storage=_storage, understanding=understanding)
-        results = [rr.result for rr in ranked]
-        # re-order done; replace scores with blended final scores
-        for out_result, ranked_result in zip(results, ranked):
-            out_result.score = ranked_result.final_score
+        # copy, never mutate: page.results may be a cached object
+        results = [dataclasses.replace(rr.result, score=rr.final_score) for rr in ranked]
         if page.metadata is not None:
             page.metadata = {**page.metadata, "reranked": True}
         if experiment_log is not None:

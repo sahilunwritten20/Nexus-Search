@@ -12,7 +12,7 @@ from .embedders import EmbedderUnavailable
 from .embedding_sync import EmbeddingSync  # noqa: F401  (type hint for __init__)
 from .filters import matches_filters
 from .normalize import min_max_normalize
-from .query_parser import parse_query
+from .query_parser import boolean_match, parse_query
 from .storage import Storage
 from .tokenizer import tokenize
 from .vector_store import VectorStoreManager
@@ -213,11 +213,41 @@ class HybridSearch:
                 doc_tokens = tokenize(f"{doc.title} {doc.content}")
                 if not all(BM25Search._has_phrase(doc_tokens, ph) for ph in phrase_tokens):
                     continue  # Skip docs that don't contain required phrases
+            # Boolean structure (NOT/AND/title:) applies on BOTH retrievers —
+            # a query filter must not behave differently depending on which
+            # half of the fusion produced the hit.
+            if parsed.has_boolean:
+                doc = self.storage.get_document(vr.doc_id)
+                if doc is None:
+                    continue
+                doc_tokens = tokenize(f"{doc.title} {doc.content}")
+                if not boolean_match(parsed, doc_tokens, tokenize(doc.title)):
+                    continue
             if parent not in results or vr.score > results[parent][0]:
                 results[parent] = (vr.score, vr.doc_id)
         return results
 
     # -------------------------------------------------------------- merge
+
+    def _diversify(self, merged: list[HybridSearchResult], diversity: float,
+                   threshold: float = 0.85) -> list[HybridSearchResult]:
+        """MMR pass (core/diversity.py). diversity∈(0,1]: higher = novelty wins
+        harder. Ran AFTER sorting, BEFORE slicing, so diversity affects which
+        items occupy the returned page."""
+        from .diversity import mmr_select
+        lambda_ = max(0.0, 1.0 - diversity)
+
+        def text_of(r):
+            # CONTENT is the diversity signal, not title chrome: near-mirror
+            # documents routinely differ only by a running index in the title
+            # ("Fox variant 1" vs "Fox variant 2"), and including titles lets
+            # copy-farms slip under the Jaccard threshold.
+            doc = self.storage.get_document(r.doc_id)
+            return doc.content if doc else r.title
+
+        selected = mmr_select(merged, text_of, lambda_=lambda_,
+                              similarity_threshold=threshold)
+        return [s.result for s in selected]
 
     def _vector_only_snippet(self, doc, parsed, highlight: bool = False) -> str:
         """Query-focused snippet for vector-only hits — same helper BM25 uses."""
@@ -343,6 +373,7 @@ class HybridSearch:
         understanding=None,
         sort: str = "relevance",
         highlight: bool = False,
+        diversity: float = 0.0,
     ) -> HybridSearchPage:
         """`understanding` (Phase 5 QueryUnderstanding) is OPT-IN: when given,
         retrieval uses its corrected/expanded effective terms (phrases and
@@ -360,18 +391,27 @@ class HybridSearch:
         allowed_filter = self._build_allowed_filter(parsed)
 
         if mode == SearchMode.KEYWORD:
-            if sort in (None, "relevance"):
+            need_pool = sort not in (None, "relevance") or diversity > 0.0
+            if not need_pool:
                 # exact pre-Phase-5 path: BM25 slices offset/top_k itself
                 page = self.bm25_search.search_page(query, top_k=top_k, offset=offset,
                                                     group_chunks=group_chunks, highlight=highlight)
                 page_results = page.results
             else:
-                # Non-relevance sort: order the full candidate pool first
-                # (bounded by `candidates`), then slice the page out of it.
+                # Sort/diversity need the full candidate pool first (bounded
+                # by `candidates`), then the page comes out of it.
                 pool_k = max(self._candidate_k(top_k, candidates), offset + top_k)
                 page = self.bm25_search.search_page(query, top_k=pool_k, offset=0,
                                                     group_chunks=group_chunks, highlight=highlight)
-                page_results = self._sort_raw(page.results, sort)[offset:offset + top_k]
+                pool_results = page.results
+                if diversity > 0.0:
+                    interim = [HybridSearchResult(
+                        doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
+                        doc_type=r.doc_type, metadata=r.metadata, chunk_id=r.chunk_id,
+                        matched_chunks=r.matched_chunks, bm25_score=r.score, source="bm25",
+                    ) for r in pool_results]
+                    pool_results = self._diversify(interim, diversity)
+                page_results = self._sort_raw(pool_results, sort)[offset:offset + top_k]
             results = [
                 HybridSearchResult(
                     doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
@@ -420,12 +460,15 @@ class HybridSearch:
                         vector_normalized=vector_contrib,
                     ))
             merged = self._sort_raw(merged, sort)
+            if diversity > 0.0:
+                merged = self._diversify(merged, diversity)
             return HybridSearchPage(
                 total=len(merged),
                 results=merged[offset:offset + top_k],
                 metadata=self._meta(mode.value, original_mode, start_time,
                                     vector_candidates=len(vector_results),
-                                    merged_candidates=len(merged), fusion=fusion, sort=sort),
+                                    merged_candidates=len(merged), fusion=fusion,
+                                    sort=sort),
             )
 
         # SearchMode.HYBRID
@@ -452,6 +495,8 @@ class HybridSearch:
         merged = self._merge_results(bm25_results, vector_results, fusion=fusion,
                                      parsed=parsed, highlight=highlight)
         merged = self._sort_raw(merged, sort)
+        if diversity > 0.0:
+            merged = self._diversify(merged, diversity)
         if not debug:
             # strip diagnostic numbers unless asked for
             for r in merged:

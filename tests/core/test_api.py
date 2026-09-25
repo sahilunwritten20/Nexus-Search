@@ -59,6 +59,51 @@ class TestApi(unittest.TestCase):
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestApiAuth(unittest.TestCase):
+    """API-key auth on write endpoints (NEXUS_API_KEY). Real HTTP layer."""
+
+    def setUp(self):
+        import importlib
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "auth.db")
+        os.environ["NEXUS_API_KEY"] = "test-secret-key"
+        from nexus_search.core import api
+        importlib.reload(api)
+        self.client = TestClient(api.app)
+
+    def tearDown(self):
+        import importlib
+        os.environ.pop("NEXUS_API_KEY", None)
+        from nexus_search.core import api
+        importlib.reload(api)  # restore open/default state for other tests
+
+    def test_write_without_key_is_401(self):
+        self.assertEqual(self.client.post("/documents", json={"doc_id": "x", "content": "c"}).status_code, 401)
+
+    def test_write_with_wrong_key_is_401(self):
+        r = self.client.post("/documents", json={"doc_id": "x", "content": "c"},
+                             headers={"X-API-Key": "wrong"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_write_with_key_is_201(self):
+        r = self.client.post("/documents", json={"doc_id": "x", "content": "c"},
+                             headers={"X-API-Key": "test-secret-key"})
+        self.assertEqual(r.status_code, 201)
+
+    def test_delete_requires_key(self):
+        self.client.post("/documents", json={"doc_id": "x", "content": "c"},
+                         headers={"X-API-Key": "test-secret-key"})
+        self.assertEqual(self.client.delete("/documents/x").status_code, 401)
+        self.assertEqual(self.client.delete("/documents/x",
+                                            headers={"X-API-Key": "test-secret-key"}).status_code, 200)
+
+    def test_reads_stay_open_without_key(self):
+        self.client.post("/documents", json={"doc_id": "x", "content": "alpha"},
+                         headers={"X-API-Key": "test-secret-key"})
+        self.assertEqual(self.client.get("/search", params={"q": "alpha"}).status_code, 200)
+        self.assertEqual(self.client.get("/health").status_code, 200)
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
 class TestApiPhase5Ux(unittest.TestCase):
     """Phase 5 Stage 4 API surface: /suggest, /related, facets, sort, highlight,
     cursor pagination, has_more. Real HTTP layer (TestClient), not internals."""

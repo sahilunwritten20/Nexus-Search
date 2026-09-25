@@ -48,12 +48,17 @@ class Storage:
     """
 
     def __init__(self, db_path: str = "nexus_search.db"):
+        from .migrations import apply_migrations
+
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.lock = threading.RLock()
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        # Schema comes up through the migration runner: v1 is the baseline
+        # schema; future column changes become v2, v3, ... (see migrations.py)
+        self.schema_version = apply_migrations(
+            self.conn, "storage", [(1, SCHEMA)]
+        )
 
     def upsert_document(
         self, doc_id: str, title: str, content: str, doc_type: str, length: int, metadata: dict
@@ -78,6 +83,37 @@ class Storage:
                 "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
                 [(term, doc_id, freq) for term, freq in term_freqs.items()],
             )
+
+    def upsert_document_with_postings(
+        self, doc_id: str, title: str, content: str, doc_type: str, length: int,
+        metadata: dict, term_freqs: dict[str, int],
+    ):
+        """Atomic document+postings write. An explicit BEGIN IMMEDIATE /
+        COMMIT (ROLLBACK on any failure) guards against the real hazard of
+        the split upsert+postings path: this connection is SHARED across
+        threads, and any other operation's commit() would otherwise make a
+        half-written doc (row present, postings missing) durable."""
+        with self.lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(doc_id) DO UPDATE SET "
+                    "title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, "
+                    "length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at",
+                    (doc_id, title, content, doc_type, length, json.dumps(metadata), time.time()),
+                )
+                self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+                if term_freqs:
+                    self.conn.executemany(
+                        "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
+                        [(term, doc_id, freq) for term, freq in term_freqs.items()],
+                    )
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            self.conn.execute("COMMIT")
 
     def commit(self):
         with self.lock:
