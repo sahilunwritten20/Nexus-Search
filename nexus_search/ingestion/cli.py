@@ -16,7 +16,9 @@ from .connectors.code import iter_code
 from .connectors.files import iter_files
 from .connectors.product import iter_products
 from .dedup import Deduplicator
-from .pipeline import ingest_documents
+from .failures import FailureQueue
+from .history import ContentHistory
+from .pipeline import ingest_documents, ingest_one
 
 
 def main():
@@ -26,6 +28,10 @@ def main():
     parser.add_argument("--db", default="nexus_search.db")
     parser.add_argument("--min-quality", type=float, default=None, help="Skip docs scoring below this (0-1)")
     parser.add_argument("--chunk-size", type=int, default=None, help="Split long docs into ~N-char chunks")
+    parser.add_argument("--list-failures", action="store_true",
+                        help="List dead-lettered ingestions and exit")
+    parser.add_argument("--replay-failures", action="store_true",
+                        help="Re-run due dead-lettered items and exit")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -33,6 +39,23 @@ def main():
     storage = Storage(args.db)
     indexer = Indexer(storage)
     dedup = Deduplicator(args.db)
+    failures = FailureQueue(args.db)
+
+    if args.list_failures:
+        rows = failures.list_all()
+        for r in rows:
+            print(f"#{r.id} {r.doc_id} attempts={r.attempts} error={r.error}")
+        print(f"{len(rows)} dead-lettered")
+        failures.close(); storage.close(); dedup.close()
+        return
+    if args.replay_failures:
+        def _retry(doc):
+            ingest_one(doc, indexer, dedup, min_quality=args.min_quality,
+                       chunk_size=args.chunk_size)
+        stats = failures.replay(_retry)
+        print(f"Replay: {stats}")
+        failures.close(); storage.close(); dedup.close()
+        return
     vector_store = VectorStoreManager(args.db)
     sync = create_embedding_sync(vector_store, batch_size=32)
     sync.attach(indexer)
@@ -44,9 +67,14 @@ def main():
     else:
         docs = iter_products(args.path)
 
-    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality, chunk_size=args.chunk_size)
+    history = ContentHistory(args.db)
+    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality,
+                             chunk_size=args.chunk_size, failure_queue=failures,
+                             history=history)
     print(f"Done: {stats}")
 
+    history.close()
+    failures.close()
     sync.flush()
     sync.close()
     storage.close()

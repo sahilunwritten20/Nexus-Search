@@ -1,6 +1,7 @@
 """Content-hash deduplication that survives updates and deletes."""
 import hashlib
 import sqlite3
+from typing import Optional
 
 
 def content_hash(text: str) -> str:
@@ -50,6 +51,12 @@ class Deduplicator:
             self.conn.commit()
             return False
         return True
+
+    def hash_of(self, doc_id: str) -> Optional[str]:
+        """The hash this doc_id is currently registered under, or None."""
+        row = self.conn.execute(
+            "SELECT hash FROM content_hashes WHERE doc_id = ?", (doc_id,)).fetchone()
+        return row[0] if row else None
 
     def register(self, text: str, doc_id: str):
         """Record this doc's current content; drops the doc's previous hash."""

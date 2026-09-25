@@ -28,6 +28,65 @@ class ExtractedPage:
     meta_description: Optional[str]
     language: Optional[str]
     canonical_url: Optional[str]
+    structured: Optional[dict] = None  # JSON-LD / OpenGraph / twitter-card fields
+
+
+def _extract_structured(soup: BeautifulSoup) -> dict:
+    """Pull schema.org JSON-LD + OpenGraph fields into a flat dict.
+
+    Only commonly-useful scalar fields surface into metadata (title,
+    description, image, price, author, published); the full parsed JSON-LD
+    blobs stay in `json_ld` for anything downstream that wants more."""
+    import json as _json
+
+    out: dict = {}
+    og: dict = {}
+    for tag in soup.find_all("meta"):
+        prop = tag.get("property") or tag.get("name") or ""
+        content = tag.get("content")
+        if not content:
+            continue
+        if prop.startswith("og:"):
+            og[prop[3:]] = content
+        elif prop.startswith("twitter:"):
+            og.setdefault(prop[8:], content)
+        elif prop in ("author", "article:published_time", "date",
+                      "datePublished", "pubdate"):
+            out[prop] = content
+    if og:
+        out["og"] = og
+
+    json_ld = []
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        if not tag.string or not tag.string.strip():
+            continue
+        try:
+            data = _json.loads(tag.string)
+            if isinstance(data, list):
+                json_ld.extend(d for d in data if isinstance(d, dict))
+            elif isinstance(data, dict):
+                json_ld.append(data)
+        except _json.JSONDecodeError:
+            continue
+    if json_ld:
+        out["json_ld"] = json_ld
+        for blob in json_ld:
+            for key in ("name", "headline"):
+                if key in blob and "title" not in out:
+                    out["title"] = str(blob[key])
+            offers = blob.get("offers")
+            if isinstance(offers, dict) and offers.get("price") is not None:
+                out["price"] = str(offers.get("price"))
+                if offers.get("priceCurrency"):
+                    out["currency"] = str(offers["priceCurrency"])
+            author = blob.get("author")
+            if isinstance(author, dict) and author.get("name"):
+                out["author"] = str(author["name"])
+            elif isinstance(author, str):
+                out["author"] = author
+            if blob.get("datePublished"):
+                out["published"] = str(blob["datePublished"])
+    return out
 
 
 def _main_text(soup: BeautifulSoup) -> str:
@@ -79,19 +138,27 @@ def extract_page(html: str, url: str) -> ExtractedPage:
             seen.add(absolute)
             links.append(absolute)
 
+    structured = _extract_structured(soup)
+
     return ExtractedPage(url=url, title=title, text=text, links=links,
-                          meta_description=meta_description, language=language, canonical_url=canonical_url)
+                          meta_description=meta_description, language=language,
+                          canonical_url=canonical_url,
+                          structured=structured)
 
 
 def parse_html(html: str, url: str) -> IngestDoc:
     """What standalone ingestion needs: just the indexable document, no
     link-graph info (that's the crawler's concern, not the indexer's).
-    """
+    Structured fields (JSON-LD/OpenGraph/title/price/author/published) ride
+    in metadata["structured"] for ranking/facet use without polluting the
+    searchable body text."""
     page = extract_page(html, url)
     return IngestDoc(
         doc_id=f"web:{url}",
         title=page.title,
         content=page.text,
         doc_type="web",
-        metadata={"url": url, "canonical_url": page.canonical_url or url, "meta_description": page.meta_description, "language": page.language},
+        metadata={"url": url, "canonical_url": page.canonical_url or url,
+                  "meta_description": page.meta_description, "language": page.language,
+                  **({"structured": page.structured} if page.structured else {})},
     )

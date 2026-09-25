@@ -88,5 +88,53 @@ class TestParseHtml(unittest.TestCase):
         self.assertEqual(doc.metadata["url"], "https://example.com/test")
 
 
+class TestStructuredData(unittest.TestCase):
+    """JSON-LD + OpenGraph extraction into metadata ("structured" key)."""
+
+    HTML = """<html><head>
+        <title>Test Page</title>
+        <meta property="og:title" content="OG Title" />
+        <meta property="og:image" content="https://x/img.png" />
+        <meta name="author" content="Jane Doe" />
+        <script type="application/ld+json">
+        {"@type": "Product", "name": "Widget", "offers": {"price": "9.99", "priceCurrency": "USD"},
+         "datePublished": "2024-01-01"}
+        </script>
+        </head><body><article><p>Real body content here, long enough to pass.</p></article></body></html>"""
+
+    def test_json_ld_fields_extracted(self):
+        page = parse_html(self.HTML, "https://example.com/p")
+        s = page.metadata["structured"]
+        self.assertEqual(s["price"], "9.99")
+        self.assertEqual(s["currency"], "USD")
+        self.assertEqual(s["title"], "Widget")  # name from JSON-LD
+        self.assertEqual(s["published"], "2024-01-01")
+        self.assertEqual(s["json_ld"][0]["@type"], "Product")
+
+    def test_opengraph_and_meta_author_extracted(self):
+        page = parse_html(self.HTML, "https://example.com/p")
+        s = page.metadata["structured"]
+        self.assertEqual(s["og"]["title"], "OG Title")
+        self.assertEqual(s["author"], "Jane Doe")
+
+    def test_no_structured_data_no_key(self):
+        page = parse_html("<html><body><p>plain text, long enough to be indexed fifty chars.</p></body></html>",
+                          "https://example.com/plain")
+        self.assertNotIn("structured", page.metadata)
+
+    def test_malformed_json_ld_skipped(self):
+        html = ('<html><head><script type="application/ld+json">{broken json</script>'
+                '</head><body><article><p>body content over fifty characters long for sure.</p></article></body></html>')
+        page = parse_html(html, "https://example.com/badld")
+        self.assertIsInstance(page.metadata.get("structured", {}), dict)
+        self.assertNotIn("json_ld", page.metadata.get("structured", {}))
+
+    def test_malformed_json_ld(self):
+        html = ('<html><head><script type="application/ld+json">{oops</script></head>'
+                '<body><article><p>content text that is definitely long enough.</p></article></body></html>')
+        doc = parse_html(html, "https://example.com/x")
+        self.assertEqual(doc.metadata.get("structured", {}), {})
+
+
 if __name__ == "__main__":
     unittest.main()

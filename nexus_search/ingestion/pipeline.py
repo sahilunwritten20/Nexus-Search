@@ -12,7 +12,9 @@ from ..core.hybrid_search import HybridSearch
 from ..core.embedding_sync import EmbeddingSync
 from ..core.indexer import Indexer
 from .chunker import chunk_text
-from .dedup import Deduplicator
+from .dedup import Deduplicator, content_hash
+from .failures import FailureQueue
+from .history import ContentHistory
 from .mime import detect_mime_type
 from .quality import content_quality_score
 from .types import IngestDoc
@@ -104,9 +106,38 @@ def ingest_one(
     chunk_size: Optional[int] = None,
     sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
     hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    failure_queue: Optional[FailureQueue] = None,
+    history: Optional[ContentHistory] = None,
 ) -> str:
     """Dedup (content-hash + canonical URL) -> quality gate -> (chunk) ->
-    index -> register -> embed. Returns 'indexed', 'duplicate' or 'low_quality'."""
+    index -> register -> embed. Returns 'indexed', 'duplicate' or 'low_quality'.
+
+    Failures: if a `failure_queue` is passed, unexpected exceptions are
+    recorded there (and re-raised so the caller still knows); without one,
+    an exception propagates as before — no silent swallowing either way."""
+    if failure_queue is None and history is None:
+        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size,
+                                sync, hybrid)
+    try:
+        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size,
+                                sync, hybrid, history)
+    except Exception as exc:
+        if failure_queue is not None:
+            failure_queue.record(doc, f"{type(exc).__name__}: {exc}")
+            logger.exception("ingestion of %s failed → dead-lettered", doc.doc_id)
+        raise
+
+
+def _ingest_one_impl(
+    doc: IngestDoc,
+    indexer: Indexer,
+    dedup: Deduplicator,
+    min_quality: Optional[float],
+    chunk_size: Optional[int],
+    sync: Optional[Union[EmbeddingSync, HybridSearch]],
+    hybrid: Optional[Union[EmbeddingSync, HybridSearch]],
+    history: Optional[ContentHistory] = None,
+) -> str:
     if dedup.is_duplicate(doc.content):
         return "duplicate"
     if _canonical_target_exists(indexer, doc):
@@ -119,8 +150,20 @@ def ingest_one(
     metadata = {**doc.metadata, "quality": round(quality, 3)}
     if "path" in metadata:
         metadata.setdefault("mime_type", detect_mime_type(str(metadata["path"])))
+    prev_hash = dedup.hash_of(doc.doc_id)
+    prev_content = None
+    if history is not None and prev_hash is not None:
+        # capture BEFORE re-indexing overwrites it — that's the whole point
+        old_doc = indexer.storage.get_document(doc.doc_id)
+        prev_content = old_doc.content if old_doc is not None else ""
     indexed_ids = _index(indexer, doc, metadata, chunk_size)
     dedup.register(doc.content, doc.doc_id)
+    if history is not None and prev_hash is not None:
+        new_hash = content_hash(doc.content)
+        if prev_hash != new_hash:
+            # record the OVERWRITTEN content (what the index just forgot),
+            # so "what changed" is auditable from history alone
+            history.record_change(doc.doc_id, prev_hash, prev_content or "", new_hash)
 
     # Support both `sync` and `hybrid` parameter names for backward compatibility
     target = sync if sync is not None else hybrid
@@ -139,14 +182,30 @@ def ingest_documents(
     chunk_size: Optional[int] = None,
     sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
     hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    failure_queue: Optional[FailureQueue] = None,
+    history: Optional[ContentHistory] = None,
 ) -> dict:
-    """Batch path - used by the CLI for files/code/product sources."""
-    stats = {"indexed": 0, "duplicates": 0}
+    """Batch path - used by the CLI for files/code/product sources.
+
+    With a failure_queue, one bad document no longer kills the batch: it's
+    dead-lettered (and the exception logged), the "failed" counter appears in
+    stats, and the loop continues. Without a queue, behavior is unchanged:
+    errors abort the run (visible > silent)."""
+    stats: dict[str, int] = {"indexed": 0, "duplicates": 0}
     if min_quality is not None:
         stats["low_quality"] = 0
     keys = {"indexed": "indexed", "duplicate": "duplicates", "low_quality": "low_quality"}
     for doc in docs:
-        status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, sync=sync, hybrid=hybrid)
+        try:
+            status = ingest_one(doc, indexer, dedup, min_quality=min_quality,
+                                chunk_size=chunk_size, sync=sync, hybrid=hybrid,
+                                failure_queue=failure_queue, history=history)
+        except Exception:
+            # only reachable when failure_queue recorded it
+            stats.setdefault("failed", 0)
+            stats["failed"] += 1
+            logger.error("FAILED %s (dead-lettered)", doc.doc_id)
+            continue
         stats[keys[status]] += 1
         logger.info("%s %s", status.upper(), doc.doc_id)
     return stats
