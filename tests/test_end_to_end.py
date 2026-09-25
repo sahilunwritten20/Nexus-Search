@@ -560,6 +560,7 @@ class TestEndToEndCrawler(unittest.TestCase):
 
             # Production/default security behavior.
             allow_private_hosts=False,
+            user_agent="NexusSearchBot/0.1 (+https://nexus-search.example/bot)",
         )
 
         pipeline.seed(

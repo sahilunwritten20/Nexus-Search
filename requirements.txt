@@ -13,6 +13,9 @@ python-docx>=1.1
 openpyxl>=3.1
 python-pptx>=0.6
 
+# Ingestion (Phase 2) — encoding detection
+charset-normalizer>=3.3
+
 # Ingestion (Phase 2) — config
 PyYAML>=6.0
 
