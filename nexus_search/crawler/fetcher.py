@@ -111,7 +111,7 @@ class Fetcher:
             return resp, current
         raise FetchBlocked("too many redirects")
 
-    def _read_text(self, resp) -> str:
+    def _read_bytes(self, resp) -> bytes:
         declared = str(resp.headers.get("content-length", ""))
         if declared.isdigit() and int(declared) > self.max_bytes:
             raise TooLarge(f"content-length {declared} exceeds {self.max_bytes}")
@@ -123,17 +123,33 @@ class Fetcher:
                     raise TooLarge(f"body exceeds {self.max_bytes} bytes")
                 chunks.append(chunk)
         except TypeError:  # test doubles that only provide .text
-            return resp.text
+            return resp.text.encode("utf-8", errors="replace")
         finally:
             resp.close()
+        return b"".join(chunks)
+
+    def _read_text(self, resp) -> str:
         content_type = str(resp.headers.get("content-type", "")).lower()
         charset = "utf-8"
         if "charset=" in content_type:
             charset = content_type.split("charset=")[1].split(";")[0].strip() or "utf-8"
+        raw = self._read_bytes(resp)
         try:
-            return b"".join(chunks).decode(charset, errors="replace")
+            return raw.decode(charset, errors="replace")
         except LookupError:
-            return b"".join(chunks).decode("utf-8", errors="replace")
+            return raw.decode("utf-8", errors="replace")
+
+    def fetch_bytes(self, url: str) -> bytes:
+        """Raw bytes (sitemaps may be *.xml.gz — decompression is the
+        caller's job). b'' on any fetch refusal/failure."""
+        try:
+            resp, _ = self._get(url, {})
+            if resp.status_code == 200:
+                return self._read_bytes(resp)
+            resp.close()
+        except (FetchBlocked, TooLarge, requests.RequestException):
+            pass
+        return b""
 
     @staticmethod
     def _backoff(attempt: int, retry_after: Optional[str] = None) -> float:

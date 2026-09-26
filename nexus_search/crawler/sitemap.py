@@ -1,6 +1,29 @@
 """Sitemap XML readers used to seed the crawler."""
+import gzip
+import zlib
 from typing import Optional
 from xml.etree import ElementTree
+
+_MAX_SITEMAP_BYTES = 16 * 1024 * 1024  # decompression-bomb ceiling
+
+
+def maybe_gzip(data: bytes, content_type: str = "") -> str:
+    """Sitemap bytes → XML text. Handles *.xml.gz payloads (magic bytes or
+    gzip content-type) with a hard decompressed-size cap; plain XML passes
+    through as UTF-8 with replacement."""
+    if not data:
+        return ""
+    if data[:2] == b"\x1f\x8b" or "gzip" in content_type.lower():
+        try:
+            stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            # capped decompression: unconsumed_tail non-empty == over the cap
+            out = stream.decompress(data, _MAX_SITEMAP_BYTES)
+            if stream.unconsumed_tail:
+                return ""
+        except (zlib.error, ValueError, EOFError):
+            return ""
+        data = out
+    return data.decode("utf-8", errors="replace")
 
 
 def _root(xml_text: str) -> Optional[ElementTree.Element]:

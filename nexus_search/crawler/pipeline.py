@@ -16,7 +16,7 @@ from .frontier import Frontier, FrontierEntry
 from .metrics import CrawlerMetrics
 from .politeness import PolitenessManager
 from .security import pin_dns_for_url, validate_url
-from .sitemap import parse_sitemap, parse_sitemap_index
+from .sitemap import maybe_gzip, parse_sitemap, parse_sitemap_index
 from .url_utils import get_domain
 
 logger = logging.getLogger("nexus_search.crawler.pipeline")
@@ -167,7 +167,7 @@ class CrawlPipeline:
             if url in seen or (not self.allow_private_hosts and not validate_url(url)):
                 continue
             seen.add(url)
-            xml = self.fetcher.fetch_text(url)
+            xml = maybe_gzip(self.fetcher.fetch_bytes(url))
             queue.extend(parse_sitemap_index(xml))
             for loc in parse_sitemap(xml):
                 if added >= max_urls:

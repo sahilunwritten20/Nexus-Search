@@ -1,5 +1,26 @@
+import gzip
 import unittest
-from nexus_search.crawler.sitemap import parse_sitemap, parse_sitemap_extended
+from nexus_search.crawler.sitemap import maybe_gzip, parse_sitemap, parse_sitemap_extended
+
+
+class TestMaybeGzip(unittest.TestCase):
+    XML = b'<?xml version="1.0"?><urlset><url><loc>https://a.com/x</loc></url></urlset>'
+
+    def test_plain_passthrough(self):
+        self.assertEqual(maybe_gzip(self.XML), self.XML.decode())
+
+    def test_gzip_magic_detected(self):
+        self.assertEqual(maybe_gzip(gzip.compress(self.XML)), self.XML.decode())
+
+    def test_gzip_content_type(self):
+        self.assertEqual(maybe_gzip(gzip.compress(self.XML), "application/gzip"),
+                         self.XML.decode())
+
+    def test_corrupt_gzip_returns_empty(self):
+        self.assertEqual(maybe_gzip(b"\x1f\x8b garbage not gzip"), "")
+
+    def test_empty(self):
+        self.assertEqual(maybe_gzip(b""), "")
 
 
 class TestSitemap(unittest.TestCase):

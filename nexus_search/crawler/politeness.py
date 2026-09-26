@@ -1,4 +1,10 @@
-"""Robots.txt compliance and per-domain rate limiting for the crawler."""
+"""Robots.txt compliance and per-domain rate limiting for the crawler.
+
+Known limit (documented, deliberate): stdlib `urllib.robotparser` does not
+honor `*`/`$` path wildcards in Allow/Disallow lines — sites relying on
+wildcard rules may be crawled more broadly than the author intended. The
+fail-closed-on-unreachable behavior below is unaffected. A fuller parser
+(protego) is a possible Phase 8+ dependency call."""
 import threading
 import time
 import urllib.robotparser
