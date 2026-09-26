@@ -46,6 +46,31 @@ class TestQueryCacheUnit(unittest.TestCase):
         self.assertIsNone(c.get(("a",)))
         self.assertEqual(c.get(("c",)), 3)
 
+    def test_concurrent_get_set_never_raises(self):
+        # FastAPI serves sync endpoints on a threadpool: eviction + expiry
+        # racing each other must never KeyError/500 the request.
+        import threading
+
+        c = QueryCache(ttl_seconds=0.05, max_entries=8)
+        errors = []
+
+        def hammer(i):
+            try:
+                for n in range(400):
+                    key = (f"q{i}-{n % 20}",)
+                    if c.get(key) is None:
+                        c.set(key, n)
+                c.clear()
+            except Exception as exc:  # noqa: BLE001 - any leak is the bug
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+
     def test_clear(self):
         c = QueryCache()
         c.set(("q",), 1)

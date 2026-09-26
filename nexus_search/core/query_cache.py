@@ -11,7 +11,10 @@ Invariants that keep this honest rather than a caching bug factory:
   `cache.clear()`; correctness never depends on the TTL
 - keyed on the full request signature (query + every ranking-relevant
   parameter), so tweaking a weight can't collide with a cached page
+- thread-safe: FastAPI runs sync endpoints on a threadpool, so get/set/clear
+  can overlap; every mutation is guarded or miss-safe
 """
+import threading
 import time
 from typing import Optional
 
@@ -23,6 +26,7 @@ class QueryCache:
         self.ttl = ttl_seconds
         self.max_entries = max_entries
         self._items: dict[tuple, tuple[float, object]] = {}
+        self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
 
@@ -34,29 +38,33 @@ class QueryCache:
         return (query, *items)
 
     def get(self, key) -> Optional[object]:
-        entry = self._items.get(key)
-        if entry is None:
-            self._misses += 1
-            return None
-        ts, value = entry
-        if self.ttl <= 0 or (time.time() - ts) > self.ttl:
-            del self._items[key]
-            self._misses += 1
-            return None
-        self._hits += 1
-        return value
+        with self._lock:
+            entry = self._items.get(key)
+            if entry is None:
+                self._misses += 1
+                return None
+            ts, value = entry
+            if self.ttl <= 0 or (time.time() - ts) > self.ttl:
+                self._items.pop(key, None)  # another thread may have evicted
+                self._misses += 1
+                return None
+            self._hits += 1
+            return value
 
     def set(self, key, value: object) -> None:
         if self.ttl <= 0:
             return
-        if len(self._items) >= self.max_entries:
-            oldest = min(self._items, key=lambda k: self._items[k][0])
-            del self._items[oldest]
-        self._items[key] = (time.time(), value)
+        with self._lock:
+            while len(self._items) >= self.max_entries:
+                oldest = min(self._items, key=lambda k: self._items[k][0])
+                self._items.pop(oldest, None)
+            self._items[key] = (time.time(), value)
 
     def clear(self) -> None:
-        self._items.clear()
+        with self._lock:
+            self._items.clear()
 
     def stats(self) -> dict:
-        return {"entries": len(self._items), "hits": self._hits,
-                "misses": self._misses, "ttl_seconds": self.ttl}
+        with self._lock:
+            return {"entries": len(self._items), "hits": self._hits,
+                    "misses": self._misses, "ttl_seconds": self.ttl}
