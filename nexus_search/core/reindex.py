@@ -23,13 +23,9 @@ from .tokenizer import tokenize
 logger = logging.getLogger("nexus_search.reindex")
 
 _POSTINGS_DDL = (
-    "CREATE TABLE IF NOT EXISTS postings_shadow ("
+    "CREATE TABLE postings_shadow ("
     "term TEXT NOT NULL, doc_id TEXT NOT NULL, term_freq INTEGER NOT NULL, "
     "PRIMARY KEY (term, doc_id))"
-)
-_POSTINGS_IDX = (
-    "CREATE INDEX IF NOT EXISTS idx_shadow_term ON postings_shadow (term);"
-    "CREATE INDEX IF NOT EXISTS idx_shadow_doc ON postings_shadow (doc_id)"
 )
 
 
@@ -47,21 +43,22 @@ def reindex_shadow(db_path: str, progress=None) -> dict:
     build.execute("PRAGMA busy_timeout = 5000")
     build.execute("PRAGMA journal_mode = WAL")
     try:
-        build.execute(_POSTINGS_DDL.replace("postings_shadow", "postings_shadow"))
         build.execute("DROP TABLE IF EXISTS postings_shadow")
-        build.execute("CREATE TABLE postings_shadow (term TEXT NOT NULL, "
-                      "doc_id TEXT NOT NULL, term_freq INTEGER NOT NULL, "
-                      "PRIMARY KEY (term, doc_id))")
+        build.execute(_POSTINGS_DDL)
         rows = build.execute(
             "SELECT doc_id, title, content FROM documents ORDER BY doc_id").fetchall()
         log(f"reindex: {len(rows)} documents to re-tokenize")
         total_terms = 0
         batch = []
+        # One pass over the corpus: tokenize ONCE per document; the tokens
+        # feed both the postings batch and the documents.length refresh.
         for doc_id, title, content in rows:
             tokens = tokenize(f"{title} {content}")
             freqs = Counter(tokens)
             total_terms += len(tokens)
             batch.extend((term, doc_id, f) for term, f in freqs.items())
+            build.execute("UPDATE documents SET length = ? WHERE doc_id = ?",
+                          (len(tokens), doc_id))
             if len(batch) >= 5000:
                 build.executemany(
                     "INSERT INTO postings_shadow (term, doc_id, term_freq) VALUES (?,?,?)",
@@ -70,11 +67,6 @@ def reindex_shadow(db_path: str, progress=None) -> dict:
         if batch:
             build.executemany(
                 "INSERT INTO postings_shadow (term, doc_id, term_freq) VALUES (?,?,?)", batch)
-        # Also refresh documents.length — it's derived from tokens
-        for doc_id, title, content in rows:
-            tokens = tokenize(f"{title} {content}")
-            build.execute("UPDATE documents SET length = ? WHERE doc_id = ?",
-                          (len(tokens), doc_id))
         build.commit()
     finally:
         build.close()
