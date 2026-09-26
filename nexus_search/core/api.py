@@ -3,14 +3,18 @@
 Run with: uvicorn nexus_search.core.api:app --reload
 DB path: env NEXUS_DB (default nexus_search.db)
 """
+import hashlib
 import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi.security.api_key import APIKeyHeader
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from .bm25 import BM25Search
 from .embedders import HashEmbedder, EmbedderUnavailable
@@ -138,6 +142,29 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+# ---------------------------------------------------------------------------
+# Rate limiting (slowapi): /search + the write endpoints. Scoped per API key
+# when one is presented (hashed — never the raw secret), else per client IP.
+# NEXUS_RATE_LIMIT="0" (or "") disables; headers carry X-RateLimit-*/Retry-After.
+_RATE_LIMIT = os.environ.get("NEXUS_RATE_LIMIT", "60/minute").strip()
+
+
+def _rate_limit_key(request: Request) -> str:
+    key = request.headers.get("X-API-Key")
+    if key:
+        return "key:" + hashlib.sha256(key.encode()).hexdigest()[:24]
+    return get_remote_address(request) or "unknown"
+
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    headers_enabled=True,
+    enabled=bool(_RATE_LIMIT) and _RATE_LIMIT != "0",
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
 def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
     """401 when the server is configured with a key and the caller's doesn't
     match. Constant-time compare; missing config = open dev mode."""
@@ -149,7 +176,8 @@ def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
 
 
 @app.post("/documents", status_code=201, dependencies=[Depends(require_api_key)])
-def add_document(doc: DocumentIn):
+@limiter.limit(_RATE_LIMIT)
+def add_document(request: Request, doc: DocumentIn, response: Response):
     try:
         _indexer.add_document(
             doc_id=doc.doc_id, content=doc.content, title=doc.title,
@@ -162,7 +190,8 @@ def add_document(doc: DocumentIn):
 
 
 @app.delete("/documents/{doc_id}", dependencies=[Depends(require_api_key)])
-def delete_document(doc_id: str):
+@limiter.limit(_RATE_LIMIT)
+def delete_document(request: Request, doc_id: str, response: Response):
     if not _indexer.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="Document not found")
     _query_cache.clear()  # writes invalidate cached pages
@@ -170,7 +199,10 @@ def delete_document(doc_id: str):
 
 
 @app.get("/search", response_model=SearchResponse)
+@limiter.limit(_RATE_LIMIT)
 def search(
+    request: Request,
+    response: Response,
     q: str,
     top_k: int = Query(default=10, ge=1),
     offset: int = Query(default=0, ge=0, le=10_000),

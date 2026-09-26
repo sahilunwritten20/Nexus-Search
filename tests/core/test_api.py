@@ -67,6 +67,64 @@ class TestApiBootPolicy(unittest.TestCase):
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestApiRateLimit(unittest.TestCase):
+    """NEXUS_RATE_LIMIT gate on /search and /documents: 429 + Retry-After."""
+
+    _SAVED_KEYS = ("NEXUS_ENV", "NEXUS_API_KEY", "NEXUS_RATE_LIMIT")
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in self._SAVED_KEYS}
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ.pop("NEXUS_API_KEY", None)
+        os.environ["NEXUS_RATE_LIMIT"] = "3/minute"
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "rl.db")
+        from nexus_search.core import api
+        importlib.reload(api)
+        self.client = TestClient(api.app)
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        from nexus_search.core import api
+        importlib.reload(api)
+
+    def test_exceeding_limit_is_429_with_retry_after(self):
+        for i in range(3):
+            r = self.client.get("/search", params={"q": "x"})
+            self.assertEqual(r.status_code, 200, f"request {i} should pass")
+        r = self.client.get("/search", params={"q": "x"})
+        self.assertEqual(r.status_code, 429)
+        self.assertIn("retry-after", {k.lower() for k in r.headers.keys()})
+
+        # un-limited endpoints still work for the same client
+        self.assertEqual(self.client.get("/health").status_code, 200)
+
+    def test_writes_are_limited_too(self):
+        for i in range(3):
+            r = self.client.post("/documents", json={"doc_id": f"d{i}", "content": "c"})
+            self.assertEqual(r.status_code, 201)
+        r = self.client.post("/documents", json={"doc_id": "d3", "content": "c"})
+        self.assertEqual(r.status_code, 429)
+
+    def test_limit_is_scoped_per_api_key(self):
+        # clients presenting an API key are bucketed per key; no header -> by IP
+        for i in range(3):
+            r = self.client.get("/search", params={"q": "x"},
+                                headers={"X-API-Key": "client-a"})
+            self.assertEqual(r.status_code, 200)
+        r = self.client.get("/search", params={"q": "x"},
+                            headers={"X-API-Key": "client-a"})
+        self.assertEqual(r.status_code, 429)
+        # a different key still has a fresh budget
+        r = self.client.get("/search", params={"q": "x"},
+                            headers={"X-API-Key": "client-b"})
+        self.assertEqual(r.status_code, 200)
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
 class TestApi(unittest.TestCase):
     def setUp(self):
         os.environ["NEXUS_ENV"] = "dev"

@@ -2,6 +2,7 @@
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6
+slowapi>=0.1.9   # rate limiting on /search and write endpoints (NEXUS_RATE_LIMIT)
 
 # Ingestion (Phase 2) — web connector
 beautifulsoup4>=4.12
