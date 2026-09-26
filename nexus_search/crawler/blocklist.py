@@ -14,6 +14,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from ..core.migrations import apply_migrations
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS blocklist (
     host TEXT PRIMARY KEY,
@@ -29,8 +31,11 @@ class Blocklist:
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.lock = threading.RLock()
         with self.lock:
-            self.conn.executescript(SCHEMA)
-            self.conn.commit()
+            # Versioned like the other stores: v1 is this schema as-is;
+            # columns added later become v2, ... (see core/migrations.py)
+            self.schema_version = apply_migrations(
+                self.conn, "blocklist", [(1, SCHEMA)]
+            )
 
     @staticmethod
     def _host_of(url_or_host: str) -> str:

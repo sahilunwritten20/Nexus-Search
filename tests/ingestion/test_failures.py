@@ -35,6 +35,11 @@ class TestFailureQueue(unittest.TestCase):
             except PermissionError:
                 time.sleep(0.05)
 
+    def test_schema_comes_up_via_migrations(self):
+        # v1 registered in schema_version like the other stores
+        from nexus_search.core.migrations import get_version
+        self.assertEqual(get_version(self.q.conn, "failed_ingestions"), 1)
+
     def test_record_and_due(self):
         self.q.record(_doc("d1"), "fake error")
         self.assertEqual(self.q.count(), 1)

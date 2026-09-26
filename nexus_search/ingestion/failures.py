@@ -23,6 +23,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from ..core.migrations import apply_migrations
+
 logger = logging.getLogger("nexus_search.ingestion.failures")
 
 SCHEMA = """
@@ -71,8 +73,11 @@ class FailureQueue:
         self.base_seconds = base_seconds
         self.max_attempts = max_attempts
         with self.lock:
-            self.conn.executescript(SCHEMA)
-            self.conn.commit()
+            # Versioned like the other stores: v1 is this schema as-is;
+            # columns added later become v2, ... (see core/migrations.py)
+            self.schema_version = apply_migrations(
+                self.conn, "failed_ingestions", [(1, SCHEMA)]
+            )
 
     def _backoff(self, attempts: int) -> float:
         return min(MAX_BACKOFF_SECONDS, self.base_seconds * (2 ** (attempts - 1)))

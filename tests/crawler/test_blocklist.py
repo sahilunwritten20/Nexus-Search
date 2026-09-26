@@ -51,6 +51,19 @@ class TestBlocklistUnit(unittest.TestCase):
             except PermissionError:
                 time.sleep(0.05)
 
+    def test_schema_comes_up_via_migrations(self):
+        # v1 registered in schema_version like the other stores (and
+        # reopening an existing DB is a no-op, not a re-migration)
+        from nexus_search.core.migrations import get_version
+        self.assertEqual(get_version(self.blocklist.conn, "blocklist"), 1)
+        self.blocklist.block("example.com", reason="x")
+        second = Blocklist(self.db_path)
+        try:
+            self.assertEqual(get_version(second.conn, "blocklist"), 1)
+            self.assertTrue(second.is_blocked("example.com"))  # data survives
+        finally:
+            second.close()
+
     def test_block_then_is_blocked(self):
         self.assertFalse(self.blocklist.is_blocked("http://example.com/"))
         self.blocklist.block("example.com", reason="webmaster opt-out")
