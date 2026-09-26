@@ -7,7 +7,11 @@ rebuilt. Building them in place takes writes offline; this module instead:
 1. builds a fresh `postings_shadow` table on a SECOND connection
    (WAL mode: readers never see it, the write lock on the main connection is
    only taken for a page at a time, not for the whole build)
-2. swaps tables in a single transaction — the reader-visible cutover window
+2. inside the swap transaction, replays the delta (docs added/changed/deleted
+   DURING the build are re-tokenized into the shadow table) and refreshes
+   documents.length — so the cutover is one atomic commit and live writes
+   made during the build are NOT silently dropped
+3. swaps tables in the same transaction — the reader-visible cutover window
    is one SQLite commit
 
 CLI:  python -m nexus_search.core.reindex --db nexus_search.db --shadow
@@ -48,17 +52,18 @@ def reindex_shadow(db_path: str, progress=None) -> dict:
         rows = build.execute(
             "SELECT doc_id, title, content FROM documents ORDER BY doc_id").fetchall()
         log(f"reindex: {len(rows)} documents to re-tokenize")
-        total_terms = 0
+        # One pass over the corpus: tokenize ONCE per document. The counts
+        # feed the documents.length refresh in the swap transaction, and the
+        # snapshot lets the swap replay any writes that land during the build.
+        snapshot: dict[str, tuple[str, str]] = {}
+        token_counts: dict[str, int] = {}
         batch = []
-        # One pass over the corpus: tokenize ONCE per document; the tokens
-        # feed both the postings batch and the documents.length refresh.
         for doc_id, title, content in rows:
+            snapshot[doc_id] = (title, content)
             tokens = tokenize(f"{title} {content}")
             freqs = Counter(tokens)
-            total_terms += len(tokens)
+            token_counts[doc_id] = len(tokens)
             batch.extend((term, doc_id, f) for term, f in freqs.items())
-            build.execute("UPDATE documents SET length = ? WHERE doc_id = ?",
-                          (len(tokens), doc_id))
             if len(batch) >= 5000:
                 build.executemany(
                     "INSERT INTO postings_shadow (term, doc_id, term_freq) VALUES (?,?,?)",
@@ -71,11 +76,43 @@ def reindex_shadow(db_path: str, progress=None) -> dict:
     finally:
         build.close()
 
-    # Phase 2: atomic swap on the primary connection.
+    # Phase 2: delta replay + atomic swap on a fresh connection.
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Writers that raced the build are blocked here (busy_timeout), so
+        # this read is the cutover's point-in-time truth.
+        live = conn.execute(
+            "SELECT doc_id, title, content FROM documents").fetchall()
+        live_map = {doc_id: (title, content) for doc_id, title, content in live}
+
+        deleted = [d for d in snapshot if d not in live_map]
+        changed = [d for d, tc in live_map.items()
+                   if d not in snapshot or snapshot[d] != tc]
+        if deleted:
+            conn.execute(
+                f"DELETE FROM postings_shadow WHERE doc_id IN "
+                f"({','.join('?' for _ in deleted)})", deleted)
+        for doc_id in changed:
+            title, content = live_map[doc_id]
+            tokens = tokenize(f"{title} {content}")
+            token_counts[doc_id] = len(tokens)
+            conn.execute("DELETE FROM postings_shadow WHERE doc_id = ?", (doc_id,))
+            conn.executemany(
+                "INSERT INTO postings_shadow (term, doc_id, term_freq) VALUES (?,?,?)",
+                [(t, doc_id, f) for t, f in Counter(tokens).items()])
+        if deleted or changed:
+            log(f"reindex: replayed {len(changed)} changed/{len(deleted)} deleted "
+                f"docs written during the build")
+
+        # documents.length belongs to the same cutover: derived from the
+        # same tokens as the postings, committed atomically with the swap.
+        for doc_id, length in token_counts.items():
+            if doc_id in live_map:
+                conn.execute("UPDATE documents SET length = ? WHERE doc_id = ?",
+                             (length, doc_id))
+
         conn.execute("ALTER TABLE postings RENAME TO postings_old")
         conn.execute("ALTER TABLE postings_shadow RENAME TO postings")
         conn.execute("DROP TABLE postings_old")
@@ -88,7 +125,9 @@ def reindex_shadow(db_path: str, progress=None) -> dict:
     finally:
         conn.close()
 
-    stats = {"documents": len(rows), "tokens": total_terms}
+    stats = {"documents": len(live_map),
+             "tokens": sum(c for d, c in token_counts.items() if d in live_map),
+             "delta_replayed": len(changed) + len(deleted)}
     log(f"reindex: swapped in {stats}")
     return stats
 
