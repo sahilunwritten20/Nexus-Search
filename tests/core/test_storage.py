@@ -63,6 +63,25 @@ class TestStorage(unittest.TestCase):
         self.assertTrue(self.storage.delete_document("d1"))
         self.assertEqual(self.storage.postings_for_term("hello"), [])
 
+    def test_legacy_upsert_persists_without_caller_commit(self):
+        # regression: legacy upsert_document used to leave its transaction
+        # OPEN — a later unrelated commit could flush a half-written doc
+        self.storage.upsert_document("legacy", "t", "content", "text", 2, {})
+        self.assertIsNotNone(self.storage.get_document("legacy"))
+
+    def test_delete_documents_bulk_transaction(self):
+        from nexus_search.core.indexer import Indexer
+        indexer = Indexer(self.storage)
+        indexer.add_document("parent", "alpha beta")
+        for i in range(3):
+            indexer.add_document(f"parent#chunk{i}", "alpha chunk text")
+        self.assertEqual(self.storage.document_count(), 4)
+        deleted = self.storage.delete_documents(["parent"] + [f"parent#chunk{i}" for i in range(3)])
+        self.assertEqual(deleted, 4)
+        self.assertEqual(self.storage.document_count(), 0)
+        # postings gone too
+        self.assertEqual(self.storage.postings_for_term("alpha"), [])
+
     def test_delete_nonexistent_returns_false(self):
         self.assertFalse(self.storage.delete_document("missing"))
 

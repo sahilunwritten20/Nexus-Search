@@ -58,11 +58,15 @@ class Indexer:
         self._emit("indexed", doc_id)
 
     def delete_document(self, doc_id: str) -> bool:
-        """Delete a document AND its chunks (doc_id#chunkN).
-        True if anything was deleted."""
+        """Delete a document AND its chunks (doc_id#chunkN) in ONE
+        transaction — a crash mid-cascade can't leave orphaned chunk rows
+        behind. True if anything was deleted."""
         with self.storage.lock:
-            targets = [doc_id] + self.storage.chunk_ids(doc_id)
-            deleted = [d for d in targets if self.storage.delete_document(d)]
-        for d in deleted:
+            targets = ([doc_id] if self.storage.get_document(doc_id) else [])
+            targets += self.storage.chunk_ids(doc_id)
+            if not targets:
+                return False
+            self.storage.delete_documents(targets)
+        for d in targets:
             self._emit("deleted", d)
-        return bool(deleted)
+        return True

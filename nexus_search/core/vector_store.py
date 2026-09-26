@@ -183,64 +183,69 @@ class VectorStore:
         if norm > 0:
             vector = vector / norm
         
+        # SQL commit and in-memory merge happen inside ONE critical section
+        # (self.lock -> self._matrix_lock, the same order _load_matrix uses).
+        # Splitting them let other threads observe/commit between the two,
+        # and a crash left a committed row invisible to this process's matrix
+        # (our own commits don't move PRAGMA data_version for us).
         with self.lock:
-            self.conn.execute(
-                """
-                INSERT OR REPLACE INTO doc_vectors 
-                (doc_id, model, dim, content_hash, vector, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (doc_id, self.model, self.dim, content_hash, self._serialize(vector), time.time())
-            )
-            self.conn.commit()
-        
-        # Update in-memory matrix
-        with self._matrix_lock:
-            # Check if exists
-            existing_idx = np.where(self._doc_ids == doc_id)[0]
-            if len(existing_idx) > 0:
-                idx = existing_idx[0]
-                self._matrix[idx] = vector
-                self._doc_types[idx] = doc_type
-                self._languages[idx] = language
-            else:
-                # Append
-                self._matrix = np.vstack([self._matrix, vector.reshape(1, -1)])
-                self._doc_ids = np.append(self._doc_ids, doc_id)
-                self._doc_types = np.append(self._doc_types, doc_type)
-                self._languages = np.append(self._languages, language)
-            
-            self._content_hashes[doc_id] = content_hash
+            with self._matrix_lock:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO doc_vectors
+                    (doc_id, model, dim, content_hash, vector, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (doc_id, self.model, self.dim, content_hash, self._serialize(vector), time.time())
+                )
+                self.conn.commit()
+
+                # Update in-memory matrix
+                existing_idx = np.where(self._doc_ids == doc_id)[0]
+                if len(existing_idx) > 0:
+                    idx = existing_idx[0]
+                    self._matrix[idx] = vector
+                    self._doc_types[idx] = doc_type
+                    self._languages[idx] = language
+                else:
+                    # Append
+                    self._matrix = np.vstack([self._matrix, vector.reshape(1, -1)])
+                    self._doc_ids = np.append(self._doc_ids, doc_id)
+                    self._doc_types = np.append(self._doc_types, doc_type)
+                    self._languages = np.append(self._languages, language)
+
+                self._content_hashes[doc_id] = content_hash
 
     # Backward compatibility
     upsert = add
     
     def remove(self, doc_id: str):
-        """Remove a vector (swap-remove for O(1) delete)."""
+        """Remove a vector (swap-remove for O(1) delete). SQL + memory under
+        ONE critical section, same as add()."""
         with self.lock:
-            self.conn.execute(
-                "DELETE FROM doc_vectors WHERE doc_id = ? AND model = ?",
-                (doc_id, self.model)
-            )
-            self.conn.commit()
-        
-        with self._matrix_lock:
-            idx_arr = np.where(self._doc_ids == doc_id)[0]
-            if len(idx_arr) > 0:
-                idx = idx_arr[0]
-                # Swap with last element
-                last_idx = len(self._doc_ids) - 1
-                if idx != last_idx:
-                    self._matrix[idx] = self._matrix[last_idx]
-                    self._doc_ids[idx] = self._doc_ids[last_idx]
-                    self._doc_types[idx] = self._doc_types[last_idx]
-                    self._languages[idx] = self._languages[last_idx]
-                # Remove last element
-                self._matrix = self._matrix[:last_idx]
-                self._doc_ids = self._doc_ids[:last_idx]
-                self._doc_types = self._doc_types[:last_idx]
-                self._languages = self._languages[:last_idx]
-                self._content_hashes.pop(doc_id, None)
+            with self._matrix_lock:
+                self.conn.execute(
+                    "DELETE FROM doc_vectors WHERE doc_id = ? AND model = ?",
+                    (doc_id, self.model)
+                )
+                self.conn.commit()
+
+                idx_arr = np.where(self._doc_ids == doc_id)[0]
+                if len(idx_arr) > 0:
+                    idx = idx_arr[0]
+                    # Swap with last element
+                    last_idx = len(self._doc_ids) - 1
+                    if idx != last_idx:
+                        self._matrix[idx] = self._matrix[last_idx]
+                        self._doc_ids[idx] = self._doc_ids[last_idx]
+                        self._doc_types[idx] = self._doc_types[last_idx]
+                        self._languages[idx] = self._languages[last_idx]
+                    # Remove last element
+                    self._matrix = self._matrix[:last_idx]
+                    self._doc_ids = self._doc_ids[:last_idx]
+                    self._doc_types = self._doc_types[:last_idx]
+                    self._languages = self._languages[:last_idx]
+                    self._content_hashes.pop(doc_id, None)
 
     # Backward compatibility
     delete = remove

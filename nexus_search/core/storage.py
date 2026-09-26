@@ -63,6 +63,11 @@ class Storage:
     def upsert_document(
         self, doc_id: str, title: str, content: str, doc_type: str, length: int, metadata: dict
     ):
+        """Legacy split write — kept for tests that hand-roll postings. Now
+        COMMITS before returning: this connection is shared across threads,
+        so leaving a transaction open meant any LATER unrelated commit could
+        flush a half-written doc row. Prefer upsert_document_with_postings
+        (atomic) everywhere else."""
         with self.lock:
             self.conn.execute(
                 "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
@@ -74,6 +79,7 @@ class Storage:
             )
             # Clear old postings so re-indexing a doc_id doesn't leave stale terms behind.
             self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+            self.conn.commit()
 
     def add_postings(self, doc_id: str, term_freqs: dict[str, int]):
         if not term_freqs:
@@ -83,6 +89,26 @@ class Storage:
                 "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
                 [(term, doc_id, freq) for term, freq in term_freqs.items()],
             )
+            self.conn.commit()
+
+    def delete_documents(self, doc_ids: list[str]) -> int:
+        """One-transaction multi delete (cascade of parent + chunks): all
+        rows+postings vanish together or not at all. Returns rows deleted."""
+        if not doc_ids:
+            return 0
+        with self.lock:
+            placeholders = ",".join("?" for _ in doc_ids)
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    f"DELETE FROM postings WHERE doc_id IN ({placeholders})", doc_ids)
+                cur = self.conn.execute(
+                    f"DELETE FROM documents WHERE doc_id IN ({placeholders})", doc_ids)
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            self.conn.execute("COMMIT")
+            return cur.rowcount
 
     def upsert_document_with_postings(
         self, doc_id: str, title: str, content: str, doc_type: str, length: int,
