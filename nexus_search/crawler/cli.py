@@ -61,7 +61,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         max_pages_per_domain=_pick(args.max_pages_per_domain, config, "max_pages_per_domain", 0),
         recrawl_interval=recrawl,
         default_crawl_delay=config.get("default_crawl_delay", 1.0),
-        user_agent=config.get("user_agent", "NexusSearchBot/0.1 (+https://example.com/bot)"),
+        user_agent=config.get("user_agent"),
         ingest_fn=make_crawler_ingest_fn(
             indexer,
             dedup,

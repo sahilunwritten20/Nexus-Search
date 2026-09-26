@@ -14,5 +14,7 @@ max_pages_per_domain: 0
 
 recrawl_interval: 0
 
-user_agent: "NexusSearchBot/0.1 (+https://YOUR-SITE/bot)"
+# REQUIRED for public crawls: a real contact URL for your bot (the pipeline
+# refuses placeholder UAs). Leave unset only for local/dev crawls.
+user_agent:
 chunk_size: 1000   # 0 = no chunking; Phase 4 wants this on

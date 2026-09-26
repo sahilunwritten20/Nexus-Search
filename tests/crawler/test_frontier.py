@@ -137,6 +137,39 @@ class TestFrontier(unittest.TestCase):
             )
         )
 
+    def test_mark_error_retries_with_backoff_then_gives_up(self):
+        """Transient errors requeue with backoff; persisted failures leave
+        the frontier after MAX_FETCH_ATTEMPTS (error log keeps the trail)."""
+        self.frontier.add("https://example.com/a", depth=0)
+        [entry] = self.frontier.next_batch(1)
+
+        self.frontier.mark_error(entry.url, "timeout")
+        # not pending yet — the backoff window hasn't elapsed
+        self.assertEqual(self.frontier.next_batch(1), [])
+        self.assertEqual(self.frontier.pending_count(), 0)
+
+        # simulate the backoff elapsing
+        self.frontier.conn.execute(
+            "UPDATE frontier SET next_retry_at = 0 WHERE url = ?", (entry.url,))
+        self.frontier.conn.commit()
+        [retry] = self.frontier.next_batch(1)
+        self.assertEqual(retry.url, entry.url)
+
+        # exhaust the attempts: now the URL leaves the frontier entirely
+        for _ in range(3):
+            self.frontier.mark_error(entry.url, "boom")
+            self.frontier.conn.execute(
+                "UPDATE frontier SET next_retry_at = 0 WHERE url = ?", (entry.url,))
+            self.frontier.conn.commit()
+            self.frontier.next_batch(1)
+        self.assertIsNone(
+            self.frontier.conn.execute(
+                "SELECT 1 FROM frontier WHERE url = ?", (entry.url,)).fetchone())
+        self.assertTrue(  # and the failure trail is still auditable
+            self.frontier.conn.execute(
+                "SELECT COUNT(*) FROM crawl_errors WHERE url = ?",
+                (entry.url,)).fetchone()[0] >= 4)
+
     def test_normalization_applied_on_add(self):
         self.frontier.add(
             "https://example.com/a/",

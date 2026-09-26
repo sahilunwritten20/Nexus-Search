@@ -33,6 +33,12 @@ def default_ingest(url: str, title: str, text: str, metadata: dict) -> None:
     logger.info("INGEST %s (%d chars)", url, len(text))
 
 
+def _is_placeholder_ua(user_agent: str) -> bool:
+    """Obviously-unconfigured contact URLs can't pass as a real bot identity
+    for public crawls (they'd be reported to /dev/null or worse)."""
+    return any(marker in user_agent for marker in ("example.com/", "YOUR-SITE", "example.org/"))
+
+
 class CrawlPipeline:
     """The crawler. NOTE on scale/fairness (deliberate, documented limit):
     politeness and per-domain counters (`domain_lock`, `domain_counts`) are
@@ -67,7 +73,7 @@ class CrawlPipeline:
         # web: refuse to run production crawls with a placeholder/no UA.
         # With allow_private_hosts=True (local dev & tests) we still default,
         # but LOUDLY.
-        if not user_agent or "example.com/bot" in user_agent:
+        if not user_agent or _is_placeholder_ua(user_agent):
             if not allow_private_hosts:
                 raise ValueError(
                     "crawler user_agent must be set to a real bot contact "

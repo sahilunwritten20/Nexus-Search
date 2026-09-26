@@ -41,6 +41,17 @@ CREATE INDEX IF NOT EXISTS idx_visited_last_crawled
     ON visited (last_crawled_at);
 """
 
+# v2: failed URLs are retried with backoff instead of being dropped from the
+# frontier after one transient failure (crawl_errors stays the full log).
+_SCHEMA_V2 = """
+ALTER TABLE frontier ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE frontier ADD COLUMN next_retry_at REAL NOT NULL DEFAULT 0.0
+"""
+
+# Retry policy for status='error': retry_count attempts, exponential backoff.
+MAX_FETCH_ATTEMPTS = 3          # then the URL leaves the frontier for good
+_ERROR_BACKOFF_MAX = 120.0
+
 
 @dataclass
 class FrontierEntry:
@@ -66,10 +77,15 @@ class Frontier:
 
         self.lock = threading.RLock()
 
-        self.conn.executescript(SCHEMA)
+        # Schema comes up through the versioned migration runner (v1 = base
+        # DDL as-is for existing files, v2 = retry columns).
+        from ..core.migrations import apply_migrations
+        self.schema_version = apply_migrations(
+            self.conn, "frontier", [(1, SCHEMA), (2, _SCHEMA_V2)]
+        )
 
-        # Existing databases from the earlier version may not have
-        # these columns.
+        # Belt-and-braces for DBs written before the migrations runner
+        # existed: visited gained these columns via _ensure_column back then.
         self._ensure_column(
             "visited",
             "etag",
@@ -231,13 +247,14 @@ class Frontier:
                 LEFT JOIN visited AS v
                     ON f.url = v.url
                 WHERE f.status = 'pending'
+                   OR (f.status = 'error' AND f.next_retry_at <= ?)
                 ORDER BY
                     f.priority DESC,
                     f.depth ASC,
                     f.added_at ASC
                 LIMIT ?
                 """,
-                (n,),
+                (time.time(), n),
             ).fetchall()
 
             if not rows:
@@ -415,20 +432,24 @@ class Frontier:
         url: str,
         error: str,
     ) -> None:
-        """Mark a crawl attempt as failed."""
+        """Mark a crawl attempt as failed.
+
+        Transient failures (timeouts, 5xx, DNS hiccups) USED to drop the URL
+        from the frontier after one shot — a flaky network lost pages
+        permanently. Now the row becomes status='error' with exponential
+        backoff and is retried by next_batch() until MAX_FETCH_ATTEMPTS, at
+        which point it leaves the frontier (the full error log stays in
+        crawl_errors either way)."""
 
         norm = normalize_url(url)
+        now = time.time()
 
         with self.lock:
 
-            # Remove the URL from the active frontier.
-            self.conn.execute(
-                """
-                DELETE FROM frontier
-                WHERE url = ?
-                """,
-                (norm,),
-            )
+            row = self.conn.execute(
+                "SELECT retry_count FROM frontier WHERE url = ?", (norm,)
+            ).fetchone()
+            attempts = (row[0] if row else 0) + 1
 
             # Store the error.
             self.conn.execute(
@@ -447,9 +468,21 @@ class Frontier:
                 (
                     norm,
                     error,
-                    time.time(),
+                    now,
                 ),
             )
+
+            if attempts >= MAX_FETCH_ATTEMPTS:
+                # exhausted: leave the frontier (rediscovery via add() works
+                # again), the failure history stays in crawl_errors
+                self.conn.execute("DELETE FROM frontier WHERE url = ?", (norm,))
+            else:
+                backoff = min(2.0 ** attempts, _ERROR_BACKOFF_MAX)
+                self.conn.execute(
+                    "UPDATE frontier SET status = 'error', retry_count = ?, "
+                    "next_retry_at = ? WHERE url = ?",
+                    (attempts, now + backoff, norm),
+                )
 
             self.conn.commit()
 
