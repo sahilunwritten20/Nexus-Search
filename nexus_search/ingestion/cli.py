@@ -68,18 +68,21 @@ def main():
         docs = iter_products(args.path)
 
     history = ContentHistory(args.db)
-    stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality,
-                             chunk_size=args.chunk_size, failure_queue=failures,
-                             history=history)
-    print(f"Done: {stats}")
-
-    history.close()
-    failures.close()
-    sync.flush()
-    sync.close()
-    storage.close()
-    dedup.close()
-    vector_store.close()
+    try:
+        stats = ingest_documents(docs, indexer, dedup, min_quality=args.min_quality,
+                                 chunk_size=args.chunk_size, failure_queue=failures,
+                                 history=history)
+        print(f"Done: {stats}")
+    finally:
+        # a connector raising mid-iteration must not strand queued embeddings
+        # or leak the sqlite connections
+        history.close()
+        failures.close()
+        sync.flush()
+        sync.close()
+        storage.close()
+        dedup.close()
+        vector_store.close()
 
 
 if __name__ == "__main__":
