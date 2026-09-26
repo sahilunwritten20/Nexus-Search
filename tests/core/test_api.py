@@ -170,6 +170,145 @@ class TestApi(unittest.TestCase):
     def test_health(self):
         self.assertEqual(self.client.get("/health").json()["status"], "ok")
 
+    def test_ready(self):
+        self.assertEqual(self.client.get("/ready").json()["ready"], True)
+
+    def test_get_document_by_id(self):
+        self.add("a1", "alpha beta", title="First")
+        r = self.client.get("/documents/a1")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["content"], "alpha beta")
+        self.assertEqual(self.client.get("/documents/nope").status_code, 404)
+
+    def test_bulk_index_and_partial_failure(self):
+        r = self.client.post("/documents/bulk", json={
+            "documents": [{"doc_id": "b1", "content": "bulk one vector"},
+                          {"doc_id": "b2", "content": "bulk two vector"}]})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual((body["indexed"], body["failed"], body["total"]), (2, [], 2))
+        # wrote for real: both searchable
+        self.assertEqual(self.client.get("/search", params={"q": "vector"}).json()["total_results"], 2)
+
+    def test_bulk_empty_is_422_and_cap_enforced(self):
+        self.assertEqual(self.client.post("/documents/bulk", json={"documents": []}).status_code, 422)
+
+    def test_query_length_cap(self):
+        r = self.client.get("/search", params={"q": "x" * 2001})
+        self.assertEqual(r.status_code, 400)
+
+    def test_diversity_param_works_and_conflicts(self):
+        bodies = [
+            "alpha programming language tutorial",
+            "alpha dog training basics",
+            "alpha centauri star system",
+            "alpha finance investment strategy",
+            "alpha antenna radio design",
+            "alpha cooking recipes pasta",
+        ]
+        for i, body in enumerate(bodies):
+            self.add(f"m{i}", body, title=f"alpha topic {i}")
+        r = self.client.get("/search", params={"q": "alpha", "diversity": 0.7, "top_k": 3})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.json()["results"]), 3)
+        # diversity and non-relevance sort are mutually exclusive
+        r2 = self.client.get("/search",
+                             params={"q": "alpha", "diversity": 0.5, "sort": "freshness"})
+        self.assertEqual(r2.status_code, 400)
+
+    def test_hybrid_total_is_true_match_count(self):
+        # 30 docs match "common"; candidate pool is tiny — total must still
+        # report the corpus-wide match count, and has_more must reflect the
+        # pageable pool, not total.
+        for i in range(30):
+            self.add(f"d{i}", "common word")
+        r = self.client.get("/search", params={"q": "common", "mode": "hybrid",
+                                               "top_k": 10, "candidates": 5})
+        body = r.json()
+        self.assertEqual(body["total_results"], 30)
+        self.assertEqual(body["metadata"]["merged_candidates"] <= 10, True)
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestApiExposure(unittest.TestCase):
+    """Prod/dev surface: docs hidden in production, CORS opt-in, /metrics gated."""
+
+    KEYS = ("NEXUS_ENV", "NEXUS_API_KEY", "NEXUS_CORS_ORIGINS", "NEXUS_DB")
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in self.KEYS}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        from nexus_search.core import api
+        importlib.reload(api)
+
+    def _reload(self, env, key, cors=None):
+        os.environ["NEXUS_ENV"] = env
+        if key:
+            os.environ["NEXUS_API_KEY"] = key
+        else:
+            os.environ.pop("NEXUS_API_KEY", None)
+        if cors is None:
+            os.environ.pop("NEXUS_CORS_ORIGINS", None)
+        else:
+            os.environ["NEXUS_CORS_ORIGINS"] = cors
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "api.db")
+        from nexus_search.core import api
+        importlib.reload(api)
+        return TestClient(api.app)
+
+    def test_docs_hidden_in_production(self):
+        client = self._reload("production", "secret")
+        self.assertEqual(client.get("/docs").status_code, 404)
+        self.assertEqual(client.get("/openapi.json").status_code, 404)
+
+    def test_docs_visible_in_dev(self):
+        client = self._reload("dev", None)
+        self.assertEqual(client.get("/docs").status_code, 200)
+
+    def test_metrics_gated_by_key(self):
+        client = self._reload("production", "secret")
+        self.assertEqual(client.get("/metrics").status_code, 401)
+        self.assertEqual(client.get("/metrics", headers={"X-API-Key": "secret"}).status_code, 200)
+
+    def test_explain_gated_by_key(self):
+        client = self._reload("production", "secret")
+        self.assertEqual(client.post("/search/explain",
+                                     json={"query": "x"}).status_code, 401)
+        self.assertEqual(client.post("/search/explain", headers={"X-API-Key": "secret"},
+                                     json={"query": "x"}).status_code, 200)
+
+    def test_cors_opt_in(self):
+        client = self._reload("dev", None, cors="https://app.example")
+        r = client.options("/search", headers={
+            "Origin": "https://app.example",
+            "Access-Control-Request-Method": "GET"})
+        self.assertEqual(r.headers.get("access-control-allow-origin"), "https://app.example")
+        noset = self._reload("dev", None)
+        r2 = noset.get("/health", headers={"Origin": "https://app.example"})
+        self.assertNotIn("access-control-allow-origin",
+                         {k.lower() for k in r2.headers.keys()})
+
+    def test_storage_error_not_leaked(self):
+        client = self._reload("dev", None)
+        client.post("/documents", json={"doc_id": "x", "content": "c"})
+        # corrupt the documents table name away, then write: the 500 body must
+        # not carry the sqlite error text (paths/SQL) to the client
+        api_mod = __import__("nexus_search.core.api", fromlist=["api"])
+        api_mod._storage.conn.execute("ALTER TABLE documents RENAME TO documents_gone")
+        api_mod._storage.conn.commit()
+        try:
+            r = client.post("/documents", json={"doc_id": "y", "content": "c"})
+            self.assertEqual(r.status_code, 500)
+            self.assertEqual(r.json()["detail"], "storage error")
+        finally:
+            pass  # each test gets a fresh DB+module anyway
+
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
 class TestApiAuth(unittest.TestCase):

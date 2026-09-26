@@ -55,11 +55,14 @@ class Suggester:
         matches.sort(key=lambda t: (-self.storage.document_frequency(t), t))
         return matches[:limit]
 
-    def related_searches(self, query: str, experiment_log=None, limit: int = 5) -> list[str]:
+    def related_searches(self, query: str, experiment_log=None, limit: int = 5,
+                         max_log_rows: int = 10_000) -> list[str]:
         """Queries related to `query`.
 
         Source order:
-        1. the query log (other logged queries sharing a term with this one)
+        1. the query log (other logged queries sharing a term with this one),
+           scanned over at most `max_log_rows` most recent rows — the log
+           grows unboundedly, the scan must not
         2. trigram-similar index terms never present in the query itself
 
         Empty log + empty index both return [] without error."""
@@ -69,7 +72,7 @@ class Suggester:
 
         if experiment_log is not None:
             try:
-                related = self._from_log(query, experiment_log, limit)
+                related = self._from_log(query, experiment_log, limit, max_log_rows)
             except Exception:
                 related = []  # a logging table must never break suggestions
         if related or experiment_log is not None:
@@ -88,12 +91,13 @@ class Suggester:
         return [t for t, _ in sorted(scored.items(),
                                      key=lambda kv: (-kv[1], -self.storage.document_frequency(kv[0]), kv[0]))[:limit]]
 
-    def _from_log(self, query: str, log, limit: int) -> list[str]:
+    def _from_log(self, query: str, log, limit: int, max_log_rows: int = 10_000) -> list[str]:
         from ..core.query_parser import parse_query
         my_terms = set(parse_query(query).terms)
         counts: Counter[str] = Counter()
         rows = log.conn.execute(
-            "SELECT DISTINCT query FROM query_experiments"
+            "SELECT DISTINCT query FROM (SELECT query FROM query_experiments "
+            "ORDER BY id DESC LIMIT ?)", (max_log_rows,)
         ).fetchall()
         for (other,) in rows:
             other_terms = set(parse_query(other).terms)

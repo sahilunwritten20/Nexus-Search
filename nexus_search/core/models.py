@@ -3,12 +3,19 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+MAX_CONTENT_CHARS = 10_000_000  # ~10MB of text: attacker input must be bounded
+
+
 class DocumentIn(BaseModel):
     doc_id: str = Field(min_length=1, max_length=512)
-    content: str
-    title: str = ""
-    doc_type: str = "text"
+    content: str = Field(max_length=MAX_CONTENT_CHARS)
+    title: str = Field(default="", max_length=10_000)
+    doc_type: str = Field(default="text", max_length=64)
     metadata: dict = Field(default_factory=dict)
+
+
+class BulkDocumentIn(BaseModel):
+    documents: list[DocumentIn] = Field(min_length=1, max_length=500)
 
 
 class SearchResultOut(BaseModel):
@@ -41,8 +48,19 @@ class SearchMetadata(BaseModel):
     fallback_reason: Optional[str] = None
     latency_ms: int = 0
     fusion: Optional[str] = None
+    sort: Optional[str] = None
     has_more: bool = False       # more results beyond this page? (Stage 4)
     next_cursor: Optional[str] = None  # opaque cursor for the next page (Stage 4)
+
+
+class DocumentOut(BaseModel):
+    doc_id: str
+    title: str
+    content: str
+    doc_type: str
+    length: int = 0
+    metadata: dict = Field(default_factory=dict)
+    added_at: float = 0.0
 
 
 class SearchResponse(BaseModel):

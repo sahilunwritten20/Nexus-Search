@@ -58,6 +58,11 @@ class HybridSearchPage:
     total: int
     results: list[HybridSearchResult] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Rows actually reachable through paging the fused pool. `total` is the
+    # true corpus match count (BM25 side is exact); `pool_size` is the
+    # candidate-bounded pageable universe — has_more must use pool_size,
+    # otherwise we'd promise pages that come back empty.
+    pool_size: Optional[int] = None
 
 
 # Backward-compatible alias: the implementation lives in core/normalize.py
@@ -177,11 +182,13 @@ class HybridSearch:
 
     def _bm25_candidates(self, query: str, top_k: int, group_chunks: bool,
                          candidates: Optional[int] = None,
-                         highlight: bool = False) -> dict[str, tuple[float, SearchResult]]:
+                         highlight: bool = False) -> tuple[dict[str, tuple[float, SearchResult]], int]:
         candidate_k = self._candidate_k(top_k, candidates)
         page = self.bm25_search.search_page(query, top_k=candidate_k, offset=0,
                                             group_chunks=group_chunks, highlight=highlight)
-        return {r.doc_id: (r.score, r) for r in page.results}
+        # page.total is the TRUE corpus-wide match count (not truncated to
+        # the candidate pool) — the honest total for hybrid-mode reporting.
+        return {r.doc_id: (r.score, r) for r in page.results}, page.total
 
     def _vector_candidates(self, query: str, top_k: int, group_chunks: bool,
                            allowed_filter: Optional[Callable[[str], bool]] = None,
@@ -421,6 +428,7 @@ class HybridSearch:
             ]
             return HybridSearchPage(
                 total=page.total,
+                pool_size=page.total,
                 results=results,
                 metadata=self._meta(mode.value, original_mode, start_time,
                                     bm25_candidates=page.total, merged_candidates=len(results),
@@ -433,11 +441,11 @@ class HybridSearch:
             except EmbedderUnavailable as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                           start_time, f"embedder_unavailable: {exc}", fusion, sort, highlight)
+                                           start_time, f"embedder_unavailable:{type(exc).__name__}", fusion, sort, highlight)
             except Exception as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                           start_time, f"vector_search_error: {exc}", fusion, sort, highlight)
+                                           start_time, f"vector_search_error:{type(exc).__name__}", fusion, sort, highlight)
 
             fused = _fuse({}, vector_results, fusion, bm25_weight=0.0, vector_weight=self.vector_weight)
             merged = []
@@ -463,7 +471,10 @@ class HybridSearch:
             if diversity > 0.0:
                 merged = self._diversify(merged, diversity)
             return HybridSearchPage(
+                # semantic mode has no relevance threshold: the candidate
+                # pool IS the result set by design (top-N most similar)
                 total=len(merged),
+                pool_size=len(merged),
                 results=merged[offset:offset + top_k],
                 metadata=self._meta(mode.value, original_mode, start_time,
                                     vector_candidates=len(vector_results),
@@ -475,9 +486,10 @@ class HybridSearch:
         # BM25 candidates are computed OUTSIDE the vector try/except: a BM25
         # failure cannot be "fixed" by falling back to BM25, so it propagates.
         bm25_results = {}
+        bm25_total = 0
         if self.bm25_weight > 0:
-            bm25_results = self._bm25_candidates(query, top_k, group_chunks, candidates,
-                                                 highlight=highlight)
+            bm25_results, bm25_total = self._bm25_candidates(
+                query, top_k, group_chunks, candidates, highlight=highlight)
 
         vector_results = {}
         try:
@@ -486,11 +498,11 @@ class HybridSearch:
         except EmbedderUnavailable as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                       start_time, f"embedder_unavailable: {exc}", fusion, sort, highlight)
+                                       start_time, f"embedder_unavailable:{type(exc).__name__}", fusion, sort, highlight)
         except Exception as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
-                                       start_time, f"vector_search_error: {exc}", fusion, sort, highlight)
+                                       start_time, f"vector_search_error:{type(exc).__name__}", fusion, sort, highlight)
 
         merged = self._merge_results(bm25_results, vector_results, fusion=fusion,
                                      parsed=parsed, highlight=highlight)
@@ -503,7 +515,10 @@ class HybridSearch:
                 r.bm25_normalized = None
                 r.vector_normalized = None
         return HybridSearchPage(
-            total=len(merged),
+            # total = corpus-wide match count when BM25 contributes (exact),
+            # else the fused pool is the whole answer universe by design.
+            total=max(bm25_total, len(merged)) if self.bm25_weight > 0 else len(merged),
+            pool_size=len(merged),
             results=merged[offset:offset + top_k],
             metadata=self._meta(SearchMode.HYBRID.value, original_mode, start_time,
                                 bm25_candidates=len(bm25_results),
@@ -526,6 +541,7 @@ class HybridSearch:
         ]
         return HybridSearchPage(
             total=page.total,
+            pool_size=page.total,
             results=results,
             metadata=self._meta("keyword", original_mode, start_time,
                                 fallback=True, fallback_reason=reason,

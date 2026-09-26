@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -25,7 +26,7 @@ from ..ranking.ranker import RankingWeights, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
-from .models import DocumentIn, ExplainRequest, ExplainResponse, ExplainResult, SearchMetadata, SearchResponse, SearchResultOut
+from .models import BulkDocumentIn, DocumentIn, DocumentOut, ExplainRequest, ExplainResponse, ExplainResult, SearchMetadata, SearchResponse, SearchResultOut
 from .storage import Storage
 from .vector_store import VectorStoreManager
 
@@ -61,7 +62,21 @@ async def lifespan(app: FastAPI):
     _storage.close()
 
 
-app = FastAPI(title="Nexus Search — Core", version="0.4.0", lifespan=lifespan)
+# OpenAPI explorer is a dev convenience; in production it's information
+# disclosure (exact params, paths). NEXUS_ENV=dev keeps them on.
+_is_dev = _ENV == "dev"
+app = FastAPI(title="Nexus Search — Core", version="0.4.0", lifespan=lifespan,
+              docs_url="/docs" if _is_dev else None,
+              redoc_url="/redoc" if _is_dev else None,
+              openapi_url="/openapi.json" if _is_dev else None)
+
+# CORS is opt-in and explicit (NEXUS_CORS_ORIGINS="https://a,https://b");
+# unset = no CORS headers at all — browsers default-deny cross-origin.
+_cors_origins = [o.strip() for o in os.environ.get("NEXUS_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
+                       allow_methods=["GET", "POST", "DELETE"],
+                       allow_headers=["X-API-Key", "Content-Type"])
 
 _NEXUS_DB = os.environ.get("NEXUS_DB", "nexus_search.db")
 _storage = Storage(_NEXUS_DB)
@@ -78,7 +93,8 @@ try:
 except EmbedderUnavailable as exc:
     logger.error("Vector subsystem unavailable at startup: %s", exc)
     _vector_store = None
-    _vector_error = f"embedder_unavailable: {exc}"
+    # type name only — the raw message can carry paths/model names to clients
+    _vector_error = f"embedder_unavailable:{type(exc).__name__}"
 
 if _vector_store is not None:
     _hybrid_searcher = create_hybrid_search(_storage, vector_store=_vector_store, db_path=_NEXUS_DB)
@@ -184,9 +200,47 @@ def add_document(request: Request, doc: DocumentIn, response: Response):
             doc_type=doc.doc_type, metadata=doc.metadata,
         )
         _query_cache.clear()  # writes invalidate cached pages
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
+    except sqlite3.Error:
+        logger.exception("storage error indexing %s", doc.doc_id)
+        raise HTTPException(status_code=500, detail="storage error")  # details stay in logs
     return {"doc_id": doc.doc_id, "status": "indexed"}
+
+
+@app.post("/documents/bulk", dependencies=[Depends(require_api_key)])
+@limiter.limit(_RATE_LIMIT)
+def add_documents_bulk(request: Request, body: BulkDocumentIn, response: Response):
+    """Batch write: N docs, one round trip. Per-doc failures are reported,
+    not fatal — a bad row must not poison the batch (matches the ingest
+    pipeline's dead-letter stance)."""
+    indexed, failed = 0, []
+    for doc in body.documents:
+        try:
+            _indexer.add_document(
+                doc_id=doc.doc_id, content=doc.content, title=doc.title,
+                doc_type=doc.doc_type, metadata=doc.metadata,
+            )
+            indexed += 1
+        except sqlite3.Error:
+            logger.exception("storage error indexing %s", doc.doc_id)
+            failed.append({"doc_id": doc.doc_id, "error": "storage_error"})
+        except ValueError as exc:  # e.g. vector dim mismatch surfaces here
+            failed.append({"doc_id": doc.doc_id, "error": type(exc).__name__})
+    if indexed:
+        _query_cache.clear()  # writes invalidate cached pages
+    return {"indexed": indexed, "failed": failed, "total": len(body.documents)}
+
+
+@app.get("/documents/{doc_id}", response_model=DocumentOut)
+@limiter.limit(_RATE_LIMIT)
+def get_document(request: Request, doc_id: str, response: Response):
+    """Read-back endpoint: the stored row for one doc_id (404 when absent).
+    Chunk parents return 404 — fetch the chunk row ids directly."""
+    doc = _storage.get_document(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return DocumentOut(doc_id=doc.doc_id, title=doc.title, content=doc.content,
+                       doc_type=doc.doc_type, length=doc.length,
+                       metadata=doc.metadata, added_at=doc.added_at)
 
 
 @app.delete("/documents/{doc_id}", dependencies=[Depends(require_api_key)])
@@ -198,6 +252,9 @@ def delete_document(request: Request, doc_id: str, response: Response):
     return {"doc_id": doc_id, "status": "deleted"}
 
 
+MAX_QUERY_CHARS = 2000  # attacker-controlled parse cost must be bounded
+
+
 @app.get("/search", response_model=SearchResponse)
 @limiter.limit(_RATE_LIMIT)
 def search(
@@ -206,6 +263,7 @@ def search(
     q: str,
     top_k: int = Query(default=10, ge=1),
     offset: int = Query(default=0, ge=0, le=10_000),
+    diversity: float = Query(default=0.0, ge=0.0, le=1.0),
     mode: str = Query(default="hybrid", pattern="^(keyword|semantic|hybrid)$"),
     bm25_weight: float = Query(default=1.0, ge=0),
     vector_weight: float = Query(default=1.0, ge=0),
@@ -221,6 +279,8 @@ def search(
 ):
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must not be empty")
+    if len(q) > MAX_QUERY_CHARS:
+        raise HTTPException(status_code=400, detail="q too long")
     top_k = min(max(top_k, 1), 100)
 
     # Cursor pagination (ADDITIONAL to offset, never replacing it): the cursor
@@ -256,6 +316,11 @@ def search(
     if _vector_store is None:
         return _keyword_only_page(q, top_k, offset, mode, _vector_error)
 
+    if diversity > 0.0 and sort not in (None, "relevance"):
+        # both reorder after ranking; combining them silently would be mush
+        raise HTTPException(status_code=400,
+                            detail="diversity and non-relevance sort cannot be combined")
+
     # Create a new HybridSearch with custom weights for this request
     hybrid_searcher = HybridSearch(
         _storage,
@@ -271,6 +336,7 @@ def search(
         q, top_k=top_k, offset=offset, mode=mode, bm25_weight=bm25_weight,
         vector_weight=vector_weight, fusion=fusion, candidates=candidates,
         debug=debug, sort=sort, highlight=highlight, rerank=rerank_flag,
+        diversity=diversity,
     )
     cached_page = _query_cache.get(cache_key)
     if cached_page is not None:
@@ -279,7 +345,7 @@ def search(
         page = hybrid_searcher.search_page(
             q, top_k=top_k, offset=offset, mode=search_mode,
             fusion=fusion, candidates=candidates, debug=debug,
-            sort=sort, highlight=highlight,
+            sort=sort, highlight=highlight, diversity=diversity,
         )
         _query_cache.set(cache_key, page)
 
@@ -303,9 +369,13 @@ def search(
     if page.metadata:
         metadata = SearchMetadata(**page.metadata)
 
-    # Stage 4: has_more + next_cursor (computed, never persisted)
+    # Stage 4: has_more + next_cursor (computed, never persisted). pool_size
+    # is the fused-candidate boundary — total can exceed it (hybrid reports
+    # the true corpus match count), and "more pages" is about the pageable
+    # pool, not the corpus.
     if metadata is not None:
-        metadata.has_more = (offset + len(results)) < page.total
+        pageable = page.pool_size if page.pool_size is not None else page.total
+        metadata.has_more = (offset + len(results)) < pageable
         if metadata.has_more:
             import base64
             nxt = base64.urlsafe_b64encode(f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
@@ -334,10 +404,14 @@ def search(
     )
 
 
-@app.post("/search/explain", response_model=ExplainResponse)
-def explain_search(req: ExplainRequest):
+@app.post("/search/explain", response_model=ExplainResponse,
+          dependencies=[Depends(require_api_key)])
+@limiter.limit(_RATE_LIMIT)
+def explain_search(request: Request, req: ExplainRequest, response: Response):
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
+    if len(req.query) > MAX_QUERY_CHARS:
+        raise HTTPException(status_code=400, detail="query too long")
     req.top_k = min(max(req.top_k, 1), 100)
 
     try:
@@ -373,21 +447,37 @@ def explain_search(req: ExplainRequest):
     )
 
 
+# ONE shared suggester: vocabulary reload happens only when the document
+# count actually changes (Suggester._refresh), not per request.
+_suggester = None
+
+
+def _get_suggester():
+    global _suggester
+    if _suggester is None:
+        from ..ranking.suggestions import Suggester
+        _suggester = Suggester(_storage)
+    return _suggester
+
+
 @app.get("/suggest")
-def suggest(q: str, limit: int = Query(default=10, ge=1, le=50)):
+@limiter.limit(_RATE_LIMIT)
+def suggest(request: Request, response: Response, q: str,
+            limit: int = Query(default=10, ge=1, le=50)):
     """Autocomplete over the live index vocabulary — sorted-list + bisect
     prefix scan (see ranking/suggestions.py for the no-trie rationale)."""
-    from ..ranking.suggestions import Suggester
-    return {"query": q, "suggestions": Suggester(_storage).suggest(q, limit=limit)}
+    return {"query": q, "suggestions": _get_suggester().suggest(q, limit=limit)}
 
 
 @app.get("/related")
-def related(q: str, limit: int = Query(default=5, ge=1, le=20)):
+@limiter.limit(_RATE_LIMIT)
+def related(request: Request, response: Response, q: str,
+            limit: int = Query(default=5, ge=1, le=20)):
     """Related searches: query-log co-occurrence when it exists, trigram
     term-similarity fallback otherwise. Empty log never errors."""
-    from ..ranking.suggestions import Suggester
-    return {"query": q, "related": Suggester(_storage).related_searches(
-        q, experiment_log=experiment_log, limit=limit)}
+    rows_cap = 10_000  # bounded co-occurrence scan — see Suggester docstring
+    return {"query": q, "related": _get_suggester().related_searches(
+        q, experiment_log=experiment_log, limit=limit, max_log_rows=rows_cap)}
 
 
 @app.get("/health")
@@ -419,12 +509,28 @@ def health():
     }
 
 
-@app.get("/metrics")
+@app.get("/ready")
+def ready():
+    """Readiness probe: 200 once the store answers. A degraded vector
+    subsystem is BROKEN for readiness (search would silently under-recall) —
+    /health carries that nuance; /ready is binary for load balancers."""
+    try:
+        _storage.conn.execute("SELECT 1").fetchone()
+    except sqlite3.Error:
+        raise HTTPException(status_code=503, detail="storage not ready")
+    if _vector_store is None:
+        raise HTTPException(status_code=503, detail="vector subsystem not ready")
+    return {"ready": True}
+
+
+@app.get("/metrics", dependencies=[Depends(require_api_key)])
 def metrics():
-    """Prometheus-style metrics endpoint."""
+    """Ops endpoint: corpus size/embedder identity/queue depth — internal
+    information, so it follows the same key gate as the write endpoints."""
     sync_stats = _embedding_sync.get_stats() if _embedding_sync is not None else None
     vector_stats = _vector_store.get_stats() if _vector_store is not None else None
     return {
         "embedding_sync": sync_stats,
         "vector_store": vector_stats,
+        "query_cache": _query_cache.stats(),
     }
