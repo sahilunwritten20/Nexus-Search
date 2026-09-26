@@ -169,6 +169,12 @@ class VectorStore:
     
     def add(self, doc_id: str, vector: np.ndarray, content_hash: str, doc_type: str = "", language: str = ""):
         """Add or update a vector."""
+        # Refresh our view of other processes' writes BEFORE merging ours into
+        # the in-memory matrix, same as search(): without this, a stale local
+        # view would drop vectors other instances committed. This does NOT
+        # make concurrent writes at scale safe (that's the shared-store
+        # design); it closes the silent-loss window between commits.
+        self._maybe_reload()
         if vector.shape != (self.dim,):
             raise ValueError(f"Vector dim {vector.shape} != expected {self.dim}")
         
