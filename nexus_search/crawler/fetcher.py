@@ -2,12 +2,15 @@
 redirect-hop validation (SSRF), response size cap, HTTP error statuses."""
 
 import contextlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Callable, ContextManager, Optional
 from urllib.parse import urljoin
 
 import requests
+
+logger = logging.getLogger("nexus_search.crawler.fetcher")
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 REDIRECT_STATUS = {301, 302, 303, 307, 308}

@@ -116,6 +116,76 @@ def test_304_is_not_modified():
     fetcher.close()
 
 
+def test_render_js_fallback_without_playwright(caplog):
+    """render_js=True must degrade to the plain HTTP body when Playwright
+    isn't installed — log a warning, never crash (regression: logger was
+    undefined in fetcher.py)."""
+    import logging
+
+    try:
+        import playwright  # noqa: F401
+        import pytest
+        pytest.skip("playwright installed; fallback path not reachable here")
+    except ImportError:
+        pass
+
+    fetcher = Fetcher(render_js=True)
+
+    response = Mock()
+    response.status_code = 200
+    response.text = "<html>Hello</html>"
+    response.headers = {"content-type": "text/html"}
+    fetcher.session.get = Mock(return_value=response)
+
+    with caplog.at_level(logging.WARNING, logger="nexus_search.crawler.fetcher"):
+        result = fetcher.fetch("https://example.com")
+
+    assert result.html == "<html>Hello</html>"  # plain body, no crash
+    assert any("playwright" in r.getMessage().lower() for r in caplog.records)
+    fetcher.close()
+
+
+def test_render_js_browser_failure_falls_back(caplog):
+    """If Playwright IS present but the browser launch fails, we still fall
+    back to the HTTP body (warning, not exception)."""
+    import logging
+    import sys
+    import types
+
+    boom = types.ModuleType("playwright.sync_api")
+
+    def _raise_playwright(*a, **k):
+        raise RuntimeError("no browser here")
+
+    boom.sync_playwright = _raise_playwright
+    pkg = types.ModuleType("playwright")
+    pkg.sync_api = boom
+
+    fetcher = Fetcher(render_js=True)
+    response = Mock()
+    response.status_code = 200
+    response.text = "<html>Hello</html>"
+    response.headers = {"content-type": "text/html"}
+    fetcher.session.get = Mock(return_value=response)
+
+    saved = sys.modules.get("playwright"), sys.modules.get("playwright.sync_api")
+    sys.modules["playwright"] = pkg
+    sys.modules["playwright.sync_api"] = boom
+    try:
+        with caplog.at_level(logging.WARNING, logger="nexus_search.crawler.fetcher"):
+            result = fetcher.fetch("https://example.com")
+    finally:
+        for name, old in (("playwright", saved[0]), ("playwright.sync_api", saved[1])):
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+
+    assert result.html == "<html>Hello</html>"
+    assert any("render failed" in r.getMessage().lower() for r in caplog.records)
+    fetcher.close()
+
+
 def test_response_etag_is_returned():
 
     fetcher = Fetcher()
