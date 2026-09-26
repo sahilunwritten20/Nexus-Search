@@ -19,8 +19,13 @@ from ..core.storage import Storage
 from ..core.vector_store import VectorStoreManager
 from ..ingestion.dedup import Deduplicator
 from ..ingestion.pipeline import make_crawler_ingest_fn
+from .blocklist import Blocklist
 from .pipeline import CrawlPipeline
 from .scheduler import CrawlScheduler
+
+
+def _frontier_db_path(db: str) -> str:
+    return os.path.splitext(db)[0] + "_frontier.db"
 
 
 def load_config(path: str) -> dict:
@@ -48,7 +53,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         recrawl = args.every  # scheduled runs re-check old pages automatically
 
     pipeline = CrawlPipeline(
-        db_path=os.path.splitext(args.db)[0] + "_frontier.db",
+        db_path=_frontier_db_path(args.db),
         allowed_domains=domains,
         max_pages=_pick(args.max_pages, config, "max_pages", 1000),
         max_depth=_pick(args.max_depth, config, "max_depth", 3),
@@ -89,6 +94,12 @@ def report(stats: dict, metrics_file: str | None) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Nexus Search — crawler")
+    parser.add_argument("command", nargs="?", default="crawl",
+                        choices=["crawl", "block", "unblock", "blocklist"],
+                        help="block/unblock a host, list blocked hosts, or crawl (default)")
+    parser.add_argument("host", nargs="?", default=None,
+                        help="host (or URL) for block/unblock")
+    parser.add_argument("--reason", default="", help="why a host was blocked (recorded with 'block')")
     parser.add_argument("--seeds", help="Path to seed URL file")
     parser.add_argument("--sitemap", action="append", help="Sitemap URL (repeatable)")
     parser.add_argument("--config", default="crawler_config.yaml")
@@ -106,6 +117,27 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    # Blocklist ops don't crawl anything — they only touch the frontier DB.
+    if args.command in ("block", "unblock", "blocklist"):
+        blocklist = Blocklist(_frontier_db_path(args.db))
+        try:
+            if args.command == "blocklist":
+                for host, reason, _ts in blocklist.list_all():
+                    print(f"{host}\t{reason}")
+            elif not args.host:
+                parser.error(f"'{args.command}' requires a host argument")
+            elif args.command == "block":
+                blocklist.block(args.host, reason=args.reason)
+                print(f"blocked {Blocklist._host_of(args.host)}")
+            else:
+                removed = blocklist.unblock(args.host)
+                print(f"unblocked {Blocklist._host_of(args.host)}" if removed
+                      else f"host was not blocked: {Blocklist._host_of(args.host)}")
+        finally:
+            blocklist.close()
+        return
+
     config = load_config(args.config)
 
     seeds = config.get("seeds", [])

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from ..ingestion.connectors.web import extract_page
 from ..ingestion.dedup import content_hash
+from .blocklist import Blocklist
 from .fetcher import Fetcher
 from .frontier import Frontier, FrontierEntry
 from .metrics import CrawlerMetrics
@@ -76,6 +77,9 @@ class CrawlPipeline:
                            "(allowed only because allow_private_hosts=True)")
             user_agent = DEFAULT_USER_AGENT
         self.frontier = Frontier(db_path)
+        # Webmaster opt-out: shares the frontier DB (one crawl-state file).
+        # Precedence: blocklist > robots.txt > allow-list.
+        self.blocklist = Blocklist(db_path)
         self.politeness = PolitenessManager(
             user_agent=user_agent.split()[0].split("/")[0],  # robots.txt product token
             default_delay=default_crawl_delay,
@@ -184,6 +188,10 @@ class CrawlPipeline:
     def _crawl(self, entry: FrontierEntry) -> None:
         domain = get_domain(entry.url)
 
+        # Blocklist wins over everything below it (robots, allow-list); it's a
+        # plain sqlite lookup — the cheapest gate — so it runs first.
+        if self.blocklist.is_blocked(entry.url):
+            return self._skip(entry, "blocklist")
         if not self.allow_private_hosts and not validate_url(entry.url):
             return self._skip(entry, "unsafe host")
         if not self._domain_allowed(domain):
@@ -285,7 +293,7 @@ class CrawlPipeline:
     def close(self) -> None:
         if self._closed:
             return
-        for closer in (self.fetcher.close, self.frontier.close):
+        for closer in (self.fetcher.close, self.frontier.close, self.blocklist.close):
             try:
                 closer()
             except Exception:
