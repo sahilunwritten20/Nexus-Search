@@ -27,6 +27,21 @@ from .vector_store import VectorStoreManager
 
 logger = logging.getLogger("nexus_search.api")
 
+# Fail CLOSED on auth in anything but explicit dev. NEXUS_ENV defaults to
+# "production" (opt OUT of auth must be a conscious decision, not a forgotten
+# env var); a production boot without NEXUS_API_KEY refuses to start.
+_ENV = os.environ.get("NEXUS_ENV", "production").strip().lower() or "production"
+_API_KEY = os.environ.get("NEXUS_API_KEY", "")
+if not _API_KEY and _ENV != "dev":
+    raise RuntimeError(
+        "NEXUS_API_KEY is not set and NEXUS_ENV "
+        f"!= 'dev' (got {_ENV!r}; unset counts as 'production'). Refusing to "
+        "boot with unauthenticated write endpoints. Set NEXUS_API_KEY=... to "
+        "run the API, or NEXUS_ENV=dev for local development only.")
+if not _API_KEY:
+    logger.warning("NEXUS_API_KEY is not set — write endpoints are UNAUTHENTICATED "
+                   "(dev mode, only because NEXUS_ENV=dev).")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -116,14 +131,10 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
 
 
 # ---------------------------------------------------------------------------
-# AuthN: write endpoints require an API key when NEXUS_API_KEY is set.
-# Read-only /search and friends stay open (aligns with how this prototype is
-# meant to be embedded). If NEXUS_API_KEY is unset the app runs OPEN — that is
-# deliberate for local dev, and it is LOUD, not silent:
-_API_KEY = os.environ.get("NEXUS_API_KEY", "")
-if not _API_KEY:
-    logger.warning("NEXUS_API_KEY is not set — write endpoints are UNAUTHENTICATED "
-                   "(dev mode). Set it before exposing this API beyond localhost.")
+# AuthN: write endpoints require the X-API-Key header whenever NEXUS_API_KEY
+# is set; read-only /search and friends stay open (aligns with how this
+# prototype is meant to be embedded). _API_KEY/_ENV and the fail-closed boot
+# check live at the top of the module (see above).
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 

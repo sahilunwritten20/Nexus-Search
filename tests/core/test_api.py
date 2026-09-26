@@ -6,6 +6,10 @@ import unittest
 
 # Use hash embedder for offline tests
 os.environ["NEXUS_EMBEDDER"] = "hash:384"
+# These tests exercise API behavior, not boot policy (TestApiBootPolicy below
+# covers that): opt the module into the explicit dev mode the API requires
+# when no NEXUS_API_KEY is set.
+os.environ.setdefault("NEXUS_ENV", "dev")
 
 try:
     from fastapi.testclient import TestClient
@@ -14,8 +18,59 @@ except ImportError:  # fastapi / httpx not installed
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestApiBootPolicy(unittest.TestCase):
+    """Fail-closed startup: no NEXUS_API_KEY outside dev must not boot."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ("NEXUS_ENV", "NEXUS_API_KEY")}
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        from nexus_search.core import api
+        importlib.reload(api)  # back to a booting state for other tests
+
+    def test_production_default_without_key_refuses_to_boot(self):
+        os.environ.pop("NEXUS_API_KEY", None)
+        os.environ.pop("NEXUS_ENV", None)  # unset == production
+        from nexus_search.core import api
+        with self.assertRaises(RuntimeError) as ctx:
+            importlib.reload(api)
+        self.assertIn("NEXUS_API_KEY", str(ctx.exception))
+        self.assertIn("NEXUS_ENV=dev", str(ctx.exception))
+
+    def test_explicit_production_without_key_refuses_to_boot(self):
+        os.environ.pop("NEXUS_API_KEY", None)
+        os.environ["NEXUS_ENV"] = "production"
+        from nexus_search.core import api
+        with self.assertRaises(RuntimeError):
+            importlib.reload(api)
+
+    def test_dev_without_key_boots_open(self):
+        os.environ.pop("NEXUS_API_KEY", None)
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "boot.db")
+        from nexus_search.core import api
+        importlib.reload(api)
+        self.assertEqual(TestClient(api.app).get("/health").status_code, 200)
+
+    def test_production_with_key_boots(self):
+        os.environ["NEXUS_API_KEY"] = "boot-secret"
+        os.environ["NEXUS_ENV"] = "production"
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "boot.db")
+        from nexus_search.core import api
+        importlib.reload(api)
+        self.assertEqual(TestClient(api.app).get("/health").status_code, 200)
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
 class TestApi(unittest.TestCase):
     def setUp(self):
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ.pop("NEXUS_API_KEY", None)
         os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "api.db")
         from nexus_search.core import api
 
@@ -109,6 +164,8 @@ class TestApiPhase5Ux(unittest.TestCase):
     cursor pagination, has_more. Real HTTP layer (TestClient), not internals."""
 
     def setUp(self):
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ.pop("NEXUS_API_KEY", None)
         os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "api.db")
         from nexus_search.core import api
         importlib.reload(api)  # fresh empty database for every test

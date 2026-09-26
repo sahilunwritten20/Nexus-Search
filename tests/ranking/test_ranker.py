@@ -6,6 +6,7 @@ import time
 import unittest
 
 os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
+os.environ.setdefault("NEXUS_ENV", "dev")  # these tests boot the API without a key
 
 from nexus_search.core.hybrid_search import HybridSearch, SearchMode
 from nexus_search.core.indexer import Indexer

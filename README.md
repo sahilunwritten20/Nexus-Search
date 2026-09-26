@@ -28,6 +28,30 @@ benchmarking used throughout the development process.
 
 ------------------------------------------------------------------------
 
+## Running the API
+
+``` bash
+pip install -r requirements.txt
+uvicorn nexus_search.core.api:app
+```
+
+Configuration is via environment variables (see `.env.example`):
+
+| Variable         | Default        | Meaning |
+| ---------------- | -------------- | ------- |
+| `NEXUS_DB`       | `nexus_search.db` | SQLite file for documents/postings/vectors |
+| `NEXUS_ENV`      | `production`   | Anything but `dev` **refuses to boot without `NEXUS_API_KEY`** |
+| `NEXUS_API_KEY`  | *(unset)*      | Required on `POST/DELETE /documents` (`X-API-Key` header); unset + non-dev = no boot |
+| `NEXUS_CACHE_TTL` | `5`           | `/search` response-cache TTL, seconds |
+| `NEXUS_RATE_LIMIT` | `60/minute`  | Per-client limit on `/search` and write endpoints (`0` disables) |
+| `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
+
+For local development: `NEXUS_ENV=dev uvicorn nexus_search.core.api:app`
+(open write endpoints, loud warning). Never run an exposed instance without
+`NEXUS_API_KEY`.
+
+------------------------------------------------------------------------
+
 ## Architecture Roadmap
 
 ``` text

@@ -7,6 +7,7 @@ import time
 import unittest
 
 os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
+os.environ.setdefault("NEXUS_ENV", "dev")
 
 from nexus_search.core.query_cache import QueryCache
 
