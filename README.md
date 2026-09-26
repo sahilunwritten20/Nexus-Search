@@ -64,7 +64,10 @@ Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
 Docker/CI: `Dockerfile` + `docker-compose.yml` (key required), GitHub
 Actions runs the full suite + image build + `/health` probe on every push.
 
-The `automation/` directory holds sample n8n workflow exports — reference
+Test suite: **564 passed, 3 skipped** (offline; sentence-transformers cases
+self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
+
+The `automation/` directory holds sample n8n workflow exports - reference
 material only, not wired into the codebase.
 
 ------------------------------------------------------------------------
@@ -127,7 +130,7 @@ material only, not wired into the codebase.
 
 ### Test Status
 
--   48 tests passed (tokenizer 9, storage 10, indexer 6, BM25 11, query features 5, API 7)
+-   Phase 1 as shipped had 48 tests; the consolidated suite today is much larger (see bottom)
 -   0 tests failed
 
 ------------------------------------------------------------------------
@@ -161,7 +164,7 @@ material only, not wired into the codebase.
 
 ### Test Status
 
--   63 tests passed (chunker 6, code 4, files 6, mime 5, pipeline+dedup+canonical 14, product 11, quality 5, web 11, web metadata 1)
+-   Phase 2 as shipped had 63 tests; the consolidated suite today is much larger (see bottom)
 -   0 tests failed
 
 ------------------------------------------------------------------------
@@ -211,7 +214,7 @@ material only, not wired into the codebase.
 -   End-to-end (local test server): 5 integration tests (full crawl, depth limit, domain limit, incremental recrawl, private host blocked)
 -   Chunk lifecycle: 12 tests (grouping, cascade delete, crawl-path chunking, index hooks)
 -   Regressions: 19 tests (fetcher/crawler/politeness/dedup/ingest failure paths)
--   Phase 3 total: 90 tests, 0 failed
+-   Phase 3 as shipped had 90 tests
 
 ------------------------------------------------------------------------
 
