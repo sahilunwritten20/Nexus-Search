@@ -1,0 +1,15 @@
+# Keep the build context (and image) free of local state.
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+*.db
+*.db-*
+.env
+tests
+docs
+automation
+scripts
+seeds*.txt

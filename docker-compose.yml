@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    # Fail-closed at the compose level too: up'ing without NEXUS_API_KEY in
+    # the environment errors out instead of booting an open API.
+    environment:
+      NEXUS_DB: /data/nexus_search.db
+      NEXUS_API_KEY: ${NEXUS_API_KEY:?Set NEXUS_API_KEY before `docker compose up` (NEXUS_ENV=dev to skip)}
+      NEXUS_ENV: ${NEXUS_ENV:-production}
+      NEXUS_CACHE_TTL: ${NEXUS_CACHE_TTL:-5}
+      NEXUS_RATE_LIMIT: ${NEXUS_RATE_LIMIT:-60/minute}
+      NEXUS_EMBEDDER: ${NEXUS_EMBEDDER:-hash:384}
+    ports:
+      - "8000:8000"
+    volumes:
+      # documents/postings/vectors + crawler frontier/blocklist state
+      - nexus-data:/data
+    restart: unless-stopped
+
+volumes:
+  nexus-data:
