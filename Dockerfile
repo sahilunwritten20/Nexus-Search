@@ -28,9 +28,13 @@ COPY --from=builder /opt/venv /opt/venv
 COPY nexus_search ./nexus_search
 COPY crawler_config.yaml ./
 
-# SQLite state lives on a mounted volume (see docker-compose.yml)
-RUN mkdir -p /data
+# SQLite state lives on a mounted volume (see docker-compose.yml).
+# Run unprivileged: the container does not need root for anything it does.
+RUN mkdir -p /data \
+    && useradd --system --home /app --no-create-home nexus \
+    && chown -R nexus:nexus /app /data
 VOLUME ["/data"]
+USER nexus
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \

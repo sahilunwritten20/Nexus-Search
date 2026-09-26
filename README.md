@@ -47,8 +47,25 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
 
 For local development: `NEXUS_ENV=dev uvicorn nexus_search.core.api:app`
-(open write endpoints, loud warning). Never run an exposed instance without
-`NEXUS_API_KEY`.
+(open write endpoints, loud warning + Swagger UI at `/docs`, which production
+hides). Never run an exposed instance without `NEXUS_API_KEY`.
+
+Endpoints: `GET /search` (pagination, `mode=keyword|semantic|hybrid`, facets,
+`diversity=`, sort, highlight), `POST/DELETE /documents`, `GET
+/documents/{id}`, `POST /documents/bulk`, `POST /search/explain` (key-gated),
+`GET /suggest`, `GET /related`, `GET /health`, `GET /ready`,
+`GET /metrics` (key-gated).
+
+Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
+/ `unblock` / `blocklist`. Reindex after tokenizer changes:
+`python -m nexus_search.core.reindex --db $NEXUS_DB --shadow`
+(replays in-flight writes during the swap; zero-downtime).
+
+Docker/CI: `Dockerfile` + `docker-compose.yml` (key required), GitHub
+Actions runs the full suite + image build + `/health` probe on every push.
+
+The `automation/` directory holds sample n8n workflow exports — reference
+material only, not wired into the codebase.
 
 ------------------------------------------------------------------------
 

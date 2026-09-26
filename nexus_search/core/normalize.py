@@ -46,16 +46,3 @@ def zscore_normalize(values: list[float]) -> list[float]:
     if std == 0:
         return [0.0 for _ in values]
     return [(v - mean) / std for v in values]
-
-
-def zscore_normalize_list(values: list[float]) -> list[float]:
-    """Z-score normalize (mean 0, std 1). Zero-variance pools collapse to 0.0 —
-    a flat signal carries no ranking information and should not fire."""
-    if not values:
-        return []
-    mean = sum(values) / len(values)
-    var = sum((v - mean) ** 2 for v in values) / len(values)
-    std = math.sqrt(var)
-    if std == 0:
-        return [0.0] * len(values)
-    return [(v - mean) / std for v in values]

@@ -60,13 +60,17 @@ def mmr_select(
     chosen: list[DiverseResult] = []
     chosen_sets: list[frozenset] = []
     remaining = list(results)
+    # Tokenize each candidate ONCE — similarity is recomputed against the
+    # chosen set every round, but the text work is not (and doc_text may hit
+    # storage: O(n) fetches total, not O(n²)).
+    remaining_sets = [_token_set(doc_text(c)) for c in results]
 
     while remaining and len(chosen) < max_results:
         # score candidates against chosen
         best_idx, best_pen, best_score = None, 0.0, float("-inf")
         skipped: list[int] = []
         for i, cand in enumerate(remaining):
-            cand_set = _token_set(doc_text(cand))
+            cand_set = remaining_sets[i]
             max_sim = 0.0
             for s in chosen_sets:
                 if not cand_set or not s:
@@ -89,13 +93,13 @@ def mmr_select(
             # page with duplicates (that would defeat the flood guard); the
             # ONLY re-admission case is "the page would otherwise stay empty".
             if not chosen and skipped:
+                chosen_sets.append(remaining_sets[skipped[0]])
                 cand = remaining.pop(skipped[0])
                 chosen.append(DiverseResult(cand, cand.score, 1.0))
-                chosen_sets.append(_token_set(doc_text(cand)))
             break
 
+        chosen_sets.append(remaining_sets.pop(best_idx))
         cand = remaining.pop(best_idx)
         chosen.append(DiverseResult(cand, best_score, best_pen))
-        chosen_sets.append(_token_set(doc_text(cand)))
 
     return chosen
