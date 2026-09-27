@@ -65,6 +65,7 @@ class CrawlPipeline:
         user_agent: Optional[str] = None,
         domain_boosts: Optional[dict[str, int]] = None,
         render_js: bool = False,
+        link_graph=None,
     ):
         # queue-order tuning: priority = base + domain boost. "Important"
         # sources outrank long-tail discoveries at thousands of queued URLs
@@ -106,6 +107,10 @@ class CrawlPipeline:
         self.ingest_fn = ingest_fn
         self.max_pages_per_domain = max_pages_per_domain
         self.recrawl_interval = recrawl_interval
+        # Phase 6 link intelligence: edges are recorded ONLY from pages that
+        # fetched + ingested successfully, and `self.link_graph` NEVER causes
+        # a fetch — it consumes what already arrived (SSRF boundary intact).
+        self.link_graph = link_graph
         self.metrics = CrawlerMetrics()
         self.domain_counts: dict[str, int] = {}
         self.domain_lock = threading.Lock()
@@ -254,16 +259,22 @@ class CrawlPipeline:
         )
         self._bump("crawled", len(result.html.encode("utf-8", errors="ignore")))
 
+        if self.link_graph is not None:
+            for link in page.links:
+                if urlsplit(link.url).scheme in ("http", "https"):
+                    self.link_graph.record_edge(entry.url, link.url,
+                                                link.anchor_text, link.rel)
+
         if entry.depth < self.max_depth:
             for link in page.links:
                 # Cheap filters only; full SSRF/DNS validation happens when the
                 # URL is actually processed (one lookup per fetch, not per link).
-                if urlsplit(link).scheme not in ("http", "https"):
+                if urlsplit(link.url).scheme not in ("http", "https"):
                     continue
-                link_domain = get_domain(link)
+                link_domain = get_domain(link.url)
                 if not self._domain_allowed(link_domain):
                     continue
-                self.frontier.add(link, depth=entry.depth + 1, base=entry.url,
+                self.frontier.add(link.url, depth=entry.depth + 1, base=entry.url,
                                   priority=self._url_priority(link_domain))
 
     def _url_priority(self, domain: str) -> int:

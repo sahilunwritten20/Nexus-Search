@@ -20,11 +20,21 @@ _CONTENT_TAGS = ("article", "main")
 
 
 @dataclass
+class Link:
+    """One outbound link. `url` is absolute (joined against the page URL).
+    anchor_text/rel ride along for the link graph (Phase 6): anchor is future
+    link-intelligence signal; rel carries nofollow/sponsored/ugc (non-endorsements)."""
+    url: str
+    anchor_text: str = ""
+    rel: str = ""
+
+
+@dataclass
 class ExtractedPage:
     url: str
     title: str
     text: str
-    links: list[str]
+    links: list[Link]
     meta_description: Optional[str]
     language: Optional[str]
     canonical_url: Optional[str]
@@ -127,7 +137,7 @@ def extract_page(html: str, url: str) -> ExtractedPage:
 
     text = _main_text(soup)
 
-    links: list[str] = []
+    links: list[Link] = []
     seen = set()
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
@@ -136,7 +146,12 @@ def extract_page(html: str, url: str) -> ExtractedPage:
         absolute = urljoin(url, href)
         if absolute not in seen:
             seen.add(absolute)
-            links.append(absolute)
+            rel = a.get("rel")
+            links.append(Link(
+                url=absolute,
+                anchor_text=a.get_text(separator=" ", strip=True)[:512],
+                rel=" ".join(rel) if isinstance(rel, list) else (rel or ""),
+            ))
 
     structured = _extract_structured(soup)
 

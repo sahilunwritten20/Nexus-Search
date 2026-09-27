@@ -59,12 +59,24 @@ class TestExtractPage(unittest.TestCase):
 
     def test_resolves_relative_links(self):
         page = extract_page(SAMPLE_HTML, "https://example.com/test")
-        self.assertIn("https://example.com/relative-link", page.links)
+        urls = [l.url for l in page.links]
+        self.assertIn("https://example.com/relative-link", urls)
+
+    def test_links_carry_anchor_text_and_rel(self):
+        # Phase 6: extractor surfaces what the link graph needs
+        html = ('<html><body><a href="/with-anchor">Read the guide</a>'
+                '<a href="/nofollowed" rel="nofollow">skip me</a></body></html>')
+        page = extract_page(html, "https://example.com/test")
+        by_url = {l.url: l for l in page.links}
+        self.assertEqual(by_url["https://example.com/with-anchor"].anchor_text,
+                         "Read the guide")
+        self.assertEqual(by_url["https://example.com/nofollowed"].rel, "nofollow")
 
     def test_skips_javascript_and_fragment_links(self):
         page = extract_page(SAMPLE_HTML, "https://example.com/test")
-        self.assertFalse(any(link.startswith("javascript:") for link in page.links))
-        self.assertNotIn("https://example.com/test#top", page.links)
+        urls = [l.url for l in page.links]
+        self.assertFalse(any(u.startswith("javascript:") for u in urls))
+        self.assertNotIn("https://example.com/test#top", urls)
 
     def test_falls_back_to_body_without_article_tag(self):
         page = extract_page(NO_ARTICLE_TAG_HTML, "https://example.com/plain")
