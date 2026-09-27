@@ -161,6 +161,20 @@ class TestApi(unittest.TestCase):
     def test_empty_doc_id_is_rejected(self):
         self.assertEqual(self.add("", "x").status_code, 422)
 
+    def test_oversized_metadata_rejected(self):
+        big = "x" * 120_000
+        r = self.add("big", "content", metadata={"blob": big})
+        self.assertIn(r.status_code, (400, 422))
+        # bulk path validates nested docs too
+        rb = self.client.post("/documents/bulk", json={"documents": [
+            {"doc_id": f"m{i}", "content": "c",
+             "metadata": {"blob": big if i == 0 else ""}} for i in range(3)]})
+        self.assertIn(rb.status_code, (400, 422))
+        # right at the bound is fine
+        ok = self.client.post("/documents", json={"doc_id": "ok", "content": "c",
+                                                  "metadata": {"k": "v"}})
+        self.assertEqual(ok.status_code, 201)
+
     def test_delete(self):
         self.add("a", "alpha")
         self.assertEqual(self.client.delete("/documents/a").status_code, 200)

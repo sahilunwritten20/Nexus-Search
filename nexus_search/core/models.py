@@ -1,9 +1,12 @@
 """Pydantic request/response models for the FastAPI layer."""
+import json
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 MAX_CONTENT_CHARS = 10_000_000  # ~10MB of text: attacker input must be bounded
+# metadata is arbitrary client JSON smuggled alongside content — bound it too
+MAX_METADATA_CHARS = 100_000
 
 
 class DocumentIn(BaseModel):
@@ -13,8 +16,16 @@ class DocumentIn(BaseModel):
     doc_type: str = Field(default="text", max_length=64)
     metadata: dict = Field(default_factory=dict)
 
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_bounded(cls, v: dict) -> dict:
+        if len(json.dumps(v, default=str)) > MAX_METADATA_CHARS:
+            raise ValueError(f"metadata exceeds {MAX_METADATA_CHARS} serialized chars")
+        return v
+
 
 class BulkDocumentIn(BaseModel):
+    # per-document bound applies through nested DocumentIn validation
     documents: list[DocumentIn] = Field(min_length=1, max_length=500)
 
 
