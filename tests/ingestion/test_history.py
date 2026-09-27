@@ -69,6 +69,24 @@ class TestContentHistoryModule(unittest.TestCase):
         self.assertEqual(self.history.count("b"), 1)
 
 
+class TestContentHistoryMigrations(unittest.TestCase):
+    def test_schema_comes_up_via_migrations(self):
+        from nexus_search.core.migrations import get_version
+        dir_ = tempfile.mkdtemp()
+        path = os.path.join(dir_, "h.db")
+        h = ContentHistory(path)
+        try:
+            self.assertEqual(get_version(h.conn, "content_history"), 1)
+        finally:
+            h.close()
+        again = ContentHistory(path)  # reopen: idempotent, still v1
+        try:
+            self.assertEqual(get_version(again.conn, "content_history"), 1)
+        finally:
+            again.close()
+        shutil.rmtree(dir_, ignore_errors=True)
+
+
 class TestContentHistoryPipelineOrder(unittest.TestCase):
     """Multiple successive edits through the real ingest path chain properly:
     each row's prev_hash equals the previous row's new_hash."""

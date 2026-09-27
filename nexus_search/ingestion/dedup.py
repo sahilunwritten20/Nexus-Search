@@ -4,6 +4,16 @@ import sqlite3
 import threading
 from typing import Optional
 
+from ..core.migrations import apply_migrations
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS content_hashes (
+    hash TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hashes_doc ON content_hashes (doc_id)
+"""
+
 
 def content_hash(text: str) -> str:
     """Stable hash: same content hashes identically regardless of case/whitespace."""
@@ -21,11 +31,10 @@ class Deduplicator:
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.lock = threading.RLock()
         with self.lock:
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS content_hashes (hash TEXT PRIMARY KEY, doc_id TEXT NOT NULL)"
+            # Versioned like the other stores: v1 = this schema as-is
+            self.schema_version = apply_migrations(
+                self.conn, "content_hashes", [(1, SCHEMA)]
             )
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_hashes_doc ON content_hashes (doc_id)")
-            self.conn.commit()
 
     def is_duplicate(self, text: str) -> bool:
         with self.lock:

@@ -11,6 +11,8 @@ import sqlite3
 import threading
 import time
 
+from ..core.migrations import apply_migrations
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS content_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS content_history (
     new_hash TEXT NOT NULL,
     recorded_at REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_content_history_doc ON content_history (doc_id);
+CREATE INDEX IF NOT EXISTS idx_content_history_doc ON content_history (doc_id)
 """
 
 
@@ -32,8 +34,11 @@ class ContentHistory:
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.lock = threading.RLock()
         with self.lock:
-            self.conn.executescript(SCHEMA)
-            self.conn.commit()
+            # Versioned like the other stores: v1 is this schema as-is;
+            # columns added later become v2, ... (see core/migrations.py)
+            self.schema_version = apply_migrations(
+                self.conn, "content_history", [(1, SCHEMA)]
+            )
 
     def record_change(self, doc_id: str, prev_hash: str, prev_content: str,
                       new_hash: str) -> None:
