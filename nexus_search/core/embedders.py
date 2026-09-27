@@ -130,13 +130,14 @@ class HashEmbedder(Embedder):
         return [self._text_to_features(t) for t in texts]
     
     def embed_query(self, text: str) -> np.ndarray:
-        # LRU cache for queries
+        # bounded FIFO query cache (eviction drops the OLDEST inserted key —
+        # not true LRU: hits don't refresh position; honest naming so nobody
+        # tunes it assuming recency-of-use semantics)
         with self._cache_lock:
             if text in self._query_cache:
                 return self._query_cache[text]
             emb = self._text_to_features(text)
             if len(self._query_cache) >= 256:
-                # Simple eviction - remove first item
                 first_key = next(iter(self._query_cache))
                 del self._query_cache[first_key]
             self._query_cache[text] = emb
@@ -207,7 +208,8 @@ class SentenceTransformerEmbedder(Embedder):
         return [e.astype(np.float32) for e in embeddings]
     
     def embed_query(self, text: str) -> np.ndarray:
-        # LRU cache for queries
+        # bounded FIFO query cache (eviction drops the OLDEST inserted key —
+        # not true LRU: hits don't refresh position)
         with self._cache_lock:
             if text in self._query_cache:
                 return self._query_cache[text]
