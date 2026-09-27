@@ -35,6 +35,12 @@ jobs:
       - name: Build the image
         run: docker build -t nexus-search:ci .
 
+      - name: Image must not run as root
+        run: |
+          user="$(docker run --rm --entrypoint whoami nexus-search:ci)"
+          echo "container user: $user"
+          [ "$user" != "root" ]
+
       - name: Boot the container and probe /health
         run: |
           docker run -d --name api -p 8000:8000 \

@@ -30,11 +30,12 @@ COPY crawler_config.yaml ./
 
 # SQLite state lives on a mounted volume (see docker-compose.yml).
 # Run unprivileged: the container does not need root for anything it does.
-RUN mkdir -p /data \
-    && useradd --system --home /app --no-create-home nexus \
-    && chown -R nexus:nexus /app /data
+# (chown BEFORE VOLUME so named volumes inherit the writable ownership.)
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /data \
+    && chown -R appuser:appuser /app /data
 VOLUME ["/data"]
-USER nexus
+USER appuser
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
