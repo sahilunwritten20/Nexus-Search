@@ -38,6 +38,51 @@ class TestDeduplicator(unittest.TestCase):
         self.dedup.register("Hello   World", "doc1")
         self.assertTrue(self.dedup.is_duplicate("hello world"))
 
+    def test_concurrent_claim_exactly_one_winner(self):
+        """check+register races must never double-claim identical content."""
+        import threading
+
+        wins = []
+        errors = []
+
+        def racer(n):
+            try:
+                if self.dedup.claim_if_new("shared content body", f"doc{n}"):
+                    wins.append(n)
+            except Exception as exc:  # noqa: BLE001 - any leak = the bug
+                errors.append(exc)
+
+        threads = [threading.Thread(target=racer, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(wins), 1)          # exactly one claimed it
+        self.assertTrue(self.dedup.is_duplicate("shared content body"))
+
+    def test_concurrent_mixed_ops_never_raise(self):
+        import threading
+
+        errors = []
+
+        def worker(n):
+            try:
+                for i in range(100):
+                    text = f"content {i % 10}"
+                    if not self.dedup.is_duplicate(text):
+                        self.dedup.register(text, f"d{n}-{i % 10}")
+                    self.dedup.hash_of(f"d{n}-{i % 10}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+
 
 class TestIngestDocuments(unittest.TestCase):
     def setUp(self):
