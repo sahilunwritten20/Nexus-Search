@@ -76,6 +76,55 @@ class TestVectorStoreMultiInstance(unittest.TestCase):
         finally:
             again.close()
 
+    def test_concurrent_add_remove_search_consistency(self):
+        """Stress test: writers and readers sharing one store. Every returned
+        doc_id must be one that was ever written, and every score must be a
+        valid cosine similarity — no torn doc_id/vector pairings (previously
+        possible: search read live arrays outside the matrix lock)."""
+        import threading
+
+        errors = []
+        written = set()
+        written_lock = threading.Lock()
+        stop = threading.Event()
+        vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                doc_id = f"w{i % 25}"
+                try:
+                    self.a.add(doc_id, vec.copy(), f"h{i}")
+                    with written_lock:
+                        written.add(doc_id)
+                    if i % 7 == 0:
+                        self.a.remove(doc_id)
+                except Exception as exc:  # noqa: BLE001 - leaks are the bug
+                    errors.append(exc)
+                i += 1
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    for r in self.a.search(vec, top_k=50):
+                        with written_lock:
+                            if r.doc_id not in written:
+                                errors.append(f"phantom id {r.doc_id}")
+                        if not (-1.0001 <= r.score <= 1.0001):
+                            errors.append(f"score out of range {r.score}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+        threads = ([threading.Thread(target=writer, daemon=True) for _ in range(2)]
+                   + [threading.Thread(target=reader, daemon=True) for _ in range(3)])
+        for t in threads:
+            t.start()
+        time.sleep(2.0)
+        stop.set()
+        for t in threads:
+            t.join(timeout=10)
+        self.assertEqual(errors, [])
+
     def test_update_in_place_still_works(self):
         vec = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32)
         self.a.add("doc_1", vec, "h1")

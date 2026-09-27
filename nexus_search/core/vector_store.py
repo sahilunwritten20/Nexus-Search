@@ -244,11 +244,12 @@ class VectorStore:
                         self._doc_ids[idx] = self._doc_ids[last_idx]
                         self._doc_types[idx] = self._doc_types[last_idx]
                         self._languages[idx] = self._languages[last_idx]
-                    # Remove last element
-                    self._matrix = self._matrix[:last_idx]
-                    self._doc_ids = self._doc_ids[:last_idx]
-                    self._doc_types = self._doc_types[:last_idx]
-                    self._languages = self._languages[:last_idx]
+                    # Remove last element (.copy(): a slice keeps the whole
+                    # base array alive and shares memory with past snapshots)
+                    self._matrix = self._matrix[:last_idx].copy()
+                    self._doc_ids = self._doc_ids[:last_idx].copy()
+                    self._doc_types = self._doc_types[:last_idx].copy()
+                    self._languages = self._languages[:last_idx].copy()
                     self._content_hashes.pop(doc_id, None)
 
     # Backward compatibility
@@ -275,14 +276,18 @@ class VectorStore:
             allowed: Optional callable(doc_id) -> bool for filter pushdown
         """
         self._maybe_reload()
-        
+
+        # Snapshot INSIDE the lock: add()/remove() mutate these arrays. Holding
+        # live references outside the lock could pair a stale doc_id with a
+        # freshly-overwritten vector row (silent score misassignment). The copy
+        # costs one allocation per query — cheap insurance at prototype scale.
         with self._matrix_lock:
             if len(self._matrix) == 0:
                 return []
-            matrix = self._matrix
-            doc_ids = self._doc_ids
-            doc_types = self._doc_types
-            languages = self._languages
+            matrix = self._matrix.copy()
+            doc_ids = self._doc_ids.copy()
+            doc_types = self._doc_types.copy()
+            languages = self._languages.copy()
         
         # Fast path: compute all cosine similarities
         # matrix is (n, dim), query is (dim,) -> scores is (n,)
