@@ -36,7 +36,9 @@ def default_ingest(url: str, title: str, text: str, metadata: dict) -> None:
 def _is_placeholder_ua(user_agent: str) -> bool:
     """Obviously-unconfigured contact URLs can't pass as a real bot identity
     for public crawls (they'd be reported to /dev/null or worse)."""
-    return any(marker in user_agent for marker in ("example.com/", "YOUR-SITE", "example.org/"))
+    ua = user_agent.lower()
+    return any(marker in ua
+               for marker in ("example.com/", "example.org/", "your-site"))
 
 
 class CrawlPipeline:

@@ -14,7 +14,9 @@ max_pages_per_domain: 0
 
 recrawl_interval: 0
 
-# REQUIRED for public crawls: a real contact URL for your bot (the pipeline
-# refuses placeholder UAs). Leave unset only for local/dev crawls.
+# REQUIRED for public crawls: a real contact URL for your bot. The pipeline
+# REFUSES placeholders (example.com, "YOUR-SITE", ...) and missing values
+# unless allow_private_hosts=true (local dev); an unset value here is
+# rejected on the public path rather than silently allowing a faceless bot.
 user_agent:
 chunk_size: 1000   # 0 = no chunking; Phase 4 wants this on
