@@ -88,6 +88,18 @@ class TestRelatedSearches(_Base):
         # at least confirms no crash and returns terms from vocab only
         self.assertTrue(all(isinstance(t, str) for t in out))
 
+    def test_empty_log_object_still_uses_trigram_fallback(self):
+        # regression: a real-but-empty ExperimentLog used to suppress the
+        # trigram fallback entirely (returned [] instead of similar terms)
+        self.indexer.add_document("d1", "python python data science")
+        self.indexer.add_document("d2", "pythagorean theorem")
+        log = ExperimentLog(self.path)
+        with_log = Suggester(self.storage).related_searches("python data", experiment_log=log)
+        without_log = Suggester(self.storage).related_searches("python data", experiment_log=None)
+        self.assertEqual(with_log, without_log)  # identical fallback behavior
+        self.assertIn("pythagorean", with_log)   # trigram-similar to "python"
+        log.close()
+
 
 class TestHighlighting(_Base):
     def test_highlight_wraps_terms(self):

@@ -75,8 +75,11 @@ class Suggester:
                 related = self._from_log(query, experiment_log, limit, max_log_rows)
             except Exception:
                 related = []  # a logging table must never break suggestions
-        if related or experiment_log is not None:
+        if related:
             return related[:limit]
+        # An EMPTY log (or a log with no co-occurrences) must not suppress the
+        # trigram-similarity fallback — a present-but-useless log object is not
+        # a reason to return nothing. Fall through either way.
 
         # Fallback: term similarity against the index vocabulary.
         self._refresh()
