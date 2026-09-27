@@ -22,6 +22,7 @@ PyYAML==6.0.3
 
 # Crawler (Phase 3)
 requests==2.34.2
+defusedxml==0.7.1   # safe XML parsing for remote sitemaps (no DTD/entity expansion)
 
 # Phase 4 — Hybrid Search (Embeddings & Vector)
 sentence-transformers==6.1.0   # pulls torch; set PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu for the CPU wheel

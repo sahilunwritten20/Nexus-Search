@@ -1,8 +1,32 @@
-"""Sitemap XML readers used to seed the crawler."""
-import gzip
+"""Sitemap XML readers used to seed the crawler.
+
+SECURITY: sitemaps are remote, attacker-influenced XML. Parsing goes through
+defusedxml.ElementTree, which refuses DTDs/entity declarations (billion-
+laughs amplification) and extremely deep nesting with a clean exception;
+this module converts that into the same "" / [] "can't parse" outcome every
+other malformed payload gets ([](https://pypi.org/project/defusedxml/))."""
 import zlib
 from typing import Optional
-from xml.etree import ElementTree
+
+# defusedxml raises DefusedXmlException (base of EntitiesForbidden etc.);
+# stdlib's Element/ParseError are plain value types, safe to re-export here.
+from xml.etree.ElementTree import Element, ParseError
+import defusedxml.ElementTree as safe_et
+from defusedxml.common import DefusedXmlException
+
+
+class _SafeElementTree:
+    """Drop-in for the bits of xml.etree.ElementTree this module uses."""
+
+    Element = Element
+    ParseError = ParseError
+
+    @staticmethod
+    def fromstring(xml_text: str):
+        return safe_et.fromstring(xml_text)
+
+
+ElementTree = _SafeElementTree
 
 _MAX_SITEMAP_BYTES = 16 * 1024 * 1024  # decompression-bomb ceiling
 
@@ -31,7 +55,9 @@ def _root(xml_text: str) -> Optional[ElementTree.Element]:
         return None
     try:
         return ElementTree.fromstring(xml_text)
-    except ElementTree.ParseError:
+    except (ElementTree.ParseError, DefusedXmlException):
+        # malformed XML and forbidden DTD/entity payloads land the same way:
+        # this sitemap is unusable, not fatal
         return None
 
 

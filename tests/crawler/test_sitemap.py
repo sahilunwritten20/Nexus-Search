@@ -1,6 +1,7 @@
 import gzip
 import unittest
-from nexus_search.crawler.sitemap import maybe_gzip, parse_sitemap, parse_sitemap_extended
+from nexus_search.crawler.sitemap import (maybe_gzip, parse_sitemap,
+                                          parse_sitemap_extended, parse_sitemap_index)
 
 
 class TestMaybeGzip(unittest.TestCase):
@@ -21,6 +22,30 @@ class TestMaybeGzip(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(maybe_gzip(b""), "")
+
+
+class TestMaliciousXml(unittest.TestCase):
+    # small entity-amplification payload (billion laughs; defusedxml must
+    # refuse the DOCTYPE before any expansion happens)
+    BOMB = """<?xml version="1.0"?>
+<!DOCTYPE lolz [
+<!ENTITY a "xxxxxxxxxxxxxxxxxxxxxxxxxx">
+<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+<!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+]>
+<urlset><url><loc>&d;</loc></url></urlset>"""
+
+    def test_billion_laughs_rejected(self):
+        for payload in (self.BOMB,):
+            self.assertEqual(parse_sitemap(payload), [])
+            self.assertEqual(parse_sitemap_index(payload), [])
+        from nexus_search.crawler.sitemap import parse_sitemap_extended
+        self.assertEqual(parse_sitemap_extended(self.BOMB), [])
+
+    def test_doctype_without_entities_also_rejected(self):
+        # sitemaps never legitimately carry a DOCTYPE
+        self.assertEqual(parse_sitemap('<!DOCTYPE urlset><urlset/>'), [])
 
 
 class TestSitemap(unittest.TestCase):
