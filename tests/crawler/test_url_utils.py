@@ -48,6 +48,11 @@ class TestNormalizeUrl(unittest.TestCase):
             "https://example.com:8443/page",
         )
 
+    def test_double_slash_path_keeps_root(self):
+        # regression: "//" used to rstrip to an empty path
+        self.assertEqual(normalize_url("http://x.com//"), "http://x.com/")
+        self.assertEqual(normalize_url("http://x.com///"), "http://x.com/")
+
 
 class TestGetDomain(unittest.TestCase):
     def test_strips_port(self):

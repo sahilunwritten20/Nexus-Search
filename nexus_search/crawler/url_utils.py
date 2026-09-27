@@ -27,7 +27,8 @@ def normalize_url(url: str, base: str | None = None) -> str:
 
     path = parts.path or "/"
     if len(path) > 1 and path.endswith("/"):
-        path = path.rstrip("/")
+        # "//" must not collapse to "" — the root path is "/", always
+        path = path.rstrip("/") or "/"
 
     # Tracking params are pure noise — they change nothing server-side but
     # would each queue a "new" URL otherwise (post-fetch hash dedup was the
