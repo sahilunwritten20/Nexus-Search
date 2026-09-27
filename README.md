@@ -64,6 +64,19 @@ Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
 Docker/CI: `Dockerfile` + `docker-compose.yml` (key required), GitHub
 Actions runs the full suite + image build + `/health` probe on every push.
 
+Operations notes:
+- The A/B query log (`query_experiments`) records raw query text on every
+  `/search` (including cache hits — repeated-query volume is A/B signal).
+  It never expires on its own; run a retention purge on a schedule:
+  ``` python
+  ExperimentLog(db).purge_older_than(days=30)
+  ```
+- Single-process by design: one uvicorn worker / one container per SQLite
+  file. A second process' writes are only picked up on the next
+  data-version reload — per-worker query caches and the in-memory vector
+  matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
+  store (pgvector/Qdrant), not more workers here.
+
 Test suite: **564 passed, 3 skipped** (offline; sentence-transformers cases
 self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
 

@@ -193,6 +193,27 @@ class TestAB(unittest.TestCase):
     def test_empty_log_query_returns_empty(self):
         self.assertEqual(self.log.rows_for("nothing-logged"), [])
 
+    def test_purge_older_than_mixed_timestamps(self):
+        """Retention: only rows past the window are deleted; new rows stay."""
+        self.log.record("old-query", "control", "hybrid")
+        self.log.record("new-query", "treatment", "hybrid")
+        # age the first row past the window
+        cutoff_old = time.time() - 8 * 86400
+        self.log.conn.execute(
+            "UPDATE query_experiments SET created_at = ? WHERE query = ?",
+            (cutoff_old, "old-query"))
+        self.log.conn.commit()
+
+        deleted = self.log.purge_older_than(days=7)
+        self.assertEqual(deleted, 1)
+        self.assertEqual(self.log.rows_for("old-query"), [])
+        self.assertEqual(len(self.log.rows_for("new-query")), 1)
+        self.assertEqual(self.log.count(), 1)
+        # no-op when nothing is old; rejects nonsense windows
+        self.assertEqual(self.log.purge_older_than(days=7), 0)
+        with self.assertRaises(ValueError):
+            self.log.purge_older_than(0)
+
 
 class TestApiRerankToggle(_Base):
     """API-level: rerank=False must be byte-identical to pre-Phase-5."""

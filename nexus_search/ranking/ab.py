@@ -78,6 +78,20 @@ class ExperimentLog:
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM query_experiments").fetchone()[0]
 
+    def purge_older_than(self, days: float) -> int:
+        """Retention policy for the query log: delete rows older than `days`.
+        Query text can contain PII/CI terms from real users — an unbounded
+        forever-log is a compliance liability, so operators should run this
+        on a schedule (see README/.env.example). Returns rows deleted."""
+        if days <= 0:
+            raise ValueError("retention window must be positive")
+        cutoff = time.time() - days * 86400.0
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM query_experiments WHERE created_at < ?", (cutoff,))
+            self.conn.commit()
+            return cur.rowcount
+
     def close(self):
         with self.lock:
             self.conn.close()
