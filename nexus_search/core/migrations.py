@@ -9,8 +9,10 @@ its own transaction.
 Design (deliberately tiny, no framework dependency):
 - a migration is (version:int, sql:str)
 - migrations are append-only; never edit an applied one
-- current state is per STORE (so storage.py, vector_store.py, frontier.py
-  each version independently instead of sharing one fragile global version)
+- current state is per STORE: storage.py ("storage"), vector_store.py
+  ("doc_vectors"), frontier.py ("frontier"), blocklist.py ("blocklist"),
+  failures.py ("failed_ingestions") each version independently instead of
+  sharing one fragile global version
 - every migration's SQL must be idempotent (IF NOT EXISTS / column guards),
   so baselining a pre-migrations DB is just "run them all, they're no-ops
   on an up-to-date file"

@@ -66,6 +66,16 @@ class TestVectorStoreMultiInstance(unittest.TestCase):
         seen_a = {r.doc_id for r in self.a.search(vec_y, top_k=10)}
         self.assertEqual(seen_a, {"doc_X", "doc_Y"})
 
+    def test_schema_versioned_like_other_stores(self):
+        from nexus_search.core.migrations import get_version
+        self.assertEqual(get_version(self.a.conn, "doc_vectors"), 1)
+        # reopening an existing DB is a no-op, not a re-migration
+        again = VectorStore(self.db_path, embedder=FakeEmbedder())
+        try:
+            self.assertEqual(get_version(again.conn, "doc_vectors"), 1)
+        finally:
+            again.close()
+
     def test_update_in_place_still_works(self):
         vec = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32)
         self.a.add("doc_1", vec, "h1")

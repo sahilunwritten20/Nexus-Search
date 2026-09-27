@@ -76,8 +76,12 @@ class VectorStore:
     
     def _init_schema(self):
         with self.lock:
-            self.conn.executescript(SCHEMA)
-            self.conn.commit()
+            # Versioned like the other stores (v1 = this schema as-is;
+            # idempotent DDL so baselining a pre-migrations DB is a no-op).
+            from .migrations import apply_migrations
+            self.schema_version = apply_migrations(
+                self.conn, "doc_vectors", [(1, SCHEMA)]
+            )
     
     def _drop_legacy_tables(self):
         """Drop legacy embeddings/vectors tables on first open."""
