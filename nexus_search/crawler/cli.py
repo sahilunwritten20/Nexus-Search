@@ -60,6 +60,9 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
 
     pipeline = CrawlPipeline(
         db_path=_frontier_db_path(args.db),
+        # localhost/private crawls (tests, intranets) need an explicit opt-in;
+        # the public path still enforces SSRF validation + a real UA
+        allow_private_hosts=args.allow_private_hosts,
         allowed_domains=domains,
         max_pages=_pick(args.max_pages, config, "max_pages", 1000),
         max_depth=_pick(args.max_depth, config, "max_depth", 3),
@@ -124,6 +127,8 @@ def main():
     parser.add_argument("--min-quality", type=float, default=None, help="Skip pages scoring below this (0-1)")
     parser.add_argument("--chunk-size", type=int, default=None, help="Split long pages into chunks")
     parser.add_argument("--db", default="nexus_search.db")
+    parser.add_argument("--allow-private-hosts", action="store_true",
+                        help="allow crawling localhost/private IPs (tests, intranet)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
