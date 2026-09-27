@@ -12,7 +12,10 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 COPY requirements.txt ./
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install -r requirements.txt
+    && /opt/venv/bin/pip install -r requirements.txt \
+    # Pre-bake the default ST model so a NEXUS_EMBEDDER=st:... boot never
+    # needs HuggingFace Hub egress at container start
+    && /opt/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 
 FROM python:3.12-slim

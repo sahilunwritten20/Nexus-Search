@@ -77,8 +77,22 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **564 passed, 3 skipped** (offline; sentence-transformers cases
-self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
+Test suite: **592 passed, 3 skipped** (595 collected; offline;
+sentence-transformers cases self-skip unless `NEXUS_RUN_MODEL_TESTS=1`).
+Per phase: core 195 · crawler 108 · ingestion 107 · ranking 91 ·
+evaluation 2 · end-to-end/regressions/lifecycle/audit 108.
+Run: `python -m pytest -q`.
+
+**Embedder default is lexical, not semantic.** The default
+`NEXUS_EMBEDDER=hash:384` (also the docker-compose default) is a deterministic
+offline hasher — hybrid mode works and degrades honestly, but it is NOT
+sentence-transformer semantics. For real semantic vectors set
+`NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2`; the Docker image
+pre-bakes this model, so no HuggingFace egress is needed on first boot.
+
+**Packaging:** distribute this repo with `git archive`, not `zip -r .` —
+local SQLite artifacts (`nexus_search*.db`, `smoke*.db`) are gitignored for a
+reason and must not ship inside tarballs handed to anyone.
 
 The `automation/` directory holds sample n8n workflow exports - reference
 material only, not wired into the codebase.

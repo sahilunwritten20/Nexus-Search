@@ -5,7 +5,6 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 EVAL_DIR = Path(__file__).parent / "data"
-EVAL_DIR.mkdir(exist_ok=True)
 
 
 @dataclass
@@ -137,6 +136,8 @@ def create_benchmark_dataset() -> tuple[list[Document], list[Query]]:
 
 def save_dataset(documents: list[Document], queries: list[Query], path: str = None):
     if path is None:
+        # mkdir here, NOT at import: a read-only package install must be importable
+        EVAL_DIR.mkdir(exist_ok=True)
         path = EVAL_DIR / "benchmark_dataset.json"
     data = {
         "documents": [asdict(d) for d in documents],
@@ -148,6 +149,7 @@ def save_dataset(documents: list[Document], queries: list[Query], path: str = No
 
 def load_dataset(path: str = None) -> tuple[list[Document], list[Query]]:
     if path is None:
+        EVAL_DIR.mkdir(exist_ok=True)
         path = EVAL_DIR / "benchmark_dataset.json"
     with open(path) as f:
         data = json.load(f)
