@@ -746,13 +746,26 @@ class TestApiHybridWeightsAndDegradedBoot(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         os.environ["NEXUS_DB"] = os.path.join(self.dir, "api.db")
         self._saved_embedder = os.environ.get("NEXUS_EMBEDDER", "hash:384")
+        # api module boots fail-closed without a key outside dev; these tests
+        # exercise API behavior, not boot policy — opt into dev explicitly and
+        # restore honestly (same pattern as test_api.py)
+        self._saved_env = os.environ.get("NEXUS_ENV")
+        os.environ["NEXUS_ENV"] = "dev"
 
     def tearDown(self):
         import importlib
         from nexus_search.core import embedders, api
         os.environ["NEXUS_EMBEDDER"] = self._saved_embedder
+        # the api module refuses to boot without dev or a key — the reload
+        # here is teardown plumbing (restore a clean module), not a policy
+        # test, so it runs under explicit dev no matter where we started
+        os.environ["NEXUS_ENV"] = "dev"
         embedders.reset_embedder()
         importlib.reload(api)
+        if self._saved_env is None:
+            os.environ.pop("NEXUS_ENV", None)
+        else:
+            os.environ["NEXUS_ENV"] = self._saved_env
         for _ in range(10):
             try:
                 shutil.rmtree(self.dir)

@@ -386,23 +386,27 @@ class VectorStoreManager:
             return
         
         texts = [t for _, t, _, _, _ in to_embed]
+        # embedding happens OUTSIDE the store locks — it's the slow part and
+        # touches no shared state
         vectors = self.embedder.embed_documents(texts)
-        
+
+        # Commit + in-memory reload inside ONE critical section (same pattern
+        # as add()/remove()): without it, a concurrent search() could observe
+        # a stale matrix after the batch's rows were already durable.
         with self.store.lock:
-            now = time.time()
-            for (doc_id, _, content_hash, doc_type, language), vector in zip(to_embed, vectors):
-                self.store.conn.execute(
-                    """
-                    INSERT OR REPLACE INTO doc_vectors 
-                    (doc_id, model, dim, content_hash, vector, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (doc_id, self.store.model, self.store.dim, content_hash, self.store._serialize(vector), now)
-                )
-            self.store.conn.commit()
-        
-        # Reload matrix
-        self.store._load_matrix()
+            with self.store._matrix_lock:
+                now = time.time()
+                for (doc_id, _, content_hash, doc_type, language), vector in zip(to_embed, vectors):
+                    self.store.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO doc_vectors
+                        (doc_id, model, dim, content_hash, vector, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (doc_id, self.store.model, self.store.dim, content_hash, self.store._serialize(vector), now)
+                    )
+                self.store.conn.commit()
+                self.store._load_matrix()
     
     def delete(self, doc_id: str):
         self.store.remove(doc_id)

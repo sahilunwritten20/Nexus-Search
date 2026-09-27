@@ -13,7 +13,8 @@ from nexus_search.core.vector_store import VectorStore
 
 
 class FakeEmbedder:
-    """VectorStore only needs name/dim from the embedder for add/search."""
+    """VectorStore only needs name/dim from the embedder for add/search;
+    upsert_batch additionally needs embed_documents (batch interface)."""
 
     name = "test-model"
     dim = 4
@@ -21,6 +22,11 @@ class FakeEmbedder:
     def embed_query(self, text):
         vec = np.ones(self.dim, dtype=np.float32)
         return vec / np.linalg.norm(vec)
+
+    def embed_documents(self, texts, batch_size: int = 32):
+        base = np.ones(self.dim, dtype=np.float32)
+        base /= np.linalg.norm(base)
+        return [base.copy() for _ in texts]
 
 
 class TestVectorStoreMultiInstance(unittest.TestCase):
@@ -65,6 +71,21 @@ class TestVectorStoreMultiInstance(unittest.TestCase):
         # And a fresh search from A sees Y too.
         seen_a = {r.doc_id for r in self.a.search(vec_y, top_k=10)}
         self.assertEqual(seen_a, {"doc_X", "doc_Y"})
+
+    def test_upsert_batch_atomic_visibility(self):
+        """SQL commit and matrix reload are one critical section: a search
+        immediately after upsert_batch must see the new rows (no stale-window
+        waiting on an external write to bump data_version)."""
+        from nexus_search.core.vector_store import VectorStoreManager
+
+        mgr = VectorStoreManager(self.db_path, embedder=FakeEmbedder())
+        try:
+            vec_x = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            mgr.upsert_batch([("bx", "text a", "", "")])
+            hits = {r.doc_id for r in mgr.store.search(vec_x, top_k=10)}
+            self.assertIn("bx", hits)  # visible WITHOUT any reload trigger
+        finally:
+            mgr.close()
 
     def test_schema_versioned_like_other_stores(self):
         from nexus_search.core.migrations import get_version
