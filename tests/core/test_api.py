@@ -170,6 +170,31 @@ class TestApi(unittest.TestCase):
     def test_health(self):
         self.assertEqual(self.client.get("/health").json()["status"], "ok")
 
+    def test_misspelled_query_is_corrected_by_default(self):
+        # query understanding is wired into retrieval by default: an OOV
+        # typo ("pythn") resolves to the in-vocabulary term via `python` —
+        # keyword mode would find NOTHING pre-wiring, now it does
+        self.add("pydoc", "python programming language tutorial")
+        self.add("other", "unrelated cooking content")
+        body = self.client.get("/search", params={"q": "pythn"}).json()
+        self.assertEqual(body["results"][0]["doc_id"], "pydoc")
+        self.assertGreaterEqual(body["total_results"], 1)
+        # keyword mode gets the same correction
+        kw = self.client.get("/search", params={"q": "pythn", "mode": "keyword"}).json()
+        self.assertEqual(kw["results"][0]["doc_id"], "pydoc")
+
+    def test_boolean_structure_survives_understanding(self):
+        # rewriting must not drop NOT semantics (structure guard)
+        self.add("a", "python programming language")
+        self.add("b", "python snake habitat")
+        body = self.client.get("/search", params={"q": "python NOT snake"}).json()
+        self.assertEqual({r["doc_id"] for r in body["results"]}, {"a"})
+
+    def test_synonym_expansion_widens_recall(self):
+        self.add("car1", "automobile maintenance guide")
+        body = self.client.get("/search", params={"q": "car"}).json()
+        self.assertEqual(body["results"][0]["doc_id"], "car1")  # via synonym
+
     def test_ready(self):
         self.assertEqual(self.client.get("/ready").json()["ready"], True)
 
@@ -219,15 +244,16 @@ class TestApi(unittest.TestCase):
     def test_diversity_changes_ordering_on_near_duplicates(self):
         # near-mirror docs: without diversification they flood the top of the
         # page; with diversity the MMR anti-flood gate must change the outcome
-        # 11 shared tokens, one differing token each => Jaccard ~0.92 > the
-        # MMR anti-flood threshold — exactly the mirror-farm case it exists for
+        # 11 shared tokens, one differing token each => Jaccard ~0.92 between
+        # dupes; query terms must exist in the docs (an OOV query term gets
+        # spell-corrected toward whatever the vocabulary has — fixture design)
         near_dupes = ["the quick brown fox jumps over the lazy dog every morning variant one",
                       "the quick brown fox jumps over the lazy dog every morning variant two",
                       "the quick brown fox jumps over the lazy dog every morning variant three"]
-        for i, body in enumerate(near_dupes + ["a completely unrelated weather report about rain"]):
+        for i, body in enumerate(near_dupes + ["a completely unrelated fox weather report about rain"]):
             self.add(f"nd{i}", body, title=f"doc {i}")
-        plain = self.client.get("/search", params={"q": "fox running fast", "diversity": 0.0}).json()
-        diverse = self.client.get("/search", params={"q": "fox running fast", "diversity": 1.0}).json()
+        plain = self.client.get("/search", params={"q": "fox dog", "diversity": 0.0}).json()
+        diverse = self.client.get("/search", params={"q": "fox dog", "diversity": 1.0}).json()
         plain_ids = [r["doc_id"] for r in plain["results"]]
         diverse_ids = [r["doc_id"] for r in diverse["results"]]
         # the diversified page must differ: the unrelated document gets

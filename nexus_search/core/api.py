@@ -22,6 +22,7 @@ from .embedders import HashEmbedder, EmbedderUnavailable
 from .query_cache import QueryCache
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
+from .query_parser import parse_query
 from ..ranking.ranker import RankingWeights, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
@@ -323,9 +324,20 @@ def search(
     if bm25_weight == 0 and vector_weight == 0:
         raise HTTPException(status_code=400, detail="At least one weight must be > 0")
 
-    # Degraded boot: vector subsystem never came up -> honest keyword-only
+    # Query understanding participates by default: spell-correction (in-
+    # vocabulary only) and synonym expansion widen the retrieval pool. One
+    # computation serves retrieval, the facet pass, AND rerank features.
+    understanding = understand_query(q, _storage)
+
+    # Degraded boot: vector subsystem never came up -> honest keyword-only.
+    # Same guard as hybrid_search: boolean/negated-filter queries keep their
+    # original form (rewriting would drop the structure).
     if _vector_store is None:
-        return _keyword_only_page(q, top_k, offset, mode, _vector_error, facets=facets)
+        probe = parse_query(q)
+        retrieval_q = q if (probe.has_boolean or probe.not_filters) \
+            else understanding.to_retrieval_query()
+        return _keyword_only_page(retrieval_q, top_k,
+                                  offset, mode, _vector_error, facets=facets)
 
     if diversity > 0.0 and sort not in (None, "relevance"):
         # both reorder after ranking; combining them silently would be mush
@@ -357,6 +369,7 @@ def search(
             q, top_k=top_k, offset=offset, mode=search_mode,
             fusion=fusion, candidates=candidates, debug=debug,
             sort=sort, highlight=highlight, diversity=diversity,
+            understanding=understanding,
         )
         _query_cache.set(cache_key, page)
 
@@ -365,7 +378,6 @@ def search(
     import dataclasses
     results = page.results
     if rerank_flag:
-        understanding = understand_query(q, _storage)
         ranked = rerank_results(results, q, storage=_storage, understanding=understanding)
         # copy, never mutate: page.results may be a cached object
         results = [dataclasses.replace(rr.result, score=rr.final_score) for rr in ranked]
@@ -403,6 +415,7 @@ def search(
         facets_truncated = page.total > _FACET_SAMPLE_CAP
         full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
                                            offset=0, mode=search_mode, fusion=fusion,
+                                           understanding=understanding,  # facets follow retrieval
                                            # the default candidate pool (50) would
                                            # truncate counts below the sample cap
                                            candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP))

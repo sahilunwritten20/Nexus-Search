@@ -390,7 +390,13 @@ class HybridSearch:
             return HybridSearchPage(total=0, results=[], metadata={"mode": mode.value, "fusion": fusion})
         offset = max(offset, 0)
         if understanding is not None:
-            query = understanding.to_retrieval_query()
+            # Retrieval-query rewriting widens the pool via corrections +
+            # synonym expansion, but the string form only carries flat
+            # terms/phrases/filters — a boolean query (NOT/AND/exclusions,
+            # title scope, negated filters) must keep its own structure.
+            probe = parse_query(query)
+            if not probe.has_boolean and not probe.not_filters:
+                query = understanding.to_retrieval_query()
         start_time = time.time()
         original_mode = mode
 
