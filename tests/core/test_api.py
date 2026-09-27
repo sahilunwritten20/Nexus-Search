@@ -371,6 +371,27 @@ class TestApiExposure(unittest.TestCase):
         self.assertNotIn("access-control-allow-origin",
                          {k.lower() for k in r2.headers.keys()})
 
+    def test_reads_open_by_default_with_key_set(self):
+        # with the flag unset reads stay open even though writes require a key
+        client = self._reload("production", "secret")
+        self.assertEqual(client.get("/search", params={"q": "x"}).status_code, 200)
+        self.assertEqual(client.get("/suggest", params={"q": "x"}).status_code, 200)
+
+    def test_reads_gated_when_flag_set(self):
+        saved = os.environ.get("NEXUS_REQUIRE_AUTH_FOR_READS")
+        os.environ["NEXUS_REQUIRE_AUTH_FOR_READS"] = "1"
+        try:
+            client = self._reload("production", "secret")
+            self.assertEqual(client.get("/search", params={"q": "x"}).status_code, 401)
+            self.assertEqual(
+                client.get("/search", params={"q": "x"},
+                           headers={"X-API-Key": "secret"}).status_code, 200)
+        finally:
+            if saved is None:
+                os.environ.pop("NEXUS_REQUIRE_AUTH_FOR_READS", None)
+            else:
+                os.environ["NEXUS_REQUIRE_AUTH_FOR_READS"] = saved
+
     def test_storage_error_not_leaked(self):
         client = self._reload("dev", None)
         client.post("/documents", json={"doc_id": "x", "content": "c"})

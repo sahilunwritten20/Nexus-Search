@@ -192,6 +192,12 @@ limiter = Limiter(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Reads are open by DESIGN (embeddable public search). Operators with private
+# corpora opt into key-gated reads with NEXUS_REQUIRE_AUTH_FOR_READS=1; the
+# dependency itself still no-ops when no NEXUS_API_KEY is configured.
+_READ_AUTH = [Depends(require_api_key)] if os.environ.get(
+    "NEXUS_REQUIRE_AUTH_FOR_READS", "").strip().lower() in ("1", "true", "yes") else []
+
 
 def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
     """401 when the server is configured with a key and the caller's doesn't
@@ -242,7 +248,7 @@ def add_documents_bulk(request: Request, body: BulkDocumentIn, response: Respons
     return {"indexed": indexed, "failed": failed, "total": len(body.documents)}
 
 
-@app.get("/documents/{doc_id}", response_model=DocumentOut)
+@app.get("/documents/{doc_id}", response_model=DocumentOut, dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def get_document(request: Request, doc_id: str, response: Response):
     """Read-back endpoint: the stored row for one doc_id (404 when absent).
@@ -267,7 +273,7 @@ def delete_document(request: Request, doc_id: str, response: Response):
 MAX_QUERY_CHARS = 2000  # attacker-controlled parse cost must be bounded
 
 
-@app.get("/search", response_model=SearchResponse)
+@app.get("/search", response_model=SearchResponse, dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def search(
     request: Request,
@@ -492,7 +498,7 @@ def _get_suggester():
     return _suggester
 
 
-@app.get("/suggest")
+@app.get("/suggest", dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def suggest(request: Request, response: Response, q: str,
             limit: int = Query(default=10, ge=1, le=50)):
@@ -501,7 +507,7 @@ def suggest(request: Request, response: Response, q: str,
     return {"query": q, "suggestions": _get_suggester().suggest(q, limit=limit)}
 
 
-@app.get("/related")
+@app.get("/related", dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def related(request: Request, response: Response, q: str,
             limit: int = Query(default=5, ge=1, le=20)):

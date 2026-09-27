@@ -43,6 +43,7 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_ENV`      | `production`   | Anything but `dev` **refuses to boot without `NEXUS_API_KEY`** |
 | `NEXUS_API_KEY`  | *(unset)*      | Required on `POST/DELETE /documents` (`X-API-Key` header); unset + non-dev = no boot |
 | `NEXUS_CACHE_TTL` | `5`           | `/search` response-cache TTL, seconds |
+| `NEXUS_REQUIRE_AUTH_FOR_READS` | `0` | `1` gates GET /search, /documents/{id}, /suggest, /related behind X-API-Key too (needs `NEXUS_API_KEY` to engage) |
 | `NEXUS_RATE_LIMIT` | `60/minute`  | Per-client limit on `/search` and write endpoints (`0` disables) |
 | `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
 
