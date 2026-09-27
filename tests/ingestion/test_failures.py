@@ -137,6 +137,28 @@ class TestPipelineFailureQueue(unittest.TestCase):
         self.assertEqual(status, "indexed")
         self.assertEqual(self.q.count(), 0)
 
+    def test_replay_embeds_recovered_docs(self):
+        """Replay must redo the FULL path — a doc that comes back indexed but
+        un-embedded silently disappears from semantic/hybrid results."""
+        from nexus_search.core.embedding_sync import create_embedding_sync
+        from nexus_search.core.vector_store import VectorStoreManager
+
+        self.q.record(_doc("retry-me", "a body that works on the second try"), "transient")
+        vs = VectorStoreManager(self.path)
+        sync = create_embedding_sync(vs, batch_size=32)
+        try:
+            def retry(doc):
+                ingest_one(doc, self.indexer, self.dedup, sync=sync)
+
+            stats = self.q.replay(retry, now=time.time() + 9999)
+            sync.flush()
+            self.assertEqual(stats["recovered"], 1)
+            self.assertIsNotNone(self.indexer.storage.get_document("retry-me"))
+            self.assertIsNotNone(vs.store.get_content_hash("retry-me"))  # embedded
+        finally:
+            sync.close()
+            vs.close()
+
     def test_no_queue_still_propagates(self):
         bad = IngestDoc("bad", "T", None, "text", {})
         with self.assertRaises(Exception):

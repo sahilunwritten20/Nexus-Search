@@ -49,10 +49,21 @@ def main():
         failures.close(); storage.close(); dedup.close()
         return
     if args.replay_failures:
+        # Replay must redo the FULL path — indexing AND embedding; a replayed
+        # doc with no vector silently vanishes from semantic/hybrid results.
+        replay_vector_store = VectorStoreManager(args.db)
+        replay_sync = create_embedding_sync(replay_vector_store, batch_size=32)
+
         def _retry(doc):
             ingest_one(doc, indexer, dedup, min_quality=args.min_quality,
-                       chunk_size=args.chunk_size)
-        stats = failures.replay(_retry)
+                       chunk_size=args.chunk_size, sync=replay_sync)
+
+        try:
+            stats = failures.replay(_retry)
+            replay_sync.flush()
+        finally:
+            replay_sync.close()
+            replay_vector_store.close()
         print(f"Replay: {stats}")
         failures.close(); storage.close(); dedup.close()
         return
