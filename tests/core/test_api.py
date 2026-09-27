@@ -216,6 +216,26 @@ class TestApi(unittest.TestCase):
                              params={"q": "alpha", "diversity": 0.5, "sort": "freshness"})
         self.assertEqual(r2.status_code, 400)
 
+    def test_diversity_changes_ordering_on_near_duplicates(self):
+        # near-mirror docs: without diversification they flood the top of the
+        # page; with diversity the MMR anti-flood gate must change the outcome
+        # 11 shared tokens, one differing token each => Jaccard ~0.92 > the
+        # MMR anti-flood threshold — exactly the mirror-farm case it exists for
+        near_dupes = ["the quick brown fox jumps over the lazy dog every morning variant one",
+                      "the quick brown fox jumps over the lazy dog every morning variant two",
+                      "the quick brown fox jumps over the lazy dog every morning variant three"]
+        for i, body in enumerate(near_dupes + ["a completely unrelated weather report about rain"]):
+            self.add(f"nd{i}", body, title=f"doc {i}")
+        plain = self.client.get("/search", params={"q": "fox running fast", "diversity": 0.0}).json()
+        diverse = self.client.get("/search", params={"q": "fox running fast", "diversity": 1.0}).json()
+        plain_ids = [r["doc_id"] for r in plain["results"]]
+        diverse_ids = [r["doc_id"] for r in diverse["results"]]
+        # the diversified page must differ: the unrelated document gets
+        # promoted over the duplicate family's followers (MMR penalty)
+        self.assertNotEqual(plain_ids, diverse_ids)
+        self.assertIn("nd3", diverse_ids[:2])      # novelty wins a top slot
+        self.assertNotIn("nd3", plain_ids[:2])     # but not in plain relevance order
+
     def test_hybrid_total_is_true_match_count(self):
         # 30 docs match "common"; candidate pool is tiny — total must still
         # report the corpus-wide match count, and has_more must reflect the
