@@ -44,12 +44,37 @@ class RankingWeights:
     document_quality: float = 0.05
     content_quality: float = 0.05
     language_relevance: float = 0.05
-    source_authority: float = 0.0   # placeholder slot — no data until Phase 6
-    popularity: float = 0.0         # placeholder slot
+    source_authority: float = 0.0   # placeholder slot — data since Phase 6
+    popularity: float = 0.0         # placeholder slot — data since Phase 6
     click_signal: float = 0.0       # placeholder slot — no data until Phase 7
 
     def as_dict(self) -> dict[str, float]:
         return {f: getattr(self, f) for f in self.__dataclass_fields__}
+
+    @classmethod
+    def from_env(cls) -> "RankingWeights":
+        """Production rollout knobs (Phase 6): the link-intelligence signals
+        ship OFF (0.0) until an operator opts in after evaluating uplift —
+        NEXUS_AUTHORITY_WEIGHT / NEXUS_POPULARITY_WEIGHT, clamped to [0,1] so
+        a fat-fingered env value can't zero the whole ranking score."""
+        import os
+        weights = cls()
+        for env, field_name in (("NEXUS_AUTHORITY_WEIGHT", "source_authority"),
+                                ("NEXUS_POPULARITY_WEIGHT", "popularity"),
+                                ("NEXUS_RERANK_WEIGHT_CLICK", "click_signal")):
+            raw = os.environ.get(env, "").strip()
+            if not raw:
+                continue
+            try:
+                value = float(raw)
+            except ValueError:
+                logger.warning("%s=%r is not a float; left at 0.0", env, raw)
+                continue
+            clamped = max(0.0, min(1.0, value))
+            if clamped != value:
+                logger.warning("%s=%r clamped to %.2f", env, raw, clamped)
+            setattr(weights, field_name, clamped)
+        return weights
 
 
 @dataclass
@@ -128,15 +153,17 @@ def rerank(
     storage: Optional[Storage] = None,
     understanding: Optional[QueryUnderstanding] = None,
     model: Optional[RankingModel] = None,
+    link_intel=None,
 ) -> list[RankedResult]:
     """Re-rank Phase 4 results with Stage 2 features.
 
     storage=None is legal (offline/unit tests): document-dependent signals
-    read NEUTRAL/0.0 instead of crashing. The sort is deterministic:
-    (-final_score, doc_id), the same convention as bm25.py/hybrid_search.py.
+    read NEUTRAL/0.0 instead of crashing; link_intel=None likewise leaves
+    authority/popularity at NEUTRAL (Phase 6 graph absent). The sort is
+    deterministic: (-final_score, doc_id), same as bm25.py/hybrid_search.py.
     """
     model = model or WeightedSumModel(weights)
-    context = build_context(query, understanding=understanding)
+    context = build_context(query, understanding=understanding, link_intel=link_intel)
 
     # One fetch for the whole page — extract_features is per-candidate, its
     # storage read was the N+1.

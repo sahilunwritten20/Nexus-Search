@@ -131,24 +131,44 @@ def compute_language_relevance(doc, query: str, context) -> float:
     return 1.0 if str(d_lang).lower() == q_lang else 0.0
 
 
+def _link_scores(doc, context) -> Optional[tuple]:
+    """(authority, popularity) from the Phase-6 graph for this doc's URL —
+    None when the graph is absent OR the URL was never scored. Chunks resolve
+    through their parent URL (metadata['url'] or canonical_url)."""
+    graph = getattr(context, "link_intel", None)
+    if graph is None or doc is None or not doc.metadata:
+        return None
+    url = doc.metadata.get("url") or doc.metadata.get("canonical_url")
+    if not url:
+        return None
+    return graph.authority_for(url)
+
+
 def compute_source_authority(doc, query: str, context) -> float:
-    """PLACEHOLDER interface — no link graph exists until Phase 6.
-    Returns doc.metadata['authority_score'] if an upstream system supplied
-    one, otherwise context.default_authority (itself defaulting to NEUTRAL)."""
+    """How much the web vouches for the page (Phase 6 link graph; computed
+    OFFLINE — never fetched or computed on the request path). Precedence:
+    explicit metadata override (upstream test ops) > graph score > NEUTRAL."""
     if doc is not None and doc.metadata:
         value = doc.metadata.get("authority_score")
         if isinstance(value, (int, float)):
             return max(0.0, min(1.0, float(value)))
+    link = _link_scores(doc, context)
+    if link is not None:
+        return max(0.0, min(1.0, link[0]))
     return getattr(context, "default_authority", NEUTRAL)
 
 
 def compute_popularity(doc, query: str, context) -> float:
-    """PLACEHOLDER interface — no popularity counters exist yet.
-    doc.metadata['popularity'] override supported for future wiring."""
+    """Attention proxy: link-graph inbound-domain diversity (log-scaled).
+    No click data exists anywhere in this system (Phase 7) — we ship the
+    slot with the only real attention data available, honestly scoped."""
     if doc is not None and doc.metadata:
         value = doc.metadata.get("popularity")
         if isinstance(value, (int, float)):
             return max(0.0, min(1.0, float(value)))
+    link = _link_scores(doc, context)
+    if link is not None:
+        return max(0.0, min(1.0, link[1]))
     return getattr(context, "default_popularity", NEUTRAL)
 
 

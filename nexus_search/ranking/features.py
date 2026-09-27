@@ -31,6 +31,10 @@ class SignalContext:
     default_authority: float = signals.NEUTRAL
     default_popularity: float = signals.NEUTRAL
     default_click: float = signals.NEUTRAL
+    # Phase 6 link intelligence: a links.graph.LinkGraph (read-only lookups)
+    # or None -> authority/popularity stay NEUTRAL placeholders. Use
+    # build_context(..., link_intel=graph), never graph queries per-signal.
+    link_intel: object = None
 
 
 @dataclass
@@ -94,8 +98,10 @@ def extract_features(doc_id: str, storage: Storage, context: SignalContext,
 
 
 def build_context(query: str, understanding: Optional[QueryUnderstanding] = None,
-                  half_life_days: float = 30.0) -> SignalContext:
+                  half_life_days: float = 30.0,
+                  link_intel=None) -> SignalContext:
     """New context for one query evaluation. `now` is stamped once so every
-    candidate in the same rerank shares the same freshness clock."""
+    candidate in the same rerank shares the same freshness clock. link_intel
+    is the optional Phase-6 LinkGraph (its absence keeps Phase 5 neutral)."""
     return SignalContext(query=query, understanding=understanding, now=time.time(),
-                         freshness_half_life_days=half_life_days)
+                         freshness_half_life_days=half_life_days, link_intel=link_intel)

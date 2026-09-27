@@ -23,7 +23,7 @@ from .query_cache import QueryCache
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
 from .query_parser import parse_query
-from ..ranking.ranker import RankingWeights, rerank as rerank_results
+from ..ranking.ranker import RankingWeights, WeightedSumModel, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
@@ -60,6 +60,8 @@ async def lifespan(app: FastAPI):
         _hybrid_searcher.close()
     if experiment_log is not None:
         experiment_log.close()
+    if _link_graph is not None:
+        _link_graph.close()
     _storage.close()
 
 
@@ -111,6 +113,16 @@ try:
 except Exception as exc:  # logging must never take search down
     logger.warning("Experiment log unavailable: %s", exc)
     experiment_log = None
+
+# Phase 6 link intelligence: read-side ONLY. Weights ship at 0.0 by default
+# (RankingWeights.from_env) so this is inert until an operator opts in after
+# evaluation (docs/PHASE6_PLAN.md rollout).
+try:
+    from ..links.graph import LinkGraph
+    _link_graph = LinkGraph(_NEXUS_DB)
+except Exception as exc:
+    logger.warning("Link graph unavailable (ranking stays neutral): %s", exc)
+    _link_graph = None
 
 # Query cache: TTL-bounded, and cleared on every write (see query_cache.py)
 _query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5")))
@@ -384,7 +396,8 @@ def search(
     import dataclasses
     results = page.results
     if rerank_flag:
-        ranked = rerank_results(results, q, storage=_storage, understanding=understanding)
+        ranked = rerank_results(results, q, storage=_storage, understanding=understanding,
+                                weights=RankingWeights.from_env(), link_intel=_link_graph)
         # copy, never mutate: page.results may be a cached object
         results = [dataclasses.replace(rr.result, score=rr.final_score) for rr in ranked]
         if page.metadata is not None:
@@ -477,11 +490,27 @@ def explain_search(request: Request, req: ExplainRequest, response: Response):
     explanation = searcher.explain(req.query, top_k=req.top_k, mode=search_mode, fusion=req.fusion)
     metadata = SearchMetadata(**explanation["metadata"]) if explanation["metadata"] else SearchMetadata(mode=req.mode)
 
+    results_out = [ExplainResult(**r) for r in explanation["results"]]
+    if req.rerank:
+        # Stage 2 debug visibility: raw signal values + blended rerank score
+        # per result (the same numbers the ranker actually used).
+        from ..ranking.features import build_context, extract_features
+        from ..ranking.query import understand_query as _understand
+        understanding = _understand(req.query, _storage)
+        ctx = build_context(req.query, understanding=understanding, link_intel=_link_graph)
+        docs_by_id = _storage.get_documents([r.doc_id for r in results_out])
+        model = WeightedSumModel(RankingWeights.from_env())
+        for row in results_out:
+            feats = extract_features(row.doc_id, _storage, ctx,
+                                     doc=docs_by_id.get(row.doc_id))
+            row.features = feats.as_dict()
+            row.reranked_score = model.score(feats)
+
     return ExplainResponse(
         query=explanation["query"],
         mode=explanation["mode"],
         metadata=metadata,
-        results=[ExplainResult(**r) for r in explanation["results"]],
+        results=results_out,
     )
 
 

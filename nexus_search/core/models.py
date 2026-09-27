@@ -92,6 +92,7 @@ class ExplainRequest(BaseModel):
     fusion: str = "rrf"
     bm25_weight: float = Field(default=1.0, ge=0)
     vector_weight: float = Field(default=1.0, ge=0)
+    rerank: bool = False  # also surface Stage-2 reranker features per result
 
 
 class ExplainResult(BaseModel):
@@ -104,6 +105,9 @@ class ExplainResult(BaseModel):
     source: str
     title: str
     chunk_id: Optional[str] = None
+    # when rerank=true: raw Stage-2 signal values + model-blended score
+    features: Optional[dict] = None
+    reranked_score: Optional[float] = None
 
 
 class ExplainResponse(BaseModel):

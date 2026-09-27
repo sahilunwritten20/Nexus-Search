@@ -21,6 +21,7 @@ from ..ingestion.dedup import Deduplicator
 from ..ingestion.failures import FailureQueue
 from ..ingestion.history import ContentHistory
 from ..ingestion.pipeline import make_crawler_ingest_fn
+from ..links.graph import LinkGraph
 from .blocklist import Blocklist
 from .pipeline import CrawlPipeline
 from .scheduler import CrawlScheduler
@@ -54,6 +55,9 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
     # crawled documents deserve the audit trail too
     failures = FailureQueue(args.db)
     history = ContentHistory(args.db)
+    # Phase 6: every fetched page feeds the link graph (read-only on ranking
+    # until an operator recomputes + opts in via env weights)
+    link_graph = LinkGraph(args.db)
     recrawl = _pick(args.recrawl_interval, config, "recrawl_interval", 0)
     if args.every and not recrawl:
         recrawl = args.every  # scheduled runs re-check old pages automatically
@@ -79,6 +83,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
             failure_queue=failures,
             history=history,
         ),
+        link_graph=link_graph,
     )
     try:
         pipeline.seed(seeds)
@@ -91,6 +96,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         sync.flush()
         sync.close()
         pipeline.close()
+        link_graph.close()
         history.close()
         failures.close()
         dedup.close()
@@ -108,10 +114,14 @@ def report(stats: dict, metrics_file: str | None) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Nexus Search — crawler")
     parser.add_argument("command", nargs="?", default="crawl",
-                        choices=["crawl", "block", "unblock", "blocklist"],
-                        help="block/unblock a host, list blocked hosts, or crawl (default)")
+                        choices=["crawl", "block", "unblock", "blocklist", "authority"],
+                        help="block/unblock a host, blocklist, authority ops, or crawl (default)")
     parser.add_argument("host", nargs="?", default=None,
                         help="host (or URL) for block/unblock")
+    parser.add_argument("--recompute", action="store_true",
+                        help="authority: recompute PageRank/authority scores")
+    parser.add_argument("--show", metavar="URL", default=None,
+                        help="authority: show one URL's scores")
     parser.add_argument("--reason", default="", help="why a host was blocked (recorded with 'block')")
     parser.add_argument("--seeds", help="Path to seed URL file")
     parser.add_argument("--sitemap", action="append", help="Sitemap URL (repeatable)")
@@ -132,6 +142,30 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    # Authority subcommand: recompute/inspect link intelligence (offline,
+    # never on the request path).
+    if args.command == "authority":
+        from ..links.authority import compute_authority
+        from ..links.graph import LinkGraph
+        graph = LinkGraph(args.db)
+        try:
+            if args.show:
+                found = graph.authority_for(args.show)
+                print(f"{args.show}: authority={found[0]:.4f} popularity={found[1]:.3f}"
+                      if found else f"{args.show}: not in graph (ranker sees NEUTRAL)")
+            elif args.recompute:
+                stats = compute_authority(graph)
+                print(f"authority recomputed: {stats.pages} pages, {stats.edges_used}/"
+                      f"{stats.edges_in} endorsing edges, {stats.iterations} iterations "
+                      f"({'converged' if stats.converged else 'max-iterations'}), "
+                      f"{stats.seconds:.2f}s, {stats.reciprocal_pairs} discounted "
+                      f"reciprocal pairs")
+            else:
+                print(f"link graph: {graph.stats()}")
+        finally:
+            graph.close()
+        return
 
     # Blocklist ops don't crawl anything — they only touch the frontier DB.
     if args.command in ("block", "unblock", "blocklist"):
