@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..types import IngestDoc
+from .files import _detect_encoding  # shared BOM/cp1252 handling, not a copy
 
 
 def _product_to_doc(product: dict, source: str, index: int) -> IngestDoc:
@@ -24,8 +25,12 @@ def _product_to_doc(product: dict, source: str, index: int) -> IngestDoc:
 
 
 def iter_products_csv(path: str) -> Iterator[IngestDoc]:
+    """cp1252/latin-1 catalog exports are common (Excel); the files
+    connector's detector + replacement decode beats a hard UTF-8 crash."""
     p = Path(path)
-    with p.open(newline="", encoding="utf-8") as f:
+    with p.open("rb") as probe:
+        encoding = _detect_encoding(probe.read(65536))
+    with p.open(newline="", encoding=encoding, errors="replace") as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
             yield _product_to_doc(dict(row), source=p.stem, index=i)

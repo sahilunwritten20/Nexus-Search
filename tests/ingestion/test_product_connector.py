@@ -23,6 +23,17 @@ class TestProductConnectorCsv(unittest.TestCase):
         docs = list(iter_products_csv(str(self.csv_path)))
         self.assertEqual(len(docs), 2)
 
+    def test_cp1252_catalog_does_not_crash(self):
+        # regression: a Latin-1/cp1252 export used to UnicodeDecodeError the
+        # whole batch; now detected + decoded with replacement, text intact
+        raw = ("id,name,description,price\n"
+               '1,Café Mug,"São Paulo special, café-grade",19.95\n')
+        cp_path = Path(self.root, "catalog_cp1252.csv")
+        cp_path.write_bytes(raw.encode("cp1252"))
+        docs = {d.doc_id: d for d in iter_products_csv(str(cp_path))}
+        self.assertEqual(docs["product:1"].title, "Café Mug")
+        self.assertIn("São Paulo", docs["product:1"].content)
+
     def test_uses_id_field_for_doc_id(self):
         docs = {d.doc_id: d for d in iter_products_csv(str(self.csv_path))}
         self.assertIn("product:1", docs)
