@@ -51,6 +51,7 @@ class SearchMetadata(BaseModel):
     sort: Optional[str] = None
     has_more: bool = False       # more results beyond this page? (Stage 4)
     next_cursor: Optional[str] = None  # opaque cursor for the next page (Stage 4)
+    facets_truncated: bool = False  # facet pass sampled a >500-doc population?
 
 
 class DocumentOut(BaseModel):

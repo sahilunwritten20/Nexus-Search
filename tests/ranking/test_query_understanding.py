@@ -50,6 +50,30 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(normalize_query(""), "")
 
 
+class TestVocabularyCache(_StorageBacked):
+    def test_vocabulary_memoized_until_doc_count_changes(self):
+        import nexus_search.ranking.query as query_mod
+
+        calls = []
+        orig = Storage.all_terms
+
+        def counting(self_storage):
+            calls.append(1)
+            return orig(self_storage)
+
+        assert isinstance(self.storage, Storage)
+        try:
+            Storage.all_terms = counting
+            query_mod.understand_query("pythn", storage=self.storage)
+            query_mod.understand_query("pythn", storage=self.storage)  # cached
+            self.assertEqual(len(calls), 1)
+            self.indexer.add_document("d3", "fresh document invalidates the vocab cache")
+            query_mod.understand_query("pythn", storage=self.storage)
+            self.assertEqual(len(calls), 2)
+        finally:
+            Storage.all_terms = orig
+
+
 class TestSpellCorrection(_StorageBacked):
     def test_corrects_zero_posting_term(self):
         # "pythom" has no postings; "python" does.

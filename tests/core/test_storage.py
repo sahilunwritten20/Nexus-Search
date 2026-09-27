@@ -63,6 +63,16 @@ class TestStorage(unittest.TestCase):
         self.assertTrue(self.storage.delete_document("d1"))
         self.assertEqual(self.storage.postings_for_term("hello"), [])
 
+    def test_get_documents_batch_fetch(self):
+        from nexus_search.core.indexer import Indexer
+        indexer = Indexer(self.storage)
+        indexer.add_document("a", "alpha", title="A")
+        indexer.add_document("b", "beta", title="B")
+        out = self.storage.get_documents(["a", "b", "missing"])
+        self.assertEqual(set(out), {"a", "b"})       # absent ids omitted, not errors
+        self.assertEqual(out["a"].title, "A")
+        self.assertEqual(self.storage.get_documents([]), {})
+
     def test_legacy_upsert_persists_without_caller_commit(self):
         # regression: legacy upsert_document used to leave its transaction
         # OPEN — a later unrelated commit could flush a half-written doc

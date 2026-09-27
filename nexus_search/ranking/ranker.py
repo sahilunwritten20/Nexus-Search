@@ -138,6 +138,12 @@ def rerank(
     model = model or WeightedSumModel(weights)
     context = build_context(query, understanding=understanding)
 
+    # One fetch for the whole page — extract_features is per-candidate, its
+    # storage read was the N+1.
+    doc_cache: dict = {}
+    if storage is not None:
+        doc_cache = storage.get_documents([r.doc_id for r in results])
+
     ranked: list[RankedResult] = []
     for result in results:
         ctx = SignalContext(
@@ -152,7 +158,8 @@ def rerank(
             default_click=context.default_click,
         )
         if storage is not None:
-            features = extract_features(result.doc_id, storage, ctx)
+            features = extract_features(result.doc_id, storage, ctx,
+                                        doc=doc_cache.get(result.doc_id))
         else:
             features = extract_features(result.doc_id, _NullStorage(), ctx)
         ranked.append(RankedResult(result=result, features=features,

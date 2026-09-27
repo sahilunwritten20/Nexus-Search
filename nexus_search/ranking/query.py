@@ -11,11 +11,35 @@ vocabulary) or tiny embedded wordlists. They are deterministic and unit-testable
 that determinism is the reason to prefer them over a dependency at prototype scale.
 """
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..core.query_parser import parse_query
 from ..core.tokenizer import tokenize
+
+
+# understand_query()'s spell-correction needs the index vocabulary; loading
+# it per request scanned the whole vocabulary table every time. Memoize per
+# storage object, invalidated when document_count changes (same honesty
+# window as Suggester._refresh: a same-count content swap keeps a now-stale
+# term, which merely means a typo correction we can't offer — never a wrong
+# result being served).
+_VOCAB_CACHE: dict[int, tuple[int, frozenset]] = {}
+_VOCAB_CACHE_LOCK = threading.Lock()
+
+
+def _vocabulary(storage) -> frozenset:
+    doc_count = storage.document_count()
+    key = id(storage)
+    with _VOCAB_CACHE_LOCK:
+        cached = _VOCAB_CACHE.get(key)
+        if cached is not None and cached[0] == doc_count:
+            return cached[1]
+    vocab = frozenset(storage.all_terms())
+    with _VOCAB_CACHE_LOCK:
+        _VOCAB_CACHE[key] = (doc_count, vocab)
+    return vocab
 
 # A tiny built-in synonym map. Interface accepts any dict[str, list[str]], so a
 # file-backed map can be plugged in later without changing call sites.
@@ -242,7 +266,7 @@ def understand_query(query: str, storage=None, synonyms: Optional[SynonymMap] = 
 
     corrected: dict[str, str] = {}
     if storage is not None:
-        vocab = set(storage.all_terms())
+        vocab = set(_vocabulary(storage))
         # Only correct terms with ZERO postings — a term the index knows is
         # never rewritten, even if a more popular near-neighbor exists.
         vocab_terms = {t for t in parsed.terms if storage.document_frequency(t) == 0}

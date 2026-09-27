@@ -236,6 +236,23 @@ class TestApi(unittest.TestCase):
         self.assertIn("nd3", diverse_ids[:2])      # novelty wins a top slot
         self.assertNotIn("nd3", plain_ids[:2])     # but not in plain relevance order
 
+    def test_facets_truncated_flag(self):
+        # facet pass samples at most 500 docs; beyond that the response must
+        # SAY the counts are partial instead of silently lying
+        for batch_start in range(0, 520, 130):
+            self.client.post("/documents/bulk", json={"documents": [
+                {"doc_id": f"f{i}", "content": "facetprobe", "doc_type": "t",
+                 "metadata": {"language": "en"}}
+                for i in range(batch_start, batch_start + 130)]})
+        big = self.client.get("/search", params={"q": "facetprobe", "facets": "doc_type"}).json()
+        self.assertTrue(big["metadata"]["facets_truncated"])
+        small = self.client.get("/search", params={"q": "facetprobe", "top_k": 5,
+                                                   "facets": "doc_type"})
+        self.assertEqual(small.json()["facets"]["doc_type"]["t"], 500)  # sample cap
+        small2 = self.client.get("/search", params={"q": "facetprobe type:t",
+                                                    "facets": "doc_type"})
+        self.assertTrue(small2.json()["metadata"]["facets_truncated"])  # still >500 matches
+
     def test_hybrid_total_is_true_match_count(self):
         # 30 docs match "common"; candidate pool is tiny — total must still
         # report the corpus-wide match count, and has_more must reflect the

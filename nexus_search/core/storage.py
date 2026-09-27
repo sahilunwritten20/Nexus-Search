@@ -156,6 +156,21 @@ class Storage:
             return None
         return Document(row[0], row[1], row[2], row[3], row[4], json.loads(row[5]), row[6])
 
+    def get_documents(self, doc_ids: list[str]) -> dict[str, Document]:
+        """Batch fetch: one IN query instead of N SELECTs (reranker/facet
+        counts fetch whole pages at once — the N+1 pattern was the cost)."""
+        if not doc_ids:
+            return {}
+        with self.lock:
+            placeholders = ",".join("?" for _ in doc_ids)
+            rows = self.conn.execute(
+                "SELECT doc_id, title, content, doc_type, length, metadata, added_at "
+                f"FROM documents WHERE doc_id IN ({placeholders})",
+                doc_ids,
+            ).fetchall()
+        return {r[0]: Document(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]), r[6])
+                for r in rows}
+
     def delete_document(self, doc_id: str) -> bool:
         with self.lock:
             cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))

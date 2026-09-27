@@ -126,12 +126,14 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
         mode_used = "keyword"
     page = _bm25_searcher.search_page(q, top_k=top_k, offset=offset)
     facet_out = None
+    facets_truncated = False
     if facets:  # same honest-count contract as the non-degraded path
         fields = [f.strip() for f in facets.split(",") if f.strip()]
         full = _bm25_searcher.search_page(q, top_k=min(max(page.total, 1), 500), offset=0)
-        docs = [_storage.get_document(r.doc_id) for r in full.results]
+        docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         from ..core.filters import facet_counts
-        facet_out = facet_counts([d for d in docs if d is not None], fields)
+        facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
+        facets_truncated = page.total > 500
     results = [
         SearchResultOut(
             doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
@@ -153,6 +155,7 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
             bm25_candidates=page.total, merged_candidates=len(results),
             fallback=fallback, fallback_reason=reason if fallback else None,
             has_more=has_more, next_cursor=next_cursor,
+            facets_truncated=facets_truncated,
         ),
         facets=facet_out,
     )
@@ -389,17 +392,25 @@ def search(
             nxt = base64.urlsafe_b64encode(f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
             metadata.next_cursor = nxt
 
-    # Stage 4: facet counts — computed over the full match population (a fresh
-    # pass with top_k=total), NOT just the visible page, so counts are honest.
+    # Stage 4: facet counts — computed over the match population (a fresh
+    # pass capped at 500 docs), NOT just the visible page. When the cap bites
+    # we SAY so instead of serving silently-incomplete counts.
     facet_out = None
+    facets_truncated = False
     if facets:
         fields = [f.strip() for f in facets.split(",") if f.strip()]
-        full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), 500), offset=0,
-                                           mode=search_mode, fusion=fusion, candidates=candidates)
+        _FACET_SAMPLE_CAP = 500
+        facets_truncated = page.total > _FACET_SAMPLE_CAP
+        full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
+                                           offset=0, mode=search_mode, fusion=fusion,
+                                           # the default candidate pool (50) would
+                                           # truncate counts below the sample cap
+                                           candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP))
         from ..core.filters import facet_counts
-        docs = [_storage.get_document(r.doc_id) for r in full.results]
-        docs = [d for d in docs if d is not None]
-        facet_out = facet_counts(docs, fields)
+        docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
+        facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
+    if metadata is not None and facets is not None:
+        metadata.facets_truncated = facets_truncated
 
     return SearchResponse(
         query=q,
