@@ -18,6 +18,8 @@ from ..core.indexer import Indexer
 from ..core.storage import Storage
 from ..core.vector_store import VectorStoreManager
 from ..ingestion.dedup import Deduplicator
+from ..ingestion.failures import FailureQueue
+from ..ingestion.history import ContentHistory
 from ..ingestion.pipeline import make_crawler_ingest_fn
 from .blocklist import Blocklist
 from .pipeline import CrawlPipeline
@@ -48,6 +50,10 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
     vector_store = VectorStoreManager(args.db)
     sync = create_embedding_sync(vector_store, batch_size=32)
     sync.attach(indexer)
+    # same dead-letter queue + content history as the batch ingest CLI —
+    # crawled documents deserve the audit trail too
+    failures = FailureQueue(args.db)
+    history = ContentHistory(args.db)
     recrawl = _pick(args.recrawl_interval, config, "recrawl_interval", 0)
     if args.every and not recrawl:
         recrawl = args.every  # scheduled runs re-check old pages automatically
@@ -67,6 +73,8 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
             dedup,
             min_quality=_pick(args.min_quality, config, "min_quality", None),
             chunk_size=_pick(args.chunk_size, config, "chunk_size", None),
+            failure_queue=failures,
+            history=history,
         ),
     )
     try:
@@ -80,6 +88,8 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         sync.flush()
         sync.close()
         pipeline.close()
+        history.close()
+        failures.close()
         dedup.close()
         storage.close()
         vector_store.close()

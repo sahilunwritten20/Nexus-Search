@@ -133,6 +133,26 @@ class TestCanonicalDedup(unittest.TestCase):
         self.ingest_fn(url, "Title", text,
                        {"url": url, "canonical_url": canonical or url})
 
+    def test_failure_queue_and_history_wired_through(self):
+        """A failing crawl page lands in the dead-letter queue when the
+        adapter is given one — crawler pages aren't second-class citizens."""
+        from nexus_search.ingestion.failures import FailureQueue
+        from nexus_search.ingestion.history import ContentHistory
+        queue = FailureQueue(self.path)
+        history = ContentHistory(self.path)
+        fn = make_crawler_ingest_fn(self.indexer, self.dedup,
+                                    failure_queue=queue, history=history)
+        try:
+            fn("https://example.com/good", "T", "a healthy page body for indexing", {})
+            fn("https://example.com/good", "T", "an updated, different page body", {})
+            self.assertEqual(history.count("web:https://example.com/good"), 1)
+            with self.assertRaises(Exception):
+                fn("https://example.com/bad", "T", None, {})  # content breaks ingest
+            self.assertEqual(queue.count(), 1)
+        finally:
+            queue.close()
+            history.close()
+
     def test_same_canonical_different_content_is_deduped(self):
         self._crawl("https://example.com/page", "original body here")
         # Variant URL declaring the same canonical, with DIFFERENT content

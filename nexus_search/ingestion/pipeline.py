@@ -218,17 +218,28 @@ def make_crawler_ingest_fn(
     chunk_size: Optional[int] = None,
     sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
     hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
+    failure_queue: Optional[FailureQueue] = None,
+    history: Optional[ContentHistory] = None,
 ):
     """Returns the (url, title, text, metadata) -> None callable CrawlPipeline
-    expects as `ingest_fn`. Thread-safe: crawler workers call it concurrently,
-    and dedup + index + register must happen as one step."""
+    expects as `ingest_fn`.
+
+    Thread-safety note: the lock below serializes dedup+index+register, so
+    crawler `concurrency` parallelizes FETCHES (network) only — indexing and
+    embedding run one doc at a time by design at prototype scale.
+
+    failure_queue/history: same dead-letter + content-versioning behavior as
+    the batch CLI when provided; a failed page is dead-lettered instead of
+    just leaving the frontier retrying forever."""
     lock = threading.Lock()
 
     def ingest_fn(url: str, title: str, text: str, metadata: dict) -> None:
         doc = IngestDoc(doc_id=f"web:{url}", title=title, content=text, doc_type="web", metadata=metadata)
         with lock:
             # Support both `sync` and `hybrid` parameter names
-            status = ingest_one(doc, indexer, dedup, min_quality=min_quality, chunk_size=chunk_size, sync=sync, hybrid=hybrid)
+            status = ingest_one(doc, indexer, dedup, min_quality=min_quality,
+                                chunk_size=chunk_size, sync=sync, hybrid=hybrid,
+                                failure_queue=failure_queue, history=history)
         if status != "indexed":
             logger.info("%s skip %s", status.upper(), url)
 
