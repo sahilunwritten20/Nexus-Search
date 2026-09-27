@@ -51,6 +51,50 @@ class TestParseBoolean(Base):
         q = parse_query("alpha AND beta")
         self.assertEqual(q.groups[0].required, ["alpha", "beta"])
 
+    def test_negated_filter_dash_prefix(self):
+        q = parse_query("-type:pdf")
+        self.assertEqual(q.filters, {})
+        self.assertEqual(q.not_filters, {"doc_type": "pdf"})
+
+    def test_negated_filter_keyword(self):
+        q = parse_query("alpha NOT type:pdf")
+        self.assertEqual(q.not_filters, {"doc_type": "pdf"})
+        self.assertEqual(q.filters, {})
+
+    def test_empty_filter_value_is_noop_not_term(self):
+        # "type:" alone must not turn into a searchable term "type"
+        q = parse_query("type: alpha")
+        self.assertEqual(q.terms, ["alpha"])
+        self.assertEqual(q.filters, {})
+
+    def test_double_dash_negates(self):
+        q = parse_query("--beta")
+        self.assertEqual(q.groups[0].excluded, ["beta"])
+
+
+class TestNegatedFiltersSearch(Base):
+    def docs_typed(self):
+        self.indexer.add_document("pdf1", "quarterly report details", doc_type="pdf")
+        self.indexer.add_document("web1", "quarterly report summary page", doc_type="web")
+
+    def test_negated_filter_with_terms(self):
+        self.docs_typed()
+        page = self.search.search_page("quarterly -type:pdf")
+        self.assertEqual({r.doc_id for r in page.results}, {"web1"})
+
+    def test_negated_filter_only(self):
+        self.docs_typed()
+        page = self.search.search_page("-type:pdf")
+        self.assertEqual({r.doc_id for r in page.results}, {"web1"})
+
+    def test_negative_lang(self):
+        self.indexer.add_document("en1", "quarterly report", doc_type="web",
+                                  metadata={"language": "en"})
+        self.indexer.add_document("fr1", "quarterly report", doc_type="web",
+                                  metadata={"language": "fr"})
+        page = self.search.search_page("quarterly -lang:fr")
+        self.assertEqual({r.doc_id for r in page.results}, {"en1"})
+
     def test_or_splits_groups(self):
         q = parse_query("alpha OR beta")
         self.assertEqual(len(q.groups), 2)

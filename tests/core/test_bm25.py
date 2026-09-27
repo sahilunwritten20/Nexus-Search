@@ -26,6 +26,21 @@ class TestBM25(unittest.TestCase):
         self.indexer.add_document("d1", "some content")
         self.assertEqual(self.search.search(""), [])
 
+    def test_highlight_not_spoofed_by_mark_literal(self):
+        # a doc whose content contains a literal "<mark>" string must not
+        # suppress highlighting of the actual match later in the window
+        self.indexer.add_document("s", '<mark> decoy </mark> the real alpha match is here')
+        results = self.search.search_page("alpha", highlight=True).results
+        self.assertIn("<mark>alpha</mark>", results[0].snippet)
+
+    def test_token_cache_reflects_reindex(self):
+        # memoized doc tokens must refresh when the doc is rewritten
+        self.indexer.add_document("x", "alpha content here")
+        self.assertTrue(self.search.search('"alpha content"'))
+        self.indexer.add_document("x", "totally different words")
+        self.assertTrue(self.search.search("totally different"))
+        self.assertFalse(self.search.search('"alpha content"'))
+
     def test_finds_matching_document(self):
         self.indexer.add_document("d1", "the quick brown fox jumps")
         self.indexer.add_document("d2", "a completely different sentence")

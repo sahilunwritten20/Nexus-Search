@@ -67,6 +67,7 @@ class ParsedQuery:
     terms: list[str] = field(default_factory=list)       # flat, positive terms
     phrases: list[str] = field(default_factory=list)     # required phrases
     filters: dict[str, str] = field(default_factory=dict)
+    not_filters: dict[str, str] = field(default_factory=dict)  # -type:pdf / NOT type:pdf
     text: str = ""
     groups: list[Group] = field(default_factory=list)    # boolean structure
 
@@ -116,9 +117,11 @@ def parse_query(query: str) -> ParsedQuery:
 
         # field-scoped: title:x / title:"x y" (phrase prefix arrives via `field`)
         field_title = field.lower() in FIELD_KEYS
-        # key:phrase with a FILTER key is not a phrase — treat as filter
+        # key:phrase with a FILTER key is not a phrase — treat as filter.
+        # NOT/- negation is honored (not_filters), not silently discarded.
         if is_phrase and field.lower() in FILTER_KEYS:
-            parsed.filters[FILTER_KEY_MAP[field.lower()]] = value.strip().lower() or value.strip()
+            target = parsed.not_filters if pending_not else parsed.filters
+            target[FILTER_KEY_MAP[field.lower()]] = value.strip().lower() or value.strip()
             pending_and = pending_not = False
             return
         if is_phrase and field and not field_title:
@@ -128,8 +131,11 @@ def parse_query(query: str) -> ParsedQuery:
             key, _, rest = value.partition(":")
             key_l = key.lower().strip()
             rest = rest.strip()
-            if key_l in FILTER_KEYS and rest:
-                parsed.filters[FILTER_KEY_MAP[key_l]] = rest.lower()
+            if key_l in FILTER_KEYS:
+                # an empty value ("type:") is a no-op, not the term "type"
+                if rest:
+                    target = parsed.not_filters if pending_not else parsed.filters
+                    target[FILTER_KEY_MAP[key_l]] = rest.lower()
                 pending_and = pending_not = False
                 return
             if key_l in FIELD_KEYS and rest:
@@ -194,10 +200,11 @@ def parse_query(query: str) -> ParsedQuery:
             else:  # NOT
                 pending_not = True
             continue
-        # -prefix negation (binds like NOT)
-        if not is_phrase and raw.startswith("-") and len(raw) > 1 and not raw.startswith("--"):
+        # -prefix negation (binds like NOT). Repeated leading dashes fold to
+        # one: "--foo" is a typo for "-foo", not a positive term "foo".
+        if not is_phrase and raw.startswith("-") and raw.lstrip("-"):
             pending_not = True
-            raw = raw[1:]
+            raw = raw.lstrip("-")
         add_term(raw, is_phrase, field_key)
 
     # A NOT that swallowed nothing is dropped; empty groups from a trailing
@@ -213,6 +220,13 @@ def parse_query(query: str) -> ParsedQuery:
     return parsed
 
 
+def _phrase_in(tokens, phrase: list[str]) -> bool:
+    """Token-sequence match, sequence-type agnostic (tuples vs lists)."""
+    ph = tuple(phrase)
+    n = len(ph)
+    return n > 0 and any(tuple(tokens[i:i + n]) == ph for i in range(len(tokens) - n + 1))
+
+
 def group_match(doc_tokens: list[str], title_tokens: list[str], group: Group) -> bool:
     """Boolean gate for one document against one OR-group."""
     doc_set = set(doc_tokens)
@@ -221,33 +235,25 @@ def group_match(doc_tokens: list[str], title_tokens: list[str], group: Group) ->
         if term in doc_set:
             return False
     for ph in group.excluded_phrases:
-        toks = tokenize(ph)
-        n = len(toks)
-        if toks and any(doc_tokens[i:i + n] == toks for i in range(len(doc_tokens) - n + 1)):
+        if _phrase_in(doc_tokens, tokenize(ph)):
             return False
     for term in group.required:
         if term not in doc_set:
             return False
     for ph in group.required_phrases:
-        toks = tokenize(ph)
-        n = len(toks)
-        if toks and not any(doc_tokens[i:i + n] == toks for i in range(len(doc_tokens) - n + 1)):
+        if not _phrase_in(doc_tokens, tokenize(ph)):
             return False
     for term in group.title_terms:
         if term not in title_set:
             return False
     for ph in group.title_phrases:
-        toks = tokenize(ph)
-        n = len(toks)
-        if toks and not any(title_tokens[i:i + n] == toks for i in range(len(title_tokens) - n + 1)):
+        if not _phrase_in(title_tokens, tokenize(ph)):
             return False
     if group.required or group.title_terms or group.required_phrases or group.title_phrases:
         return True
     if group.optional or group.optional_phrases:
         return any(t in doc_set for t in group.optional) or any(
-            (lambda toks: toks and any(doc_tokens[i:i + len(toks)] == toks
-                                       for i in range(len(doc_tokens) - len(toks) + 1)))(tokenize(ph))
-            for ph in group.optional_phrases)
+            _phrase_in(doc_tokens, tokenize(ph)) for ph in group.optional_phrases)
     return False
 
 

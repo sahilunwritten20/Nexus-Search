@@ -337,14 +337,14 @@ class HybridSearch:
 
     def _build_allowed_filter(self, parsed) -> Optional[Callable[[str], bool]]:
         """Build filter callable for vector search pushdown."""
-        if not parsed.filters:
+        if not parsed.filters and not parsed.not_filters:
             return None
 
         def allowed(doc_id: str) -> bool:
             doc = self.storage.get_document(doc_id)
             if doc is None:
                 return False
-            return matches_filters(doc, parsed.filters)
+            return matches_filters(doc, parsed.filters, parsed.not_filters)
         return allowed
 
     @staticmethod

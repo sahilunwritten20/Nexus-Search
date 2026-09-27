@@ -1,13 +1,19 @@
 """Metadata filters shared by every retriever (BM25 now, vectors in Phase 4)."""
 
 
-def matches_filters(doc, filters: dict[str, str]) -> bool:
-    """True if `doc` (anything with .doc_type and .metadata) satisfies the
-    parsed `type:` / `lang:` filters."""
+def matches_filters(doc, filters: dict[str, str],
+                    not_filters: dict[str, str] | None = None) -> bool:
+    """True if `doc` satisfies the parsed `type:` / `lang:` filters.
+    `not_filters` (from `-type:` / `NOT type:`) must all NOT match."""
     if "doc_type" in filters and doc.doc_type.lower() != filters["doc_type"]:
         return False
     if "language" in filters and str(doc.metadata.get("language", "")).lower() != filters["language"]:
         return False
+    for key, value in (not_filters or {}).items():
+        actual = (doc.doc_type if key == "doc_type"
+                  else str(doc.metadata.get("language", ""))).lower()
+        if actual == value:
+            return False
     return True
 
 

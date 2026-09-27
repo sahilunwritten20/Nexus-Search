@@ -116,7 +116,7 @@ _query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5
 
 
 def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
-                       reason: str) -> SearchResponse:
+                       reason: str, facets: Optional[str] = None) -> SearchResponse:
     """BM25-only response used when the vector subsystem never came up."""
     if requested_mode == "keyword":
         fallback = False
@@ -125,6 +125,13 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
         fallback = True
         mode_used = "keyword"
     page = _bm25_searcher.search_page(q, top_k=top_k, offset=offset)
+    facet_out = None
+    if facets:  # same honest-count contract as the non-degraded path
+        fields = [f.strip() for f in facets.split(",") if f.strip()]
+        full = _bm25_searcher.search_page(q, top_k=min(max(page.total, 1), 500), offset=0)
+        docs = [_storage.get_document(r.doc_id) for r in full.results]
+        from ..core.filters import facet_counts
+        facet_out = facet_counts([d for d in docs if d is not None], fields)
     results = [
         SearchResultOut(
             doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
@@ -147,6 +154,7 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
             fallback=fallback, fallback_reason=reason if fallback else None,
             has_more=has_more, next_cursor=next_cursor,
         ),
+        facets=facet_out,
     )
 
 
@@ -314,7 +322,7 @@ def search(
 
     # Degraded boot: vector subsystem never came up -> honest keyword-only
     if _vector_store is None:
-        return _keyword_only_page(q, top_k, offset, mode, _vector_error)
+        return _keyword_only_page(q, top_k, offset, mode, _vector_error, facets=facets)
 
     if diversity > 0.0 and sort not in (None, "relevance"):
         # both reorder after ranking; combining them silently would be mush

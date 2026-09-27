@@ -1,6 +1,7 @@
 """BM25 retrieval with filters, title boost, required phrases, snippets,
 pagination, and chunk grouping."""
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,6 +39,31 @@ class BM25Search:
         self.storage = storage
         self.k1 = k1
         self.b = b
+        # Doc-token memo: phrase/boolean/title gating used to re-tokenize
+        # every candidate's title+content on EVERY query. keyed by
+        # (doc_id, added_at): every write path refreshes added_at, so the
+        # cache can never serve a doc's STALE tokens. Bounded (2048 docs).
+        self._token_cache: dict[tuple, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+        self._token_cache_order: list = []
+        self._token_cache_lock = threading.Lock()
+
+    def _tokens_for(self, doc) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """(title_tokens, doc_tokens) for a stored row, memoized by
+        (doc_id, added_at)."""
+        key = (doc.doc_id, doc.added_at)
+        with self._token_cache_lock:
+            hit = self._token_cache.get(key)
+            if hit is not None:
+                return hit
+        value = (tuple(tokenize(doc.title)), tuple(tokenize(f"{doc.title} {doc.content}")))
+        with self._token_cache_lock:
+            if key not in self._token_cache:
+                self._token_cache_order.append(key)
+                self._token_cache[key] = value
+                while len(self._token_cache_order) > 2048:
+                    old = self._token_cache_order.pop(0)
+                    self._token_cache.pop(old, None)
+        return value
 
     def _idf(self, term: str, n_docs: int) -> float:
         n_t = self.storage.document_frequency(term)
@@ -45,8 +71,11 @@ class BM25Search:
 
     @staticmethod
     def _has_phrase(doc_tokens: list[str], phrase: list[str]) -> bool:
-        n = len(phrase)
-        return any(doc_tokens[i:i + n] == phrase for i in range(len(doc_tokens) - n + 1))
+        """Token-sequence match. Sequence-typed both ways (list vs tuple)
+        so the doc-token memo (tuples) and parser output (lists) agree."""
+        phrase_t = tuple(phrase)
+        n = len(phrase_t)
+        return any(tuple(doc_tokens[i:i + n]) == phrase_t for i in range(len(doc_tokens) - n + 1))
 
     @staticmethod
     def _snippet(doc, terms: list[str], phrases: list[str], width: int = 200,
@@ -77,14 +106,27 @@ class BM25Search:
     def _highlight(snippet: str, terms: list[str], phrases: list[str],
                    mark: tuple[str, str]) -> str:
         """Wrap exact (case-insensitive) phrase/term matches in the window.
-        Longest-first so phrases win over their component words; text inside
-        an existing <mark> is not re-wrapped."""
+        Longest-first so phrases win over their component words.
+
+        A match that lands inside an EXPLICIT <mark>..</mark> pair in the
+        SOURCE text is not wrapped (that would emit broken nested tags) —
+        tracked via real tag spans, not counting, so document content cannot
+        suppress highlighting (counting opens before the match could be
+        thrown off by an unbalanced literal "<mark>")."""
         import re
         targets = sorted({p for p in phrases if p} | {t for t in terms if t},
                          key=len, reverse=True)
         if not targets:
             return snippet
         open_m, close_m = mark
+        # protected regions: paired open/close tags in the SOURCE snippet
+        protected: list[tuple[int, int]] = []
+        for tag_m in re.finditer(re.escape(open_m) + "|" + re.escape(close_m), snippet):
+            if tag_m.group(0) == open_m:
+                protected.append([tag_m.start(), None])
+            elif protected and protected[-1][1] is None:
+                protected[-1][1] = tag_m.end()
+        protected = [(s, e) for s, e in protected if e is not None]
         pattern = re.compile("|".join(re.escape(t) for t in targets), re.IGNORECASE)
 
         def wrap(match):
@@ -92,9 +134,7 @@ class BM25Search:
 
         out, pos = [], 0
         for m in pattern.finditer(snippet):
-            # skip matches inside an already-open mark region
-            opens = snippet.count(open_m, 0, m.start()) - snippet.count(close_m, 0, m.start())
-            if opens > 0:
+            if any(m.start() < end and m.end() > start for start, end in protected):
                 continue
             out.append(snippet[pos:m.start()])
             out.append(wrap(m))
@@ -137,14 +177,14 @@ class BM25Search:
                 idf = self._idf(term, n_docs)
                 for doc_id, tf in self.storage.postings_for_term(term):
                     doc = get(doc_id)
-                    if doc is None or not matches_filters(doc, parsed.filters):
+                    if doc is None or not matches_filters(doc, parsed.filters, parsed.not_filters):
                         continue
                     norm = 1 - self.b + self.b * (doc.length / avg_len if avg_len else 1)
                     scores[doc_id] = scores.get(doc_id, 0.0) + idf * (tf * (self.k1 + 1)) / (tf + self.k1 * norm)
-        elif parsed.filters:  # filter-only query, e.g. "type:pdf"
+        elif parsed.filters or parsed.not_filters:  # filter-only query, e.g. "type:pdf" / "-type:pdf"
             for doc_id in self.storage.all_doc_ids():
                 doc = get(doc_id)
-                if doc and matches_filters(doc, parsed.filters):
+                if doc and matches_filters(doc, parsed.filters, parsed.not_filters):
                     scores[doc_id] = 0.0
         else:
             return SearchPage(0)
@@ -153,20 +193,19 @@ class BM25Search:
         ranked = []
         for doc_id, score in scores.items():
             doc = get(doc_id)
-            doc_tokens_cache = None
+            title_tokens, doc_tokens = ((), ())
+            if phrases or parsed.has_boolean or unique_terms:
+                title_tokens, doc_tokens = self._tokens_for(doc)  # memoized per (doc_id, added_at)
             if phrases:  # quoted phrases are REQUIRED, matched as token sequences
-                doc_tokens_cache = tokenize(f"{doc.title} {doc.content}")
-                if not all(self._has_phrase(doc_tokens_cache, ph) for ph in phrases):
+                if not all(self._has_phrase(doc_tokens, ph) for ph in phrases):
                     continue
                 score *= PHRASE_BOOST ** len(phrases)
             if parsed.has_boolean:
-                if doc_tokens_cache is None:
-                    doc_tokens_cache = tokenize(f"{doc.title} {doc.content}")
-                if not boolean_match(parsed, doc_tokens_cache, tokenize(doc.title)):
+                if not boolean_match(parsed, doc_tokens, title_tokens):
                     continue
             if unique_terms:
-                title_terms = set(tokenize(doc.title))
-                hits = sum(1 for t in unique_terms if t in title_terms)
+                title_term_set = set(title_tokens)
+                hits = sum(1 for t in unique_terms if t in title_term_set)
                 score *= 1 + (TITLE_BOOST - 1) * min(hits / len(unique_terms), 1.0)
             ranked.append((doc_id, score))
 
