@@ -44,6 +44,8 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_API_KEY`  | *(unset)*      | Required on `POST/DELETE /documents` (`X-API-Key` header); unset + non-dev = no boot |
 | `NEXUS_CACHE_TTL` | `5`           | `/search` response-cache TTL, seconds |
 | `NEXUS_REQUIRE_AUTH_FOR_READS` | `0` | `1` gates GET /search, /documents/{id}, /suggest, /related behind X-API-Key too (needs `NEXUS_API_KEY` to engage) |
+| `NEXUS_AUTHORITY_WEIGHT` | `0.0` | Phase 6: link-graph authority weight in rerank (0=inert; 0.1–0.3 typical). Rollback = set to 0 + restart |
+| `NEXUS_POPULARITY_WEIGHT` | `0.0` | Phase 6: link-graph popularity weight in rerank. Same rollback |
 | `NEXUS_RATE_LIMIT` | `60/minute`  | Per-client limit on `/search` and write endpoints (`0` disables) |
 | `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
 
@@ -62,6 +64,23 @@ Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
 `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow`
 (replays in-flight writes during the swap; zero-downtime).
 
+Phase 6 link intelligence:
+``` bash
+# Recompute authority scores (offline, never on the request path)
+python -m nexus_search.crawler.cli authority --recompute --db $NEXUS_DB
+
+# Inspect one URL's scores
+python -m nexus_search.crawler.cli authority --show https://example.com
+
+# Graph stats
+python -m nexus_search.crawler.cli authority
+```
+**Rollout:** set `NEXUS_AUTHORITY_WEIGHT=0.2` (and optionally
+`NEXUS_POPULARITY_WEIGHT=0.1`) + restart. **Rollback:** set both to 0 +
+restart — the signal is additive and disappears immediately (no reindex
+needed, no data migration). Weights ship at 0.0 by default; only turn on
+after the eval harness shows uplift (see `evaluation/`).
+
 Docker/CI: `Dockerfile` + `docker-compose.yml` (key required), GitHub
 Actions runs the full suite + image build + `/health` probe on every push.
 
@@ -78,11 +97,8 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **592 passed, 3 skipped** (595 collected; offline;
-sentence-transformers cases self-skip unless `NEXUS_RUN_MODEL_TESTS=1`).
-Per phase: core 195 · crawler 108 · ingestion 107 · ranking 91 ·
-evaluation 2 · end-to-end/regressions/lifecycle/audit 108.
-Run: `python -m pytest -q`.
+Test suite: **633 passed, 4 skipped** (offline; sentence-transformers cases
+self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
 
 **Embedder default is lexical, not semantic.** The default
 `NEXUS_EMBEDDER=hash:384` (also the docker-compose default) is a deterministic

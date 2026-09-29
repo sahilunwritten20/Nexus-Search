@@ -39,7 +39,7 @@ through Phase 7; Phase 8-10 is what changes that if/when it's needed.
 | 3 | Crawler | **Done + upgraded** |
 | 4 | Hybrid BM25 + vector search | **Done + audited** |
 | 5 | Ranking | **Done + partial** — Learning-to-rank: framework + weighted-sum model only, no trained model (no labeled data exists yet). A/B: instrumentation only (bucketing + query log); analysis needs real production traffic |
-| 6 | Link intelligence | Planned |
+| 6 | Link intelligence | **Done + partial** — Link graph + PageRank authority + domain-diversity weighting + anti-farm heuristics shipped and tested. Weights default 0.0 (inert until operator opts in via `NEXUS_AUTHORITY_WEIGHT`). No ML spam classifier (heuristics only). Authority quality untested against real web-scale spam (no production graph to validate on) |
 | 7 | AI-cited answers | Planned |
 | 8-10 | Production infra (Kafka/Redis/K8s/sharding/monitoring) | Planned — needs real cloud infra to run |
 
