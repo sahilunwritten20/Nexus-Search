@@ -99,11 +99,11 @@ class LinkGraph:
                 (from_url,)).fetchone()[0]
             if out_count >= MAX_EDGES_PER_SOURCE_PAGE:
                 return False
-            # per domain-pair cap (ports are part of the host key pattern)
+            # per domain-pair cap (check same from_domain -> to_domain)
             f_dom, t_dom = _domain_of(from_url), _domain_of(to_url)
             pair_count = self.conn.execute(
                 "SELECT COUNT(*) FROM link_edges WHERE from_url LIKE ? AND to_url LIKE ?",
-                (f"%//{f_dom}%/%", f"%//{t_dom}%/%")).fetchone()[0]
+                (f"%//{f_dom}/%", f"%//{t_dom}/%")).fetchone()[0]
             if pair_count >= MAX_EDGES_PER_DOMAIN_PAIR:
                 return False
             self.conn.execute(
@@ -112,6 +112,36 @@ class LinkGraph:
                 (from_url, to_url, anchor_text, rel_attrs, now, now))
             self.conn.commit()
             return True
+
+    def record_edges(self, edges) -> int:
+        """Bulk record for trusted backfills/tests (self-links dropped; the
+        anti-flood per-page/domain-pair caps are enforced by record_edge,
+        the path live crawls use). One commit per 5,000 rows — a per-edge
+        commit would make big crawls commit-bound. Returns rows inserted."""
+        if isinstance(edges, (str, bytes)):
+            raise TypeError("edges must be (from_url, to_url, anchor, rel) rows")
+        now = time.time()
+        inserted, pending = 0, []
+        with self.lock:
+            for from_url, to_url, anchor_text, rel_attrs in edges:
+                if not from_url or not to_url or from_url == to_url:
+                    continue
+                pending.append((from_url, to_url, anchor_text, rel_attrs, now, now))
+                if len(pending) >= 5000:
+                    self.conn.executemany(
+                        "INSERT OR REPLACE INTO link_edges (from_url, to_url, "
+                        "anchor_text, rel_attrs, first_seen, last_seen) "
+                        "VALUES (?,?,?,?,?,?)", pending)
+                    self.conn.commit()
+                    inserted += len(pending)
+                    pending.clear()
+            if pending:
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO link_edges (from_url, to_url, anchor_text, "
+                    "rel_attrs, first_seen, last_seen) VALUES (?,?,?,?,?,?)", pending)
+                self.conn.commit()
+                inserted += len(pending)
+        return inserted
 
     # -------------------------------------------------------------- reads
 

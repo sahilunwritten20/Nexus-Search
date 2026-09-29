@@ -183,6 +183,7 @@ def rerank(
             default_authority=context.default_authority,
             default_popularity=context.default_popularity,
             default_click=context.default_click,
+            link_intel=context.link_intel,  # MUST flow to per-result contexts
         )
         if storage is not None:
             features = extract_features(result.doc_id, storage, ctx,
