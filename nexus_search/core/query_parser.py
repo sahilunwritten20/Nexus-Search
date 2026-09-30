@@ -17,7 +17,17 @@ least one optional term. That maps exactly onto NOT>AND>OR precedence.
 `terms` / `phrases` / `filters` / `text` are kept for backward compatibility
 (all positive terms + phrases in flat form); `groups` carries the boolean
 structure that BM25/hybrid use for the gate.
+
+Bounds (BUG-01 hardening): a query contributes at most
+NEXUS_MAX_QUERY_TERMS positive terms (default 128) and 64 phrases; beyond
+that the extras are dropped and the `terms_truncated` / `phrases_truncated`
+flags are set. Real queries never approach these; adversarial 2,000-char
+junk must not turn into unbounded per-request work. parse_query is also
+memoized per query string (it is a pure function) with defensive copies on
+every hit, because one /search request parses the same query up to four
+times (understanding, retrieval, facet pass).
 """
+import os
 from dataclasses import dataclass, field
 import re
 
@@ -70,15 +80,18 @@ class ParsedQuery:
     not_filters: dict[str, str] = field(default_factory=dict)  # -type:pdf / NOT type:pdf
     text: str = ""
     groups: list[Group] = field(default_factory=list)    # boolean structure
+    # set when the term/phrase caps below dropped part of the query
+    terms_truncated: bool = False
+    phrases_truncated: bool = False
 
     @property
     def has_boolean(self) -> bool:
         """True iff any non-trivial boolean structure is in play."""
         changed = (len(self.groups) > 1
                    or (self.groups and (self.groups[0].required or self.groups[0].excluded
-                                        or self.groups[0].excluded_phrases
-                                        or self.groups[0].title_terms
-                                        or self.groups[0].title_phrases)))
+                                         or self.groups[0].excluded_phrases
+                                         or self.groups[0].title_terms
+                                         or self.groups[0].title_phrases)))
         return bool(changed)
 
 
@@ -98,6 +111,79 @@ def _split_tokens(query: str) -> list[tuple[str, bool, str]]:
 
 
 def parse_query(query: str) -> ParsedQuery:
+    """Parse `query` (memoized per string; returns a fresh copy each call).
+
+    Bounds: at most NEXUS_MAX_QUERY_TERMS positive terms (default 128) and
+    at most 64 phrases are kept; anything beyond is dropped and the
+    corresponding *_truncated flag is set. Deterministic: the kept part is
+    always the query's own leading terms/phrases in order."""
+    return _copy_parsed(_parse_query_cached(query, _max_query_terms()))
+
+
+def _max_query_terms() -> int:
+    raw = (os.environ.get("NEXUS_MAX_QUERY_TERMS") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 128
+    return value if value > 0 else 128
+
+
+# 64 phrases is generous (each surviving phrase gates every candidate doc);
+# the cap exists so a quoted-junk flood cannot make phrase matching the hot
+# path. Not env-configurable on purpose: fewer knobs, same honesty.
+_MAX_QUERY_PHRASES = 64
+
+
+from functools import lru_cache  # noqa: E402
+
+
+@lru_cache(maxsize=512)
+def _parse_query_cached(query: str, max_terms: int) -> ParsedQuery:
+    """Bounded memo of the PURE parse (never handed out directly).
+    parse_query is a pure function of the string, and one /search request
+    parses the same query up to four times (understanding, retrieval,
+    facet pass). 512 unique strings covers realistic working sets; the
+    term cap participates in the key so env changes are always honored."""
+    parsed = _parse_query_uncapped(query)
+    _apply_caps(parsed, max_terms)
+    return parsed
+
+
+def _copy_parsed(parsed: ParsedQuery) -> ParsedQuery:
+    """Defensive copy: callers get their own lists/dicts even on memo hits,
+    so no consumer can contaminate the cached structure."""
+    return ParsedQuery(
+        terms=list(parsed.terms),
+        phrases=list(parsed.phrases),
+        filters=dict(parsed.filters),
+        not_filters=dict(parsed.not_filters),
+        text=parsed.text,
+        groups=[
+            Group(required=list(g.required), optional=list(g.optional),
+                  required_phrases=list(g.required_phrases),
+                  optional_phrases=list(g.optional_phrases),
+                  excluded=list(g.excluded),
+                  excluded_phrases=list(g.excluded_phrases),
+                  title_terms=list(g.title_terms),
+                  title_phrases=list(g.title_phrases))
+            for g in parsed.groups
+        ],
+        terms_truncated=parsed.terms_truncated,
+        phrases_truncated=parsed.phrases_truncated,
+    )
+
+
+def _apply_caps(parsed: ParsedQuery, max_terms: int) -> None:
+    if len(parsed.terms) > max_terms:
+        parsed.terms = parsed.terms[:max_terms]
+        parsed.terms_truncated = True
+    if len(parsed.phrases) > _MAX_QUERY_PHRASES:
+        parsed.phrases = parsed.phrases[:_MAX_QUERY_PHRASES]
+        parsed.phrases_truncated = True
+
+
+def _parse_query_uncapped(query: str) -> ParsedQuery:
     parsed = ParsedQuery()
     atoms = _split_tokens(query)
     groups: list[Group] = [Group()]

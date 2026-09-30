@@ -37,4 +37,51 @@ outbound network appears available; full HTTP validation happens in WP9.
 
 ## WP1 — BUG-01: spell-correction CPU DoS
 
-- Status: FIXED — see entry below (filled in when the WP lands).
+- Status: **FIXED**
+
+## WP1 — BUG-01: spell-correction CPU DoS
+
+- Root cause: `correct_spelling` expanded the full distance-2 edit frontier
+  (Norvig-style set expansion, ~O(len²·26²) strings) per out-of-vocabulary
+  term; junk queries hit the "no dist-1 hit" path and always paid the full
+  dist-2 expansion. It ran before the query cache on every request.
+- Fix (defense in depth, all layers tested):
+  1. `ranking/query.py`: distance-2 correction now scans the vocabulary's
+     length window once per term with an early-exit restricted-Damerau
+     (OSA) check — identical hit set and tie-breaking, bounded cost. Terms
+     longer than `NEXUS_SPELL_MAX_TERM_LEN` (20) are never corrected;
+     dist-2 only up to `NEXUS_SPELL_D2_MAX_TERM_LEN` (12); at most
+     `NEXUS_SPELL_MAX_CORRECTED_TERMS` (8) terms corrected per query
+     under one shared `NEXUS_SPELL_CANDIDATE_BUDGET` (4000 comparisons).
+     On exhaustion the query is returned un-rewritten with
+     `QueryUnderstanding.spelling_exhausted=True` — never an error.
+  2. `core/query_parser.py`: parse memoized per query string (pure
+     function; defensive copies per call), terms capped at
+     `NEXUS_MAX_QUERY_TERMS` (128), phrases at 64, with `*_truncated` flags.
+  3. `core/api.py`: cache lookup happens BEFORE any understanding work;
+     understanding is computed lazily, only on the paths that need it.
+     Queries over `MAX_QUERY_WORDS` (128) words are rejected pre-parse
+     with a clear 400 — the same default as the term cap, matching how
+     real search engines bound query complexity.
+  4. `core/storage.py` + `core/bm25.py`: batched `document_frequencies` /
+     `postings_for_terms` (one IN query per search instead of 2 round trips
+     per term), consumed with the SAME set-iteration and accumulation
+     order, so scores stay byte-identical (golden-pinned).
+- Evidence (baseline -> after, same machine, `understand_query` CPU on junk):
+  | input | before | after |
+  |---|---|---|
+  | 229 chars | 4.87 s | **1.70 ms** |
+  | 629 chars | 13.50 s | **1.25 ms** |
+  | 1,689 chars | 42.04 s | **1.29 ms** |
+  | 2,000 chars | 43.12 s | **2.35 ms** |
+  Acceptance (<100 ms) met with >40x margin; >128-word API shapes are
+  400-rejected pre-parse. `tests/core/test_search_dos.py` proves a normal
+  request answers < 1 s during a 50-request junk flood (stable across 3
+  runs) and that under-guard junk (100 words) drains without 5xx.
+- Tests: `tests/ranking/test_spell_budget.py` (14 new),
+  `tests/core/test_search_dos.py` (5 new). Existing spelling-quality tests
+  unchanged and green (incl. a real adjacent-transposition typo case).
+- Suite after WP1: **650 passed, 3 skipped** (baseline 634/3 — +16 new, 0 regressions).
+- Decision (ambiguous -> safest, recorded): `NEXUS_SPELL_CANDIDATE_BUDGET`
+  default 4000 comparisons — generous at prototype vocab scale, degrades
+  honestly (partial dist-2 coverage) on very large vocabularies; documented.

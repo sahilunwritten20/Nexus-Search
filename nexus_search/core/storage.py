@@ -194,12 +194,47 @@ class Storage:
                 "SELECT doc_id, term_freq FROM postings WHERE term = ?", (term,)
             ).fetchall()
 
+    def postings_for_terms(self, terms: list[str]) -> dict[str, list[tuple[str, int]]]:
+        """postings_for_term for many terms in ONE query (BUG-01: one
+        round trip per query term dominated adversarial-query cost; normal
+        queries benefit too). Within-term row order matches the single-term
+        call."""
+        if not terms:
+            return {}
+        with self.lock:
+            placeholders = ",".join("?" for _ in terms)
+            rows = self.conn.execute(
+                f"SELECT term, doc_id, term_freq FROM postings "
+                f"WHERE term IN ({placeholders})",
+                terms,
+            ).fetchall()
+        out: dict[str, list[tuple[str, int]]] = {}
+        for term, doc_id, tf in rows:
+            out.setdefault(term, []).append((doc_id, tf))
+        return out
+
     def document_frequency(self, term: str) -> int:
         """Number of distinct documents containing this term — BM25's n(t)."""
         with self.lock:
             return self.conn.execute(
                 "SELECT COUNT(*) FROM postings WHERE term = ?", (term,)
             ).fetchone()[0]
+
+    def document_frequencies(self, terms: list[str]) -> dict[str, int]:
+        """document_frequency for many terms in ONE query (spell-correction
+        asks per OOV term of a query; N round trips was measurable on long
+        queries — see BUG-01 remediation)."""
+        if not terms:
+            return {}
+        with self.lock:
+            placeholders = ",".join("?" for _ in terms)
+            rows = self.conn.execute(
+                f"SELECT term, COUNT(*) AS n FROM postings "
+                f"WHERE term IN ({placeholders}) GROUP BY term",
+                terms,
+            ).fetchall()
+        found = {term: count for term, count in rows}
+        return {t: found.get(t, 0) for t in terms}
 
     def all_doc_ids(self) -> list[str]:
         with self.lock:

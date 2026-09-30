@@ -48,6 +48,8 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_POPULARITY_WEIGHT` | `0.0` | Phase 6: link-graph popularity weight in rerank. Same rollback |
 | `NEXUS_RATE_LIMIT` | `60/minute`  | Per-client limit on `/search` and write endpoints (`0` disables) |
 | `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
+| `NEXUS_MAX_QUERY_TERMS` | `128`  | Max positive terms per query; extras dropped deterministically (BUG-01) |
+| `NEXUS_SPELL_*` | see `.env.example` | Spell-correction bounds: term len 20, dist-2 len 12, 8 corrections, 4000-comparison budget (BUG-01) |
 
 For local development: `NEXUS_ENV=dev uvicorn nexus_search.core.api:app`
 (open write endpoints, loud warning + Swagger UI at `/docs`, which production
@@ -55,9 +57,11 @@ hides). Never run an exposed instance without `NEXUS_API_KEY`.
 
 Endpoints: `GET /search` (pagination, `mode=keyword|semantic|hybrid`, facets,
 `diversity=`, sort, highlight), `POST/DELETE /documents`, `GET
-/documents/{id}`, `POST /documents/bulk`, `POST /search/explain` (key-gated),
+`/documents/{id}`, `POST /documents/bulk`, `POST /search/explain` (key-gated),
 `GET /suggest`, `GET /related`, `GET /health`, `GET /ready`,
-`GET /metrics` (key-gated).
+`GET /metrics` (key-gated). Query bounds on `/search`: max 2,000 chars and
+max 128 words (clear 400 past either — the word bound matches
+`NEXUS_MAX_QUERY_TERMS`; a query that long is a pasted document, not a query).
 
 Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
 / `unblock` / `blocklist`. Reindex after tokenizer changes:

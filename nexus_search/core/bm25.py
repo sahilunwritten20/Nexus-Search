@@ -173,9 +173,19 @@ class BM25Search:
             if n_docs == 0:
                 return SearchPage(0)
             avg_len = self.storage.average_length()
-            for term in set(terms):
-                idf = self._idf(term, n_docs)
-                for doc_id, tf in self.storage.postings_for_term(term):
+            term_set = set(terms)
+            # One batched fetch for every term's postings + document
+            # frequencies instead of 2 queries per term (BUG-01: long-query
+            # cost was dominated by per-term round trips). Accumulation
+            # order below is IDENTICAL to the pre-batch code — same
+            # set(terms) object, same per-term row order — so scores are
+            # byte-identical (pinned by tests/golden).
+            postings_by_term = self.storage.postings_for_terms(list(term_set))
+            df_by_term = self.storage.document_frequencies(list(term_set))
+            for term in term_set:
+                n_t = df_by_term.get(term, 0)
+                idf = math.log((n_docs - n_t + 0.5) / (n_t + 0.5) + 1)
+                for doc_id, tf in postings_by_term.get(term, ()):
                     doc = get(doc_id)
                     if doc is None or not matches_filters(doc, parsed.filters, parsed.not_filters):
                         continue

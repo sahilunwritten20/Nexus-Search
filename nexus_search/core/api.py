@@ -283,6 +283,12 @@ def delete_document(request: Request, doc_id: str, response: Response):
 
 
 MAX_QUERY_CHARS = 2000  # attacker-controlled parse cost must be bounded
+# BUG-01 fast guard: a wall of junk words is rejected before any parsing.
+# Real search queries are nowhere near this (public engines cap at ~32
+# words); the guard sits at the same default as NEXUS_MAX_QUERY_TERMS so
+# anything the parser would have to cap-term-truncate is refused up front
+# with a clear 400 instead of served partially.
+MAX_QUERY_WORDS = 128
 
 
 @app.get("/search", response_model=SearchResponse, dependencies=_READ_AUTH)
@@ -311,6 +317,9 @@ def search(
         raise HTTPException(status_code=400, detail="q must not be empty")
     if len(q) > MAX_QUERY_CHARS:
         raise HTTPException(status_code=400, detail="q too long")
+    if len(q.split()) > MAX_QUERY_WORDS:
+        raise HTTPException(status_code=400,
+                            detail=f"q has more than {MAX_QUERY_WORDS} words")
     top_k = min(max(top_k, 1), 100)
 
     # Cursor pagination (ADDITIONAL to offset, never replacing it): the cursor
@@ -345,7 +354,15 @@ def search(
     # Query understanding participates by default: spell-correction (in-
     # vocabulary only) and synonym expansion widen the retrieval pool. One
     # computation serves retrieval, the facet pass, AND rerank features.
-    understanding = understand_query(q, _storage)
+    # It is LAZY (BUG-01): a cache hit for a plain search never pays for it,
+    # and its cost is bounded in ranking/query.py regardless.
+    understanding = None
+
+    def _understanding():
+        nonlocal understanding
+        if understanding is None:
+            understanding = understand_query(q, _storage)
+        return understanding
 
     # Degraded boot: vector subsystem never came up -> honest keyword-only.
     # Same guard as hybrid_search: boolean/negated-filter queries keep their
@@ -353,7 +370,7 @@ def search(
     if _vector_store is None:
         probe = parse_query(q)
         retrieval_q = q if (probe.has_boolean or probe.not_filters) \
-            else understanding.to_retrieval_query()
+            else _understanding().to_retrieval_query()
         return _keyword_only_page(retrieval_q, top_k,
                                   offset, mode, _vector_error, facets=facets)
 
@@ -387,7 +404,7 @@ def search(
             q, top_k=top_k, offset=offset, mode=search_mode,
             fusion=fusion, candidates=candidates, debug=debug,
             sort=sort, highlight=highlight, diversity=diversity,
-            understanding=understanding,
+            understanding=_understanding(),
         )
         _query_cache.set(cache_key, page)
 
@@ -396,7 +413,8 @@ def search(
     import dataclasses
     results = page.results
     if rerank_flag:
-        ranked = rerank_results(results, q, storage=_storage, understanding=understanding,
+        ranked = rerank_results(results, q, storage=_storage,
+                                understanding=_understanding(),
                                 weights=RankingWeights.from_env(), link_intel=_link_graph)
         # copy, never mutate: page.results may be a cached object
         results = [dataclasses.replace(rr.result, score=rr.final_score) for rr in ranked]
@@ -434,7 +452,7 @@ def search(
         facets_truncated = page.total > _FACET_SAMPLE_CAP
         full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
                                            offset=0, mode=search_mode, fusion=fusion,
-                                           understanding=understanding,  # facets follow retrieval
+                                           understanding=_understanding(),  # facets follow retrieval
                                            # the default candidate pool (50) would
                                            # truncate counts below the sample cap
                                            candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP))
