@@ -1,0 +1,610 @@
+{
+  "queries": [
+    {
+      "offset": 0,
+      "q": "machine learning",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra10",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 4.502761,
+          "snippet": "machine learning machine learning machine learning term frequency saturation test document.",
+          "title": "Machine Learning Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.961934,
+          "snippet": "Machine learning operations cover deployment, monitoring, and retraining of machine learning models in production systems.",
+          "title": "Machine Learning Operations Guide"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra4",
+          "doc_type": "web",
+          "matched_chunks": 1,
+          "score": 3.956484,
+          "snippet": "Presentation slides introducing machine learning concepts.",
+          "title": "Machine Learning Slides"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra3",
+          "doc_type": "pdf",
+          "matched_chunks": 1,
+          "score": 3.769809,
+          "snippet": "A machine learning tutorial distributed as a printable document.",
+          "title": "Machine Learning Tutorial (PDF)"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.595858,
+          "snippet": "Machine learning is a subset of artificial intelligence that enables systems to learn from data without explicit programming.",
+          "title": "Introduction to Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 2.937062,
+          "snippet": "Early learning machines preceded modern machine learning. This page is about mechanical history, not machine learning.",
+          "title": "Learning Machines in History"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.689197,
+          "snippet": "Le machine learning est un domaine de l'intelligence artificielle.",
+          "title": "Apprentissage automatique"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.14821,
+          "snippet": "Deep learning uses neural networks with multiple layers to model complex patterns in data.",
+          "title": "Deep Learning Fundamentals"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.130113,
+          "snippet": "This document contains the exact phrase machine learning operations so quoted queries can find it inside a longer body of running text that exists purely to add length to the document for snippet test...",
+          "title": "Phrase Boost Target"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.679772,
+          "snippet": "Neural networks and deep learning textbook chapter about backpropagation.",
+          "title": "Neural Networks Textbook"
+        }
+      ],
+      "top_k": 10,
+      "total": 10
+    },
+    {
+      "offset": 5,
+      "q": "machine learning",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 2.937062,
+          "snippet": "Early learning machines preceded modern machine learning. This page is about mechanical history, not machine learning.",
+          "title": "Learning Machines in History"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.689197,
+          "snippet": "Le machine learning est un domaine de l'intelligence artificielle.",
+          "title": "Apprentissage automatique"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.14821,
+          "snippet": "Deep learning uses neural networks with multiple layers to model complex patterns in data.",
+          "title": "Deep Learning Fundamentals"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.130113,
+          "snippet": "This document contains the exact phrase machine learning operations so quoted queries can find it inside a longer body of running text that exists purely to add length to the document for snippet test...",
+          "title": "Phrase Boost Target"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.679772,
+          "snippet": "Neural networks and deep learning textbook chapter about backpropagation.",
+          "title": "Neural Networks Textbook"
+        }
+      ],
+      "top_k": 5,
+      "total": 10
+    },
+    {
+      "offset": 0,
+      "q": "\"machine learning operations\"",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 12.132078,
+          "snippet": "Machine learning operations cover deployment, monitoring, and retraining of machine learning models in production systems.",
+          "title": "Machine Learning Operations Guide"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.717287,
+          "snippet": "This document contains the exact phrase machine learning operations so quoted queries can find it inside a longer body of running text that exists purely to add length to the document for snippet test...",
+          "title": "Phrase Boost Target"
+        }
+      ],
+      "top_k": 10,
+      "total": 2
+    },
+    {
+      "offset": 0,
+      "q": "type:pdf",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra3",
+          "doc_type": "pdf",
+          "matched_chunks": 1,
+          "score": 0.0,
+          "snippet": "A machine learning tutorial distributed as a printable document.",
+          "title": "Machine Learning Tutorial (PDF)"
+        }
+      ],
+      "top_k": 10,
+      "total": 1
+    },
+    {
+      "offset": 0,
+      "q": "lang:fr",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.0,
+          "snippet": "Le machine learning est un domaine de l'intelligence artificielle.",
+          "title": "Apprentissage automatique"
+        }
+      ],
+      "top_k": 10,
+      "total": 1
+    },
+    {
+      "offset": 0,
+      "q": "machine AND learning",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra10",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 4.502761,
+          "snippet": "machine learning machine learning machine learning term frequency saturation test document.",
+          "title": "Machine Learning Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.961934,
+          "snippet": "Machine learning operations cover deployment, monitoring, and retraining of machine learning models in production systems.",
+          "title": "Machine Learning Operations Guide"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra4",
+          "doc_type": "web",
+          "matched_chunks": 1,
+          "score": 3.956484,
+          "snippet": "Presentation slides introducing machine learning concepts.",
+          "title": "Machine Learning Slides"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra3",
+          "doc_type": "pdf",
+          "matched_chunks": 1,
+          "score": 3.769809,
+          "snippet": "A machine learning tutorial distributed as a printable document.",
+          "title": "Machine Learning Tutorial (PDF)"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.595858,
+          "snippet": "Machine learning is a subset of artificial intelligence that enables systems to learn from data without explicit programming.",
+          "title": "Introduction to Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 2.937062,
+          "snippet": "Early learning machines preceded modern machine learning. This page is about mechanical history, not machine learning.",
+          "title": "Learning Machines in History"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.689197,
+          "snippet": "Le machine learning est un domaine de l'intelligence artificielle.",
+          "title": "Apprentissage automatique"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.130113,
+          "snippet": "This document contains the exact phrase machine learning operations so quoted queries can find it inside a longer body of running text that exists purely to add length to the document for snippet test...",
+          "title": "Phrase Boost Target"
+        }
+      ],
+      "top_k": 10,
+      "total": 8
+    },
+    {
+      "offset": 0,
+      "q": "databases OR kubernetes",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "doc10",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 6.204608,
+          "snippet": "Kubernetes automates container deployment, scaling, and management.",
+          "title": "Kubernetes and Container Orchestration"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 4.467345,
+          "snippet": "SQL is the standard language for relational databases. It supports queries, joins, aggregations, and transactions.",
+          "title": "SQL and Relational Databases"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra8",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 3.786121,
+          "snippet": "Database recipes for SQL joins, window functions and query tuning.",
+          "title": "Databases Cookbook"
+        }
+      ],
+      "top_k": 10,
+      "total": 3
+    },
+    {
+      "offset": 0,
+      "q": "learning -history",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra10",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.846493,
+          "snippet": "machine learning machine learning machine learning term frequency saturation test document.",
+          "title": "Machine Learning Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.62471,
+          "snippet": "Machine learning operations cover deployment, monitoring, and retraining of machine learning models in production systems.",
+          "title": "Machine Learning Operations Guide"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra4",
+          "doc_type": "web",
+          "matched_chunks": 1,
+          "score": 1.622475,
+          "snippet": "Presentation slides introducing machine learning concepts.",
+          "title": "Machine Learning Slides"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.585403,
+          "snippet": "Machine learning is a subset of artificial intelligence that enables systems to learn from data without explicit programming.",
+          "title": "Introduction to Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra3",
+          "doc_type": "pdf",
+          "matched_chunks": 1,
+          "score": 1.545924,
+          "snippet": "A machine learning tutorial distributed as a printable document.",
+          "title": "Machine Learning Tutorial (PDF)"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.47627,
+          "snippet": "Deep learning uses neural networks with multiple layers to model complex patterns in data.",
+          "title": "Deep Learning Fundamentals"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.692706,
+          "snippet": "Le machine learning est un domaine de l'intelligence artificielle.",
+          "title": "Apprentissage automatique"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.679772,
+          "snippet": "Neural networks and deep learning textbook chapter about backpropagation.",
+          "title": "Neural Networks Textbook"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 0.463437,
+          "snippet": "This document contains the exact phrase machine learning operations so quoted queries can find it inside a longer body of running text that exists purely to add length to the document for snippet test...",
+          "title": "Phrase Boost Target"
+        }
+      ],
+      "top_k": 10,
+      "total": 9
+    },
+    {
+      "offset": 0,
+      "q": "neural networks",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 12.447285,
+          "snippet": "Neural networks and deep learning textbook chapter about backpropagation.",
+          "title": "Neural Networks Textbook"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 4.946897,
+          "snippet": "Deep learning uses neural networks with multiple layers to model complex patterns in data.",
+          "title": "Deep Learning Fundamentals"
+        }
+      ],
+      "top_k": 10,
+      "total": 2
+    },
+    {
+      "offset": 0,
+      "q": "sql joins",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "doc7",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 7.815804,
+          "snippet": "SQL is the standard language for relational databases. It supports queries, joins, aggregations, and transactions.",
+          "title": "SQL and Relational Databases"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra8",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 5.408744,
+          "snippet": "Database recipes for SQL joins, window functions and query tuning.",
+          "title": "Databases Cookbook"
+        }
+      ],
+      "top_k": 10,
+      "total": 2
+    },
+    {
+      "offset": 0,
+      "q": "filler paragraph",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra9",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 9.748985,
+          "snippet": "filler paragraph number 0 about general topics filler paragraph number 1 about general topics filler paragraph number 2 about general topics filler paragraph number 3 about general topics filler parag...",
+          "title": "Long Document About Many Things"
+        }
+      ],
+      "top_k": 3,
+      "total": 1
+    },
+    {
+      "offset": 0,
+      "q": "title:learning",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra10",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.846493,
+          "snippet": "machine learning machine learning machine learning term frequency saturation test document.",
+          "title": "Machine Learning Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.721956,
+          "snippet": "Early learning machines preceded modern machine learning. This page is about mechanical history, not machine learning.",
+          "title": "Learning Machines in History"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.62471,
+          "snippet": "Machine learning operations cover deployment, monitoring, and retraining of machine learning models in production systems.",
+          "title": "Machine Learning Operations Guide"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra4",
+          "doc_type": "web",
+          "matched_chunks": 1,
+          "score": 1.622475,
+          "snippet": "Presentation slides introducing machine learning concepts.",
+          "title": "Machine Learning Slides"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc1",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.585403,
+          "snippet": "Machine learning is a subset of artificial intelligence that enables systems to learn from data without explicit programming.",
+          "title": "Introduction to Machine Learning"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "extra3",
+          "doc_type": "pdf",
+          "matched_chunks": 1,
+          "score": 1.545924,
+          "snippet": "A machine learning tutorial distributed as a printable document.",
+          "title": "Machine Learning Tutorial (PDF)"
+        },
+        {
+          "chunk_id": null,
+          "doc_id": "doc2",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 1.47627,
+          "snippet": "Deep learning uses neural networks with multiple layers to model complex patterns in data.",
+          "title": "Deep Learning Fundamentals"
+        }
+      ],
+      "top_k": 10,
+      "total": 7
+    },
+    {
+      "offset": 0,
+      "q": "bm25 ranking",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "doc5",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 5.772269,
+          "snippet": "Search engines use inverted indexes and ranking algorithms like BM25. Modern systems combine lexical and semantic search.",
+          "title": "Information Retrieval and Search Engines"
+        }
+      ],
+      "top_k": 10,
+      "total": 1
+    },
+    {
+      "offset": 0,
+      "q": "pandas numpy",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "doc6",
+          "doc_type": "text",
+          "matched_chunks": 1,
+          "score": 5.959815,
+          "snippet": "...primary language for data science. Libraries like pandas and numpy enable data manipulation.",
+          "title": "Python for Data Science"
+        }
+      ],
+      "top_k": 10,
+      "total": 1
+    },
+    {
+      "offset": 0,
+      "q": "type:web machine learning",
+      "results": [
+        {
+          "chunk_id": null,
+          "doc_id": "extra4",
+          "doc_type": "web",
+          "matched_chunks": 1,
+          "score": 3.956484,
+          "snippet": "Presentation slides introducing machine learning concepts.",
+          "title": "Machine Learning Slides"
+        }
+      ],
+      "top_k": 10,
+      "total": 1
+    }
+  ]
+}
