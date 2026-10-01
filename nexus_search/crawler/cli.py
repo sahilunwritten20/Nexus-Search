@@ -114,8 +114,10 @@ def report(stats: dict, metrics_file: str | None) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Nexus Search — crawler")
     parser.add_argument("command", nargs="?", default="crawl",
-                        choices=["crawl", "block", "unblock", "blocklist", "authority"],
-                        help="block/unblock a host, blocklist, authority ops, or crawl (default)")
+                        choices=["crawl", "block", "unblock", "blocklist",
+                                 "authority", "normalize-links"],
+                        help="block/unblock a host, blocklist, authority ops, "
+                             "normalize-links (BUG-02 data migration), or crawl (default)")
     parser.add_argument("host", nargs="?", default=None,
                         help="host (or URL) for block/unblock")
     parser.add_argument("--recompute", action="store_true",
@@ -185,6 +187,26 @@ def main():
                       else f"host was not blocked: {Blocklist._host_of(args.host)}")
         finally:
             blocklist.close()
+        return
+
+    # normalize-links: BUG-02 data migration — re-normalize pre-fix rows so
+    # graph nodes share the frontier's URL space, merge duplicates (earliest
+    # first_seen, latest last_seen, recrawl anchor/rel), drop post-
+    # normalization self-links. Idempotent; --recompute refreshes scores.
+    if args.command == "normalize-links":
+        from ..links.authority import compute_authority
+        from ..links.graph import LinkGraph, normalize_existing_edges
+        graph = LinkGraph(args.db)
+        try:
+            stats = normalize_existing_edges(graph)
+            print(f"normalize-links: {stats}")
+            if args.recompute:
+                auth_stats = compute_authority(graph)
+                print(f"authority recomputed: {auth_stats.pages} pages, "
+                      f"{auth_stats.iterations} iterations "
+                      f"({'converged' if auth_stats.converged else 'max-iterations'})")
+        finally:
+            graph.close()
         return
 
     config = load_config(args.config)

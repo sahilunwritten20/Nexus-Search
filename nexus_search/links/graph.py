@@ -17,6 +17,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from ..core.migrations import apply_migrations
+from ..crawler.url_utils import normalize_url
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS link_edges (
@@ -75,12 +76,34 @@ class LinkGraph:
 
     # ------------------------------------------------------------- writes
 
+    @staticmethod
+    def _norm_pair(from_url: str, to_url: str) -> Optional[tuple[str, str]]:
+        """The ONE identity choke point (BUG-02): every edge is stored under
+        the frontier's normalizer — fragments, tracking params, trailing
+        slashes, host case, default ports and unreserved percent-escapes all
+        collapse — so graph nodes and document metadata['url'] share the
+        same URL space. None when either side is unparseable or the edge is
+        a post-normalization self-link."""
+        if not from_url or not to_url:
+            return None
+        try:
+            fn = normalize_url(from_url)
+            tn = normalize_url(to_url)
+        except ValueError:
+            return None
+        if fn == tn:
+            return None  # self-votes never count (fragments included)
+        return fn, tn
+
     def record_edge(self, from_url: str, to_url: str,
                     anchor_text: str = "", rel_attrs: str = "") -> bool:
-        """Record/refresh one edge. False when refused (self-link or cap hit).
-        Recrawl semantics: an existing edge only updates last_seen + metadata."""
-        if not from_url or not to_url or from_url == to_url:
-            return False  # self-votes never count
+        """Record/refresh one edge. False when refused (self-link, unparseable
+        URL, or cap hit). Recrawl semantics: an existing edge only updates
+        last_seen + metadata."""
+        pair = self._norm_pair(from_url, to_url)
+        if pair is None:
+            return False
+        from_url, to_url = pair
         now = time.time()
         with self.lock:
             existing = self.conn.execute(
@@ -117,16 +140,20 @@ class LinkGraph:
         """Bulk record for trusted backfills/tests (self-links dropped; the
         anti-flood per-page/domain-pair caps are enforced by record_edge,
         the path live crawls use). One commit per 5,000 rows — a per-edge
-        commit would make big crawls commit-bound. Returns rows inserted."""
+        commit would make big crawls commit-bound. Returns rows inserted.
+        Endpoints are normalized through the same choke point as
+        record_edge (BUG-02) — bulk callers cannot bypass identity."""
         if isinstance(edges, (str, bytes)):
             raise TypeError("edges must be (from_url, to_url, anchor, rel) rows")
         now = time.time()
         inserted, pending = 0, []
         with self.lock:
             for from_url, to_url, anchor_text, rel_attrs in edges:
-                if not from_url or not to_url or from_url == to_url:
+                pair = self._norm_pair(from_url, to_url)
+                if pair is None:
                     continue
-                pending.append((from_url, to_url, anchor_text, rel_attrs, now, now))
+                fn, tn = pair
+                pending.append((fn, tn, anchor_text, rel_attrs, now, now))
                 if len(pending) >= 5000:
                     self.conn.executemany(
                         "INSERT OR REPLACE INTO link_edges (from_url, to_url, "
@@ -157,7 +184,15 @@ class LinkGraph:
 
     def authority_for(self, url: str) -> Optional[tuple[float, float]]:
         """(authority, popularity) for a URL, None when the graph has never
-        heard of it — the ranker maps None to NEUTRAL, never to zero."""
+        heard of it — the ranker maps None to NEUTRAL, never to zero.
+        The lookup is normalized through the same choke point writes use
+        (BUG-02), so a caller holding a raw/variant URL still resolves."""
+        if not url:
+            return None
+        try:
+            url = normalize_url(url)
+        except ValueError:
+            return None
         with self.lock:
             row = self.conn.execute(
                 "SELECT authority, popularity FROM authority_scores WHERE url = ?",
@@ -175,3 +210,72 @@ class LinkGraph:
     def close(self):
         with self.lock:
             self.conn.close()
+
+
+def normalize_existing_edges(graph: LinkGraph) -> dict:
+    """Idempotent data migration for rows written before BUG-02's fix
+    (raw, unnormalized endpoints). The versioned migration runner is
+    SQL-only and URL canonicalization is Python, so this CLI-invoked
+    function IS the migration — deterministic, transactional, and a
+    complete no-op on an already-normalized table.
+
+    Merge policy per group of raw rows that normalize to one edge:
+    - first_seen: earliest observation; last_seen: latest
+    - anchor/rel: from the most-recently-seen row (recrawl semantics);
+      anchor falls back to the first non-empty anchor in latest-first
+      order when the newest row's anchor is empty
+    - post-normalization self-links are dropped
+
+    Returns {"rows_in", "edges_out", "merged_groups", "self_links_dropped"}.
+    Re-run compute_authority afterwards (the crawler CLI's normalize-links
+    --recompute does both)."""
+    with graph.lock:
+        conn = graph.conn
+        rows = conn.execute(
+            "SELECT from_url, to_url, anchor_text, rel_attrs, "
+            "first_seen, last_seen FROM link_edges").fetchall()
+        groups: dict[tuple[str, str], list] = {}
+        self_link_rows: list[tuple[str, str]] = []
+        for f, t, a, r, fs, ls in rows:
+            pair = LinkGraph._norm_pair(f, t)
+            if pair is None:
+                if f and t:
+                    # post-normalization self-vote: drop the raw row entirely
+                    self_link_rows.append((f, t))
+                continue
+            groups.setdefault(pair, []).append((f, t, a, r, fs, ls))
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for f, t in self_link_rows:
+                conn.execute(
+                    "DELETE FROM link_edges WHERE from_url = ? AND to_url = ?",
+                    (f, t))
+            for (fn, tn), members in groups.items():
+                # latest-first deterministic order for anchor fallback
+                ordered = sorted(members, key=lambda m: (-m[5], m[0], m[1]))
+                latest = ordered[0]
+                anchor = latest[2] if latest[2].strip() else next(
+                    (m[2] for m in ordered if m[2].strip()), "")
+                rel = latest[3]
+                first_seen = min(m[4] for m in members)
+                last_seen = max(m[5] for m in members)
+                for m in members:
+                    conn.execute(
+                        "DELETE FROM link_edges WHERE from_url = ? AND to_url = ?",
+                        (m[0], m[1]))
+                conn.execute(
+                    "INSERT INTO link_edges (from_url, to_url, anchor_text, "
+                    "rel_attrs, first_seen, last_seen) VALUES (?,?,?,?,?,?)",
+                    (fn, tn, anchor, rel, first_seen, last_seen))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+    return {
+        "rows_in": len(rows),
+        "edges_out": len(groups),
+        "merged_groups": sum(1 for m in groups.values() if len(m) > 1),
+        "self_links_dropped": len(self_link_rows),
+    }

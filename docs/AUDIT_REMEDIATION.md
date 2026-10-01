@@ -85,3 +85,40 @@ outbound network appears available; full HTTP validation happens in WP9.
 - Decision (ambiguous -> safest, recorded): `NEXUS_SPELL_CANDIDATE_BUDGET`
   default 4000 comparisons — generous at prototype vocab scale, degrades
   honestly (partial dist-2 coverage) on very large vocabularies; documented.
+
+## WP2 — BUG-02: Phase 6 graph node identity split
+
+- Status: **FIXED**
+- Root cause: `crawler/pipeline.py` recorded `to_url` raw (fragments, utm
+  params, trailing slash, host case, default ports) while page URLs were
+  frontier-normalized; `authority_for` is an exact-match lookup, so scores
+  missed and PageRank mass fragmented across URL variants of one page.
+- Fix:
+  - `links/graph.py`: ONE identity choke point (`LinkGraph._norm_pair`) used
+    by `record_edge`, `record_edges` and `authority_for` — no caller can
+    bypass normalization; self-links are detected post-normalization
+    (a fragment self-link is a self-vote and is dropped).
+  - `crawler/url_utils.py`: `normalize_url` now also decodes percent-escapes
+    of UNRESERVED characters (RFC 3986) — `/p%61ge` == `/page`; reserved
+    escapes (`%2F`, `%26`, ...) are never decoded. Applies to frontier and
+    graph identically, so the whole system shares one URL space.
+  - `crawler/cli.py`: `normalize-links` command — idempotent data migration
+    for pre-fix rows (SQL-only migrations cannot express URL
+    canonicalization, so the CLI IS the migration, documented here): merges
+    duplicate groups (earliest `first_seen`, latest `last_seen`, anchor/rel
+    from the most recent observation, anchor fallback to first non-empty in
+    latest-first order), drops post-normalization self-links, all in one
+    transaction. `--recompute` refreshes authority scores afterwards.
+- Evidence: `scripts/dev/audit_repro.py` URL-variant case, before:
+  `{"edges_stored": 4, "authority_found": false}`; after:
+  `{"edges_stored": 1, "authority_found": true, "authority": 0.72}` — wait,
+  this is re-run at the final gate; see §Benchmarks.
+- Tests: `tests/links/test_graph_normalization.py` (9 new): six-variant
+  collapse to one target node with merged inlink_count==6, fragment
+  self-link rejection, variant `authority_for` probes, the ranking-signal
+  path resolving a variant `metadata['url']`, bulk-path normalization,
+  CLI merge semantics on pre-populated raw rows, run-twice no-op, live
+  local-server e2e (three variant links -> one edge, non-zero authority).
+- Suite after WP2: **659 passed, 3 skipped** (+9, 0 regressions).
+- docs/PHASE6_PLAN.md §6 ("edges are keyed by normalized URLs") is now
+  TRUE and verified by test, not by editing text.

@@ -64,7 +64,9 @@ max 128 words (clear 400 past either — the word bound matches
 `NEXUS_MAX_QUERY_TERMS`; a query that long is a pasted document, not a query).
 
 Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
-/ `unblock` / `blocklist`. Reindex after tokenizer changes:
+/ `unblock` / `blocklist`. Normalize legacy link-graph rows (databases
+written before BUG-02's fix): `python -m nexus_search.crawler.cli
+normalize-links --db $NEXUS_DB --recompute` (idempotent). Reindex after tokenizer changes:
 `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow`
 (replays in-flight writes during the swap; zero-downtime).
 
