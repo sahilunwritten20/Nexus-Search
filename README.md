@@ -50,6 +50,7 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
 | `NEXUS_MAX_QUERY_TERMS` | `128`  | Max positive terms per query; extras dropped deterministically (BUG-01) |
 | `NEXUS_SPELL_*` | see `.env.example` | Spell-correction bounds: term len 20, dist-2 len 12, 8 corrections, 4000-comparison budget (BUG-01) |
+| `NEXUS_MAX_CANDIDATES` | `1000` | Hard bound on a fused candidate pool; `offset+top_k` past it is a clear 400 (BUG-03/04) |
 
 For local development: `NEXUS_ENV=dev uvicorn nexus_search.core.api:app`
 (open write endpoints, loud warning + Swagger UI at `/docs`, which production

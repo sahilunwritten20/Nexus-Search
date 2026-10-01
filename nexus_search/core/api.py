@@ -19,13 +19,13 @@ from slowapi.util import get_remote_address
 
 from .bm25 import BM25Search
 from .embedders import HashEmbedder, EmbedderUnavailable
+from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search, max_candidates
 from .query_cache import QueryCache
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
 from .query_parser import parse_query
 from ..ranking.ranker import RankingWeights, WeightedSumModel, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
-from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search
 from .indexer import Indexer
 from .models import BulkDocumentIn, DocumentIn, DocumentOut, ExplainRequest, ExplainResponse, ExplainResult, SearchMetadata, SearchResponse, SearchResultOut
 from .storage import Storage
@@ -304,7 +304,7 @@ def search(
     bm25_weight: float = Query(default=1.0, ge=0),
     vector_weight: float = Query(default=1.0, ge=0),
     fusion: str = Query(default="rrf", pattern="^(rrf|weighted)$"),
-    candidates: int = Query(default=50, ge=1, le=500),
+    candidates: int = Query(default=50, ge=1, le=1000),
     debug: bool = Query(default=False),
     rerank: Optional[bool] = Query(default=None),
     session: Optional[str] = Query(default=None),
@@ -337,6 +337,20 @@ def search(
         except (ValueError, binascii.Error, UnicodeDecodeError):
             raise HTTPException(status_code=400, detail="invalid cursor")
         offset = min(offset, 10_000)
+
+    # Window contract (BUG-03/04): the fused candidate pool always covers
+    # offset+top_k, bounded by NEXUS_MAX_CANDIDATES (default 1000). A window
+    # past that bound cannot be served truthfully — refuse with a clear 400
+    # instead of the pre-fix silent empty pages. An explicit `candidates`
+    # above the operator's cap is clamped (the page is still correct; pool
+    # quality bounds are the operator's call).
+    _max_candidates = max_candidates()
+    if offset + top_k > _max_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"offset+top_k ({offset + top_k}) exceeds "
+                   f"NEXUS_MAX_CANDIDATES ({_max_candidates})")
+    candidates = min(candidates, _max_candidates)
 
     # Phase 5 A/B instrumentation: `session=...` buckets the request into the
     # deterministic rerank experiment (control/treatment). An explicit

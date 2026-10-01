@@ -1,5 +1,6 @@
 """Hybrid search combining BM25 and vector retrieval for Nexus Search Phase 4."""
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,6 +23,18 @@ logger = logging.getLogger("nexus_search.hybrid")
 DEFAULT_BM25_WEIGHT = 1.0
 DEFAULT_VECTOR_WEIGHT = 1.0
 RRF_K = 60
+
+
+def max_candidates() -> int:
+    """Hard bound on a fused candidate pool: NEXUS_MAX_CANDIDATES
+    (default 1000). Requests whose offset+top_k window exceeds it cannot be
+    served truthfully and are refused by the API with a 400."""
+    raw = (os.environ.get("NEXUS_MAX_CANDIDATES") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1000
+    return value if value > 0 else 1000
 
 
 class FusionMode(Enum):
@@ -174,31 +187,33 @@ class HybridSearch:
 
     # ---------------------------------------------------------- candidates
 
-    @staticmethod
-    def _candidate_k(top_k: int, candidates: Optional[int]) -> int:
-        if candidates is not None:
-            return min(max(candidates, 1), 500)
-        return min(max(top_k * 5, 50), 500)
+    @classmethod
+    def _candidate_k(cls, top_k: int, candidates: Optional[int],
+                     offset: int = 0) -> int:
+        """Effective candidate-pool size. The pool MUST cover the requested
+        page (BUG-03/04): max(candidates, offset+top_k), clamped to
+        NEXUS_MAX_CANDIDATES. Pre-fix, offset pages sliced the empty tail
+        of a too-small pool and top_k > candidates silently truncated."""
+        base = candidates if candidates is not None else max(top_k * 5, 50)
+        return min(max(base, offset + top_k, 1), max_candidates())
 
-    def _bm25_candidates(self, query: str, top_k: int, group_chunks: bool,
-                         candidates: Optional[int] = None,
-                         highlight: bool = False) -> tuple[dict[str, tuple[float, SearchResult]], int]:
-        candidate_k = self._candidate_k(top_k, candidates)
-        page = self.bm25_search.search_page(query, top_k=candidate_k, offset=0,
+    def _bm25_candidates(self, query: str, pool_k: int, group_chunks: bool,
+                         highlight: bool = False,
+                         ) -> tuple[dict[str, tuple[float, SearchResult]], int]:
+        page = self.bm25_search.search_page(query, top_k=pool_k, offset=0,
                                             group_chunks=group_chunks, highlight=highlight)
         # page.total is the TRUE corpus-wide match count (not truncated to
         # the candidate pool) — the honest total for hybrid-mode reporting.
         return {r.doc_id: (r.score, r) for r in page.results}, page.total
 
-    def _vector_candidates(self, query: str, top_k: int, group_chunks: bool,
+    def _vector_candidates(self, query: str, pool_k: int, group_chunks: bool,
                            allowed_filter: Optional[Callable[[str], bool]] = None,
-                           candidates: Optional[int] = None) -> dict[str, tuple[float, str]]:
+                           ) -> dict[str, tuple[float, str]]:
         # Use parsed query text for embedding (no filters/phrases in embedding)
         parsed = parse_query(query)
         query_text = parsed.text
 
-        candidate_k = self._candidate_k(top_k, candidates)
-        vector_results = self.vector_store.search(query_text, top_k=candidate_k, allowed=allowed_filter)
+        vector_results = self.vector_store.search(query_text, top_k=pool_k, allowed=allowed_filter)
 
         results = {}
         # Tokenize required phrases once — matches BM25's phrase semantics
@@ -412,8 +427,9 @@ class HybridSearch:
                 page_results = page.results
             else:
                 # Sort/diversity need the full candidate pool first (bounded
-                # by `candidates`), then the page comes out of it.
-                pool_k = max(self._candidate_k(top_k, candidates), offset + top_k)
+                # by `candidates`, always covering the requested page), then
+                # the page comes out of it.
+                pool_k = self._candidate_k(top_k, candidates, offset)
                 page = self.bm25_search.search_page(query, top_k=pool_k, offset=0,
                                                     group_chunks=group_chunks, highlight=highlight)
                 pool_results = page.results
@@ -443,7 +459,14 @@ class HybridSearch:
 
         if mode == SearchMode.SEMANTIC:
             try:
-                vector_results = self._vector_candidates(query, top_k, group_chunks, allowed_filter, candidates)
+                # The semantic result universe IS the candidate pool (no
+                # relevance threshold by design). Documented caveat: without
+                # an explicit `candidates`, deep pages grow the pool per
+                # request and windows near the boundary may drift — pass
+                # candidates when strict page stability matters.
+                pool_k = self._candidate_k(top_k, candidates, offset)
+                vector_results = self._vector_candidates(query, pool_k, group_chunks,
+                                                          allowed_filter)
             except EmbedderUnavailable as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
@@ -491,16 +514,30 @@ class HybridSearch:
         # SearchMode.HYBRID
         # BM25 candidates are computed OUTSIDE the vector try/except: a BM25
         # failure cannot be "fixed" by falling back to BM25, so it propagates.
+        #
+        # Pool stability (found by the WP3 walk test): a pool that grows with
+        # `offset` re-ranks the boundary between requests — pages overlapped
+        # (120 fetched, 95 unique). The pool must be a function of the QUERY,
+        # not the page: once BM25 reports the true match count, the pool is
+        # grown to cover it (bounded by NEXUS_MAX_CANDIDATES) and refetched
+        # once, so every page of this query ranks over the SAME candidate set.
+        pool_k = self._candidate_k(top_k, candidates, offset)
         bm25_results = {}
         bm25_total = 0
         if self.bm25_weight > 0:
             bm25_results, bm25_total = self._bm25_candidates(
-                query, top_k, group_chunks, candidates, highlight=highlight)
+                query, pool_k, group_chunks, highlight=highlight)
+            stable_k = min(max(pool_k, bm25_total), max_candidates())
+            if stable_k > pool_k:
+                pool_k = stable_k
+                bm25_results, bm25_total = self._bm25_candidates(
+                    query, pool_k, group_chunks, highlight=highlight)
 
         vector_results = {}
         try:
             if self.vector_weight > 0:
-                vector_results = self._vector_candidates(query, top_k, group_chunks, allowed_filter, candidates)
+                vector_results = self._vector_candidates(query, pool_k, group_chunks,
+                                                          allowed_filter)
         except EmbedderUnavailable as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,

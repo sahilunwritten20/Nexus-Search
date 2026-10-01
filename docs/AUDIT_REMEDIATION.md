@@ -122,3 +122,45 @@ outbound network appears available; full HTTP validation happens in WP9.
 - Suite after WP2: **659 passed, 3 skipped** (+9, 0 regressions).
 - docs/PHASE6_PLAN.md §6 ("edges are keyed by normalized URLs") is now
   TRUE and verified by test, not by editing text.
+
+## WP3 — BUG-03 + BUG-04: hybrid pagination + top_k truncation
+
+- Status: **FIXED** (+ one latent paging bug the new walk test exposed)
+- Root cause: the fused candidate pool was sized by `candidates` (API
+  default 50) regardless of the requested window. offset >= pool sliced an
+  empty tail while `total_results` claimed the full match count (BUG-03);
+  top_k > pool silently truncated (BUG-04).
+- Latent bug found by the fix's own walk test: a pool that merely GROWS
+  with offset re-ranks the pool boundary between requests — pages overlapped
+  (walk fetched 120 results, 95 unique). Stability requires the pool to be
+  a function of the query, not the page.
+- Fix (`core/hybrid_search.py` + `core/api.py`):
+  - Effective pool = max(candidates, offset+top_k), clamped by
+    NEXUS_MAX_CANDIDATES (default 1000, env-tunable).
+  - HYBRID: after the first BM25 pass reports the true match count, the
+    pool is grown to min(match count, cap) and fetched once more — every
+    page of a query ranks over the SAME candidate set; windows tile the
+    corpus without gaps/duplicates (test-pinned).
+  - API: `candidates` bound raised 500 -> 1000; `offset+top_k` past the cap
+    is a clear 400 (never an empty page with has_more=true); `candidates`
+    above the operator's cap is clamped.
+  - SEMANTIC documented caveat: the pool IS that mode's result universe;
+    without an explicit `candidates`, deep pages grow the pool per request
+    and windows near the boundary may drift — pass `candidates` for strict
+    stability (README).
+  - KEYWORD mode: plain queries keep BM25's native offset (byte-identical,
+    golden-pinned).
+- Deliberate existing-test change (pinning the defect before, the contract
+  now): `tests/core/test_api.py::TestApi::test_hybrid_total_is_true_match_count`
+  previously asserted `merged_candidates <= 10` for candidates=5/top_k=10 —
+  that is exactly BUG-04's silent truncation. It now asserts a full
+  10-result page, honest total=30, has_more=true, and pool grown to the
+  match set.
+- Evidence: `scripts/dev/audit_repro.py` pagination, before:
+  `{"offset50_results": 0, "offset50_total": 120, "topk100_results": 50}`;
+  after (final gate): 10 and 100 (see §Benchmarks).
+- Tests: `tests/core/test_pagination_contract.py` (11 new: lib-level
+  full-page/window/rank assertions, corpus-tiling walks for hybrid +
+  semantic + keyword, cap math incl. env override, API 400 beyond cap,
+  API walk tiling).
+- Suite after WP3: **670 passed, 3 skipped** (+11, 0 regressions).

@@ -294,16 +294,22 @@ class TestApi(unittest.TestCase):
         self.assertTrue(small2.json()["metadata"]["facets_truncated"])  # still >500 matches
 
     def test_hybrid_total_is_true_match_count(self):
-        # 30 docs match "common"; candidate pool is tiny — total must still
-        # report the corpus-wide match count, and has_more must reflect the
-        # pageable pool, not total.
+        # 30 docs match "common". WP3 (BUG-03/04) contract: the pool covers
+        # the requested window even when `candidates` is smaller (a full
+        # 10-result page comes back), and it is grown to the full match set
+        # (<= NEXUS_MAX_CANDIDATES) so pages of one query are stable
+        # windows of one ranking. total stays the honest corpus-wide count.
         for i in range(30):
             self.add(f"d{i}", "common word")
         r = self.client.get("/search", params={"q": "common", "mode": "hybrid",
                                                "top_k": 10, "candidates": 5})
         body = r.json()
         self.assertEqual(body["total_results"], 30)
-        self.assertEqual(body["metadata"]["merged_candidates"] <= 10, True)
+        self.assertEqual(len(body["results"]), 10,
+                         "candidates=5 must not silently truncate top_k=10 (BUG-04)")
+        self.assertTrue(body["metadata"]["has_more"])
+        self.assertEqual(body["metadata"]["merged_candidates"], 30,
+                         "pool is grown to the match set for stable windows")
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
