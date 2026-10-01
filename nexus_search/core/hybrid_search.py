@@ -302,9 +302,12 @@ class HybridSearch:
         fusion: str = "rrf",
         parsed=None,
         highlight: bool = False,
+        bm25_weight: Optional[float] = None,
+        vector_weight: Optional[float] = None,
     ) -> list[HybridSearchResult]:
         fused = _fuse(bm25_results, vector_results, fusion,
-                      self.bm25_weight, self.vector_weight)
+                      self.bm25_weight if bm25_weight is None else bm25_weight,
+                      self.vector_weight if vector_weight is None else vector_weight)
 
         merged = []
         for doc_id, fused_score, source, bm25_contrib, vector_contrib in fused:
@@ -396,11 +399,26 @@ class HybridSearch:
         sort: str = "relevance",
         highlight: bool = False,
         diversity: float = 0.0,
+        bm25_weight: Optional[float] = None,
+        vector_weight: Optional[float] = None,
     ) -> HybridSearchPage:
         """`understanding` (Phase 5 QueryUnderstanding) is OPT-IN: when given,
         retrieval uses its corrected/expanded effective terms (phrases and
         filters preserved verbatim). When None — the default — behavior is
-        exactly the pre-Phase-5 behavior."""
+        exactly the pre-Phase-5 behavior.
+
+        `bm25_weight`/`vector_weight` override the CONSTRUCTOR weights for
+        this call only (None -> constructor weights). This is what lets the
+        API serve per-request weights from ONE shared instance (BUG-06):
+        a fresh HybridSearch per request discarded the BM25 token memo
+        across requests; the shared instance keeps it (bounded, keyed by
+        (doc_id, added_at), thread-safe)."""
+        w_bm25 = self.bm25_weight if bm25_weight is None else bm25_weight
+        w_vector = self.vector_weight if vector_weight is None else vector_weight
+        if w_bm25 < 0 or w_vector < 0:
+            raise ValueError("Weights must be >= 0")
+        if w_bm25 == 0 and w_vector == 0:
+            raise ValueError("At least one weight must be > 0")
         if top_k <= 0:
             return HybridSearchPage(total=0, results=[], metadata={"mode": mode.value, "fusion": fusion})
         offset = max(offset, 0)
@@ -476,7 +494,8 @@ class HybridSearch:
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
                                            start_time, f"vector_search_error:{type(exc).__name__}", fusion, sort, highlight)
 
-            fused = _fuse({}, vector_results, fusion, bm25_weight=0.0, vector_weight=self.vector_weight)
+            fused = _fuse({}, vector_results, fusion, bm25_weight=0.0,
+                          vector_weight=w_vector)
             merged = []
             for doc_id, fused_score, source, _, vector_contrib in fused:
                 vr_doc_id = vector_results[doc_id][1]
@@ -524,7 +543,7 @@ class HybridSearch:
         pool_k = self._candidate_k(top_k, candidates, offset)
         bm25_results = {}
         bm25_total = 0
-        if self.bm25_weight > 0:
+        if w_bm25 > 0:
             bm25_results, bm25_total = self._bm25_candidates(
                 query, pool_k, group_chunks, highlight=highlight)
             stable_k = min(max(pool_k, bm25_total), max_candidates())
@@ -535,7 +554,7 @@ class HybridSearch:
 
         vector_results = {}
         try:
-            if self.vector_weight > 0:
+            if w_vector > 0:
                 vector_results = self._vector_candidates(query, pool_k, group_chunks,
                                                           allowed_filter)
         except EmbedderUnavailable as exc:
@@ -548,7 +567,8 @@ class HybridSearch:
                                        start_time, f"vector_search_error:{type(exc).__name__}", fusion, sort, highlight)
 
         merged = self._merge_results(bm25_results, vector_results, fusion=fusion,
-                                     parsed=parsed, highlight=highlight)
+                                     parsed=parsed, highlight=highlight,
+                                     bm25_weight=w_bm25, vector_weight=w_vector)
         merged = self._sort_raw(merged, sort)
         if diversity > 0.0:
             merged = self._diversify(merged, diversity)
@@ -560,7 +580,7 @@ class HybridSearch:
         return HybridSearchPage(
             # total = corpus-wide match count when BM25 contributes (exact),
             # else the fused pool is the whole answer universe by design.
-            total=max(bm25_total, len(merged)) if self.bm25_weight > 0 else len(merged),
+            total=max(bm25_total, len(merged)) if w_bm25 > 0 else len(merged),
             pool_size=len(merged),
             results=merged[offset:offset + top_k],
             metadata=self._meta(SearchMode.HYBRID.value, original_mode, start_time,
@@ -596,12 +616,17 @@ class HybridSearch:
         return self.search_page(query, top_k=top_k, mode=mode).results
 
     def explain(self, query: str, top_k: int = 10, mode: SearchMode = SearchMode.HYBRID,
-                fusion: str = "rrf") -> dict:
+                fusion: str = "rrf", bm25_weight: Optional[float] = None,
+                vector_weight: Optional[float] = None) -> dict:
         """Debug explanation: per-result raw scores plus each retriever's actual
         contribution to the final score (`bm25_normalized` / `vector_normalized`).
         In weighted fusion the contributions are weight * min-max-normalized score;
-        in RRF fusion they are weight / (k + rank). They sum to `final_score`."""
-        page = self.search_page(query, top_k=top_k, mode=mode, fusion=fusion, debug=True)
+        in RRF fusion they are weight / (k + rank). They sum to `final_score`.
+        Weight overrides pass through to search_page (per-request weights on
+        the shared instance, BUG-06)."""
+        page = self.search_page(query, top_k=top_k, mode=mode, fusion=fusion,
+                                debug=True, bm25_weight=bm25_weight,
+                                vector_weight=vector_weight)
         return {
             "query": query,
             "mode": mode.value,

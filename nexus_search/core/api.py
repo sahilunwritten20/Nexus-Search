@@ -393,14 +393,12 @@ def search(
         raise HTTPException(status_code=400,
                             detail="diversity and non-relevance sort cannot be combined")
 
-    # Create a new HybridSearch with custom weights for this request
-    hybrid_searcher = HybridSearch(
-        _storage,
-        bm25_weight=bm25_weight,
-        vector_weight=vector_weight,
-        vector_store=_vector_store,
-        db_path=_NEXUS_DB,
-    )
+    # BUG-06: ONE shared HybridSearch per app lifespan. A fresh instance per
+    # request discarded the BM25 doc-token memo across requests; per-request
+    # fusion weights now travel as search_page arguments instead. Thread
+    # safety: BM25Search/VectorStoreManager/HybridSearch.search_page use only
+    # locals + lock-guarded members (concurrency-tested).
+    hybrid_searcher = _hybrid_searcher
 
     search_mode = SearchMode(mode)
 
@@ -419,6 +417,7 @@ def search(
             fusion=fusion, candidates=candidates, debug=debug,
             sort=sort, highlight=highlight, diversity=diversity,
             understanding=_understanding(),
+            bm25_weight=bm25_weight, vector_weight=vector_weight,
         )
         _query_cache.set(cache_key, page)
 
@@ -469,7 +468,9 @@ def search(
                                            understanding=_understanding(),  # facets follow retrieval
                                            # the default candidate pool (50) would
                                            # truncate counts below the sample cap
-                                           candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP))
+                                           candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
+                                           bm25_weight=bm25_weight,
+                                           vector_weight=vector_weight)
         from ..core.filters import facet_counts
         docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
@@ -515,11 +516,11 @@ def explain_search(request: Request, req: ExplainRequest, response: Response):
                                    chunk_id=r.chunk_id) for r in kw.results],
         )
 
-    # Per-request weights, same as /search
-    searcher = HybridSearch(_storage, bm25_weight=req.bm25_weight,
-                            vector_weight=req.vector_weight,
-                            vector_store=_vector_store, db_path=_NEXUS_DB)
-    explanation = searcher.explain(req.query, top_k=req.top_k, mode=search_mode, fusion=req.fusion)
+    # Per-request weights on the shared instance (BUG-06), same as /search
+    explanation = _hybrid_searcher.explain(req.query, top_k=req.top_k,
+                                            mode=search_mode, fusion=req.fusion,
+                                            bm25_weight=req.bm25_weight,
+                                            vector_weight=req.vector_weight)
     metadata = SearchMetadata(**explanation["metadata"]) if explanation["metadata"] else SearchMetadata(mode=req.mode)
 
     results_out = [ExplainResult(**r) for r in explanation["results"]]

@@ -160,14 +160,15 @@ class TestAuthorityRecompute(_Base):
 class TestAuthorityStore(_Base):
     def test_migration_version(self):
         from nexus_search.core.migrations import get_version
-        self.assertEqual(get_version(self.graph.conn, "link_graph"), 1)
+        # v1 = base schema; v2 = from_domain/to_domain columns + index (BUG-05)
+        self.assertEqual(get_version(self.graph.conn, "link_graph"), 2)
 
     def test_reopen_existing_db_is_noop(self):
         """Reopening a DB that already has the schema doesn't re-migrate."""
         from nexus_search.core.migrations import get_version
         again = LinkGraph(self.db)
         try:
-            self.assertEqual(get_version(again.conn, "link_graph"), 1)
+            self.assertEqual(get_version(again.conn, "link_graph"), 2)
         finally:
             again.close()
 

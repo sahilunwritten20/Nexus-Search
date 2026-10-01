@@ -55,7 +55,8 @@ class TestLinkGraphStore(unittest.TestCase):
 
     def test_migration_version(self):
         from nexus_search.core.migrations import get_version
-        self.assertEqual(get_version(self.graph.conn, "link_graph"), 1)
+        # v1 = base schema; v2 = from_domain/to_domain columns + index (BUG-05)
+        self.assertEqual(get_version(self.graph.conn, "link_graph"), 2)
 
     def test_unknown_url_returns_none(self):
         self.assertIsNone(self.graph.authority_for("unknown.com"))

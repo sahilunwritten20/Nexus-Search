@@ -164,3 +164,46 @@ outbound network appears available; full HTTP validation happens in WP9.
   semantic + keyword, cap math incl. env override, API 400 beyond cap,
   API walk tiling).
 - Suite after WP3: **670 passed, 3 skipped** (+11, 0 regressions).
+
+## WP4 — BUG-06: shared HybridSearch + BUG-05: indexed domain-pair cap
+
+- Status: **both FIXED**
+- BUG-06 root cause: `/search` and `/search/explain` constructed a fresh
+  `HybridSearch` per request to honor per-request fusion weights, which
+  discarded the BM25 doc-token memo (bounded 2048, keyed
+  (doc_id, added_at)) across requests.
+- BUG-06 fix: `search_page`/`explain` accept per-call
+  `bm25_weight`/`vector_weight` overrides (validated; constructor weights
+  untouched); the API now uses ONE module-level `_hybrid_searcher` for
+  /search, the facets pass, and explain. Thread safety: search_page uses
+  only locals + lock-guarded members; concurrency test pins identical
+  rankings across 8 mixed-weight threads.
+- BUG-05 root cause: the per-domain-pair cap ran
+  `LIKE '%//host/%'` per new edge — O(E^2) ingest (250: 2.05s, 500: 4.32s,
+  1000: 31.93s baseline), missed root URLs without a trailing slash, and
+  matched subdomains by pattern accident.
+- BUG-05 fix: migration v2 for `link_graph` adds `from_domain`/`to_domain`
+  columns + `idx_link_edges_domains`; idempotent Python backfill at open
+  (only empty-domain rows); `record_edge`/`record_edges`/the normalize
+  migration populate domains at write; the cap is an indexed COUNT.
+  Host-less URLs skip pair accounting (they have no pair to budget — the
+  old LIKE form never matched them either). Subdomain policy DECIDED and
+  documented: exact-host (no PSL dependency; subdomain farms still bounded
+  by the 1000/page cap). Also: LinkGraph now sets `journal_mode = WAL`
+  like every other store — per-edge commits were paying a rollback-journal
+  fsync (4-50ms/edge on Windows), which dominated ingest.
+- Evidence: record_edge 250/500/1000 edges, before -> after:
+  2.05/4.32/31.93 s (quadratic) -> **0.41/0.81/1.68 s (linear, ~1.6ms/edge;
+  1000-edge case 19x faster)**. `record_edges` 10k bulk: 0.17 -> 0.37 s
+  (domains now computed; still sub-second).
+- Existing tests updated for the new v2 migration (link_graph
+  schema_version 1 -> 2 in test_graph_store.py / test_authority.py) —
+  version bumps are the migration runner working as designed.
+- Tests: `tests/core/test_shared_searcher.py` (7 new: override ==
+  dedicated instance, no mutation, invalid rejected, explain override,
+  concurrency determinism, API memo persistence across requests, API
+  per-request weights on the shared instance),
+  `tests/links/test_domain_cap.py` (8 new: root-source/root-target cap,
+  exact-host policy pin, per-source cap, v2 columns, backfill +
+  idempotence, backfilled rows enforce cap, ingest-linearity ratio test).
+- Suite after WP4: **685 passed, 3 skipped** (+15, 0 regressions).
