@@ -1,0 +1,13 @@
+{
+  "budget_30s_ok": true,
+  "edges_inserted": 99991,
+  "edges_requested": 100000,
+  "ingest_seconds": 18.47,
+  "mode": "full",
+  "pages": 10000,
+  "recompute_converged": true,
+  "recompute_iterations": 13,
+  "recompute_seconds": 3.2,
+  "urls_scored": 10000,
+  "urls_with_anchors": 9997
+}

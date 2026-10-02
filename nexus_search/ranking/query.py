@@ -27,20 +27,25 @@ from ..core.tokenizer import tokenize
 # window as Suggester._refresh: a same-count content swap keeps a now-stale
 # term, which merely means a typo correction we can't offer — never a wrong
 # result being served).
-_VOCAB_CACHE: dict[int, tuple[int, frozenset]] = {}
+#
+# BUG-10: WeakKeyDictionary — keyed by the storage OBJECT, not id(), so a
+# dead store's entry dies with it. id()-keyed caches live forever and a
+# reused address could serve one store's vocabulary to another (observed
+# as full-suite flakiness: corrected_terms came back empty).
+import weakref
+_VOCAB_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _VOCAB_CACHE_LOCK = threading.Lock()
 
 
 def _vocabulary(storage) -> frozenset:
     doc_count = storage.document_count()
-    key = id(storage)
     with _VOCAB_CACHE_LOCK:
-        cached = _VOCAB_CACHE.get(key)
+        cached = _VOCAB_CACHE.get(storage)
         if cached is not None and cached[0] == doc_count:
             return cached[1]
     vocab = frozenset(storage.all_terms())
     with _VOCAB_CACHE_LOCK:
-        _VOCAB_CACHE[key] = (doc_count, vocab)
+        _VOCAB_CACHE[storage] = (doc_count, vocab)
     return vocab
 
 # A tiny built-in synonym map. Interface accepts any dict[str, list[str]], so a

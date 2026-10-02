@@ -22,8 +22,9 @@ _CONTENT_TAGS = ("article", "main")
 @dataclass
 class Link:
     """One outbound link. `url` is absolute (joined against the page URL).
-    anchor_text/rel ride along for the link graph (Phase 6): anchor is future
-    link-intelligence signal; rel carries nofollow/sponsored/ugc (non-endorsements)."""
+    anchor_text/rel ride along for the link graph (Phase 6): anchor feeds
+    the url_anchors aggregation consumed by the anchor_relevance ranking
+    signal; rel carries nofollow/sponsored/ugc (non-endorsements)."""
     url: str
     anchor_text: str = ""
     rel: str = ""

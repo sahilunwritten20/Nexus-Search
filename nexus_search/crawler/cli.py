@@ -115,9 +115,11 @@ def main():
     parser = argparse.ArgumentParser(description="Nexus Search — crawler")
     parser.add_argument("command", nargs="?", default="crawl",
                         choices=["crawl", "block", "unblock", "blocklist",
-                                 "authority", "normalize-links"],
+                                 "authority", "normalize-links",
+                                 "dead-links", "orphans"],
                         help="block/unblock a host, blocklist, authority ops, "
-                             "normalize-links (BUG-02 data migration), or crawl (default)")
+                             "normalize-links (BUG-02 data migration), "
+                             "dead-links / orphans reports, or crawl (default)")
     parser.add_argument("host", nargs="?", default=None,
                         help="host (or URL) for block/unblock")
     parser.add_argument("--recompute", action="store_true",
@@ -157,7 +159,8 @@ def main():
                 print(f"{args.show}: authority={found[0]:.4f} popularity={found[1]:.3f}"
                       if found else f"{args.show}: not in graph (ranker sees NEUTRAL)")
             elif args.recompute:
-                stats = compute_authority(graph)
+                # explicit operator action: force past the version guard
+                stats = compute_authority(graph, force=True)
                 print(f"authority recomputed: {stats.pages} pages, {stats.edges_used}/"
                       f"{stats.edges_in} endorsing edges, {stats.iterations} iterations "
                       f"({'converged' if stats.converged else 'max-iterations'}), "
@@ -201,12 +204,42 @@ def main():
             stats = normalize_existing_edges(graph)
             print(f"normalize-links: {stats}")
             if args.recompute:
-                auth_stats = compute_authority(graph)
+                auth_stats = compute_authority(graph, force=True)
                 print(f"authority recomputed: {auth_stats.pages} pages, "
                       f"{auth_stats.iterations} iterations "
                       f"({'converged' if auth_stats.converged else 'max-iterations'})")
         finally:
             graph.close()
+        return
+
+    # dead-links / orphans: read-only Phase 6 reports (WP5). They cross-
+    # reference existing data only — neither command ever fetches.
+    if args.command in ("dead-links", "orphans"):
+        if args.command == "dead-links":
+            from ..links.reports import dead_links
+            dl_report = dead_links(args.db, _frontier_db_path(args.db))
+            for entry in dl_report["dead"]:
+                print(f"DEAD  {entry['url']}  [{entry['error']}]  "
+                      f"inlinks={entry['inlink_count']} "
+                      f"(e.g. {entry['inlinks'][:3]})")
+            for url in dl_report["unfetched"]:
+                print(f"UNFETCHED  {url}  (linked, never crawled)")
+            print(f"{len(dl_report['dead'])} dead links, "
+                  f"{len(dl_report['unfetched'])} linked-but-unfetched targets")
+        else:
+            from ..links.graph import LinkGraph
+            from ..links.reports import orphan_pages
+            from ..core.storage import Storage
+            storage = Storage(args.db)
+            graph = LinkGraph(args.db)
+            try:
+                orphans = orphan_pages(storage, graph)
+            finally:
+                graph.close()
+                storage.close()
+            for entry in orphans:
+                print(f"ORPHAN  {entry['url']}  ({entry['doc_id']})")
+            print(f"{len(orphans)} orphan pages (zero inbound edges, seeds excluded)")
         return
 
     config = load_config(args.config)

@@ -181,3 +181,33 @@ def compute_click_signal(doc, query: str, context) -> float:
         if isinstance(value, (int, float)):
             return max(0.0, min(1.0, float(value)))
     return getattr(context, "default_click", NEUTRAL)
+
+
+def compute_anchor_relevance(doc, query: str, context) -> float:
+    """Query-token overlap with the page's aggregated INBOUND anchor text
+    (Phase 6 link graph; anchors are aggregated once per authority
+    recompute, so this does no graph traversal on the request path — the
+    web describes a page by how it links to it).
+
+    NEUTRAL when the doc has no URL, the graph is absent, or no anchor text
+    exists for the URL (no information); 0.0 when anchors exist but share
+    no tokens with the query (real evidence of irrelevance). Weight ships
+    at 0.0 (NEXUS_ANCHOR_WEIGHT); zero-weight identity is test-pinned."""
+    if doc is None or not doc.metadata:
+        return NEUTRAL
+    url = doc.metadata.get("url") or doc.metadata.get("canonical_url")
+    if not url:
+        return NEUTRAL
+    graph = getattr(context, "link_intel", None)
+    if graph is None:
+        return NEUTRAL
+    anchor_text = graph.anchor_text_for(url)
+    if not anchor_text.strip():
+        return NEUTRAL
+    terms = set(_terms_of(query))
+    if not terms:
+        return 0.0
+    anchor_terms = set(tokenize(anchor_text))
+    if not anchor_terms:
+        return 0.0
+    return len(terms & anchor_terms) / len(terms)

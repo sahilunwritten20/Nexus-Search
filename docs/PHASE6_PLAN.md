@@ -121,12 +121,14 @@ edges per (source domain → target domain) pair.
 - Memory: O(V + E) integer/float arrays — 100k edges ⇔ ~3 MB.
 
 **Committed number: full recompute (build + iterate + write) completes in
-under 30 seconds for 10,000 pages / 100,000 edges on a single core.** That
-bound is ~10x over the expected cost (pure-array ops dominate; ~100k×25
-FLOPs is milliseconds; the SQLite round-trip is the long pole) — it is a
-production safety bound, not an aspirational microbenchmark. Stage 3
-measures and reports the actual time; if it exceeds the bound we say so and
-tune, per the hard rule about not lowering numbers quietly.
+under 30 seconds for 10,000 pages / 100,000 edges on a single core.**
+
+Measured (WP5 remediation, evaluation/graph_benchmark.py, Windows/Python
+3.14): **3.2 s** recompute for 10,000 pages / 99,991 edges, converged in 13
+iterations; bulk ingest of the same graph 18.5 s; all 10,000 URLs scored,
+9,997 with aggregated anchors. Machine-readable: docs/graph_benchmark_full.json.
+Reduced smoke mode (500 pages / 5k edges) runs in CI; full mode behind
+NEXUS_RUN_GRAPH_BENCH=1.
 
 ---
 

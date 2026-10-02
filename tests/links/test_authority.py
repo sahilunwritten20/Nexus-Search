@@ -60,11 +60,17 @@ class TestAuthorityComputation(_Base):
         self.assertGreater(result[0], 0.0)
 
     def test_disconnected_components(self):
-        self.graph.record_edge("a.com", "b.com")
-        self.graph.record_edge("c.com", "d.com")
+        # two genuinely disconnected edge pairs: PageRank converges AND the
+        # component analysis reports exactly two components of size 2
+        self.graph.record_edge("http://a1.com/x", "http://a2.com/x")
+        self.graph.record_edge("http://c1.com/x", "http://d1.com/x")
         stats = compute_authority(self.graph)
         self.assertEqual(stats.pages, 4)
         self.assertTrue(stats.converged)
+        mapping, sizes = self.graph.connected_components()
+        self.assertEqual(len(sizes), 2)
+        self.assertEqual(sorted(sizes.values()), [2, 2])
+        self.assertNotEqual(mapping["http://a1.com/x"], mapping["http://c1.com/x"])
 
     def test_reciprocal_discount(self):
         self.graph.record_edge("a.com", "b.com")
@@ -161,14 +167,14 @@ class TestAuthorityStore(_Base):
     def test_migration_version(self):
         from nexus_search.core.migrations import get_version
         # v1 = base schema; v2 = from_domain/to_domain columns + index (BUG-05)
-        self.assertEqual(get_version(self.graph.conn, "link_graph"), 2)
+        self.assertEqual(get_version(self.graph.conn, "link_graph"), 3)
 
     def test_reopen_existing_db_is_noop(self):
         """Reopening a DB that already has the schema doesn't re-migrate."""
         from nexus_search.core.migrations import get_version
         again = LinkGraph(self.db)
         try:
-            self.assertEqual(get_version(again.conn, "link_graph"), 2)
+            self.assertEqual(get_version(again.conn, "link_graph"), 3)
         finally:
             again.close()
 

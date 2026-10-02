@@ -73,12 +73,14 @@ class TestFeatureAssembly(unittest.TestCase):
         self.assertEqual(set(d), {
             "bm25_score", "semantic_similarity", "title_match", "url_match",
             "phrase_match", "freshness", "document_quality", "content_quality",
-            "language_relevance", "source_authority", "popularity", "click_signal"})
+            "language_relevance", "source_authority", "popularity",
+            "click_signal", "anchor_relevance"})
         self.assertEqual(d["bm25_score"], 0.9)
         self.assertEqual(d["title_match"], 1.0)
         self.assertEqual(d["content_quality"], 0.8)
         self.assertEqual(d["source_authority"], 0.5)  # placeholder neutral
         self.assertEqual(d["click_signal"], 0.5)
+        self.assertEqual(d["anchor_relevance"], 0.5)  # no graph -> NEUTRAL
 
     def test_missing_document_never_crashes(self):
         ctx = build_context("anything")

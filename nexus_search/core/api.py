@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI):
     # Startup
     yield
     # Shutdown
+    if _authority_worker is not None:
+        _authority_worker.stop()  # joins the background PageRank thread
     if _embedding_sync is not None:
         _embedding_sync.close()
     if _hybrid_searcher is not None:
@@ -123,6 +125,61 @@ try:
 except Exception as exc:
     logger.warning("Link graph unavailable (ranking stays neutral): %s", exc)
     _link_graph = None
+
+
+class _AuthorityWorker:
+    """WP5: opt-in background PageRank. NEXUS_AUTHORITY_RECOMPUTE_INTERVAL
+    seconds between passes (0 = off, the default). One guarded thread; the
+    version guard inside compute_authority makes idle passes near-free;
+    scores land via shadow-swap so readers never see a partial rewrite. A
+    failed pass stops the worker loudly (logger.exception) — a background
+    loop that swallows persistent errors would be worse than none."""
+
+    def __init__(self, graph, interval: float):
+        import threading
+        self._graph = graph
+        self._interval = float(interval)
+        self._stop = threading.Event()
+        self._lock = threading.Lock()  # never two overlapping recomputes
+        self._thread = threading.Thread(target=self._run, name="authority-recompute",
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            if not self._lock.acquire(blocking=False):
+                continue
+            try:
+                from ..links.authority import compute_authority
+                compute_authority(self._graph)  # version-guarded
+            except Exception:
+                logger.exception("background authority recompute failed; stopping worker")
+                self._stop.set()
+            finally:
+                self._lock.release()
+
+    def stop(self, timeout: float = 10.0) -> None:
+        self._stop.set()
+        self._thread.join(timeout=timeout)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+
+def _authority_interval() -> float:
+    raw = (os.environ.get("NEXUS_AUTHORITY_RECOMPUTE_INTERVAL") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    return value if value > 0 else 0.0
+
+
+_authority_worker = None
+if _link_graph is not None and _authority_interval() > 0:
+    _authority_worker = _AuthorityWorker(_link_graph, _authority_interval())
+    logger.info("background authority recompute every %.1fs", _authority_interval())
 
 # Query cache: TTL-bounded, and cleared on every write (see query_cache.py)
 _query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5")))
@@ -633,4 +690,50 @@ def metrics():
         "embedding_sync": sync_stats,
         "vector_store": vector_stats,
         "query_cache": _query_cache.stats(),
+    }
+
+
+@app.get("/graph/neighbors", dependencies=[Depends(require_api_key)])
+@limiter.limit(_RATE_LIMIT)
+def graph_neighbors(request: Request, response: Response,
+                    url: str,
+                    direction: str = Query(default="out",
+                                            pattern="^(out|in|both)$"),
+                    limit: int = Query(default=50, ge=1, le=200)):
+    """WP5: bounded graph traversal over the normalized link graph.
+    Key-gated like /search/explain (it exposes internal corpus linkage).
+    Read-only; never triggers a fetch."""
+    if _link_graph is None:
+        raise HTTPException(status_code=503, detail="link graph unavailable")
+    if len(url) > MAX_QUERY_CHARS:
+        raise HTTPException(status_code=400, detail="url too long")
+    edges = _link_graph.neighbors(url, direction=direction, limit=limit)
+    return {
+        "url": url,
+        "direction": direction,
+        "edges": [
+            {"from": e.from_url, "to": e.to_url,
+             "anchor_text": e.anchor_text, "rel": e.rel_attrs}
+            for e in edges
+        ],
+        "count": len(edges),
+    }
+
+
+@app.get("/graph/report", dependencies=[Depends(require_api_key)])
+@limiter.limit(_RATE_LIMIT)
+def graph_report(request: Request, response: Response):
+    """WP5: component + orphans + dead-links summary. Key-gated, read-only,
+    cross-references existing data only."""
+    if _link_graph is None:
+        raise HTTPException(status_code=503, detail="link graph unavailable")
+    from ..links.reports import orphan_pages
+    mapping, sizes = _link_graph.connected_components()
+    orphans = orphan_pages(_storage, _link_graph)
+    return {
+        "edges": _link_graph.edge_count(),
+        "component_count": len(sizes),
+        "largest_component": max(sizes.values()) if sizes else 0,
+        "orphan_pages": len(orphans),
+        "orphans_sample": orphans[:10],
     }

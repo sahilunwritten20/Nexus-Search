@@ -51,6 +51,7 @@ class RankingFeatures:
     source_authority: float = signals.NEUTRAL
     popularity: float = signals.NEUTRAL
     click_signal: float = signals.NEUTRAL
+    anchor_relevance: float = signals.NEUTRAL
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -66,6 +67,7 @@ class RankingFeatures:
             "source_authority": self.source_authority,
             "popularity": self.popularity,
             "click_signal": self.click_signal,
+            "anchor_relevance": self.anchor_relevance,
         }
 
 
@@ -82,6 +84,7 @@ _SIGNAL_FUNCS = {
     "source_authority": signals.compute_source_authority,
     "popularity": signals.compute_popularity,
     "click_signal": signals.compute_click_signal,
+    "anchor_relevance": signals.compute_anchor_relevance,
 }
 
 

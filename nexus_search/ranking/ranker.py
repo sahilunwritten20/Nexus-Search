@@ -44,9 +44,10 @@ class RankingWeights:
     document_quality: float = 0.05
     content_quality: float = 0.05
     language_relevance: float = 0.05
-    source_authority: float = 0.0   # placeholder slot — data since Phase 6
-    popularity: float = 0.0         # placeholder slot — data since Phase 6
+    source_authority: float = 0.0   # Phase 6 link-graph authority (opt-in)
+    popularity: float = 0.0         # Phase 6 link-graph popularity (opt-in)
     click_signal: float = 0.0       # placeholder slot — no data until Phase 7
+    anchor_relevance: float = 0.0   # Phase 6 inbound-anchor/query overlap (opt-in)
 
     def as_dict(self) -> dict[str, float]:
         return {f: getattr(self, f) for f in self.__dataclass_fields__}
@@ -55,13 +56,15 @@ class RankingWeights:
     def from_env(cls) -> "RankingWeights":
         """Production rollout knobs (Phase 6): the link-intelligence signals
         ship OFF (0.0) until an operator opts in after evaluating uplift —
-        NEXUS_AUTHORITY_WEIGHT / NEXUS_POPULARITY_WEIGHT, clamped to [0,1] so
-        a fat-fingered env value can't zero the whole ranking score."""
+        NEXUS_AUTHORITY_WEIGHT / NEXUS_POPULARITY_WEIGHT /
+        NEXUS_ANCHOR_WEIGHT / NEXUS_RERANK_WEIGHT_CLICK, each clamped to
+        [0,1] so a fat-fingered env value can't zero the whole ranking score."""
         import os
         weights = cls()
         for env, field_name in (("NEXUS_AUTHORITY_WEIGHT", "source_authority"),
-                                ("NEXUS_POPULARITY_WEIGHT", "popularity"),
-                                ("NEXUS_RERANK_WEIGHT_CLICK", "click_signal")):
+                                 ("NEXUS_POPULARITY_WEIGHT", "popularity"),
+                                 ("NEXUS_ANCHOR_WEIGHT", "anchor_relevance"),
+                                 ("NEXUS_RERANK_WEIGHT_CLICK", "click_signal")):
             raw = os.environ.get(env, "").strip()
             if not raw:
                 continue
@@ -132,6 +135,7 @@ class WeightedSumModel(RankingModel):
             + w.source_authority * f.source_authority
             + w.popularity * f.popularity
             + w.click_signal * f.click_signal
+            + w.anchor_relevance * f.anchor_relevance
         )
 
 

@@ -41,6 +41,9 @@ class AuthorityStats:
     iterations: int
     converged: bool
     seconds: float
+    # True when the version guard skipped the pass (edge set unchanged
+    # since the last compute; see compute_authority)
+    skipped: bool = False
 
 
 def _endorses(rel_attrs: str) -> bool:
@@ -48,15 +51,49 @@ def _endorses(rel_attrs: str) -> bool:
     return not any(token in rel for token in _NON_ENDORSING)
 
 
-def compute_authority(graph: LinkGraph) -> AuthorityStats:
+def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     """Recompute authority/popularity for every known URL. Safe on any graph
     shape (empty, singleton, cycles, disconnected); scores replace shadow-swap
-    atomically at the end."""
+    atomically at the end.
+
+    Incremental guard (WP5): the pass is SKIPPED when the graph's edge-set
+    version hasn't moved since the last successful compute (anchors/rel
+    included — any semantic edge change bumps it). `force=True` recomputes
+    regardless. Also (re)builds the derived tables: url_anchors (per-URL
+    inbound anchor text for the anchor_relevance signal) and
+    domain_authority (PR-weighted per-domain aggregate; only consulted by
+    authority_for behind NEXUS_DOMAIN_AUTHORITY_FALLBACK)."""
     started = time.time()
+    # Capture the edge-set version BEFORE reading edges: if edges land
+    # mid-compute, the recorded version is older than reality and the NEXT
+    # pass re-runs (safe direction). The reverse order could record a
+    # version the scores don't reflect and wrongly skip that recompute.
+    version = graph.edges_version()
+    if not force:
+        with graph.lock:
+            row = graph.conn.execute(
+                "SELECT value FROM graph_meta WHERE key = 'computed_version'"
+            ).fetchone()
+        if row is not None and int(row[0]) == version:
+            return AuthorityStats(pages=0, edges_in=0, edges_used=0,
+                                  reciprocal_pairs=0, iterations=0,
+                                  converged=True, seconds=time.time() - started,
+                                  skipped=True)
+
     edges = graph.edges()
     stats = AuthorityStats(pages=0, edges_in=len(edges), edges_used=0,
                            reciprocal_pairs=0, iterations=0, converged=False,
                            seconds=0.0)
+
+    # per-URL aggregated inbound anchor text (ALL edges with text, not just
+    # endorsing ones: a nofollow anchor still describes its target), capped
+    # per URL. Sorted sources keep the aggregation deterministic.
+    anchors: dict[str, list[str]] = {}
+    for e in sorted(edges, key=lambda e: (e.to_url, e.from_url)):
+        if e.anchor_text.strip() and e.from_url != e.to_url:
+            anchors.setdefault(e.to_url, []).append(e.anchor_text.strip())
+    anchor_text = {url: (" | ".join(parts))[:512]
+                   for url, parts in anchors.items()}
 
     endorsing = {}  # (from, to) -> None, dedup by PK
     for e in edges:
@@ -69,7 +106,9 @@ def compute_authority(graph: LinkGraph) -> AuthorityStats:
     # scores table is rebuilt even on empty input (clears stale rows), but a
     # graph with no endorsing edges yields NEUTRAL-by-omission downstream
     if n == 0:
-        _write_scores(graph, {}, seconds=time.time() - started)
+        _write_scores(graph, {}, anchors=anchor_text, domains={},
+                      version=version,
+                      seconds=time.time() - started)
         stats.seconds = time.time() - started
         return stats
 
@@ -129,7 +168,26 @@ def compute_authority(graph: LinkGraph) -> AuthorityStats:
         popularity = math.log1p(len(in_domains[i])) / math.log1p(100.0)
         scores[u] = (authority, popularity, int(in_count[i]),
                      len(in_domains[i]), float(pr[i]))
-    _write_scores(graph, scores, seconds=time.time() - started)
+
+    # Per-domain aggregate (WP5): PR-weighted mean of member page authority
+    # (a high-PR page carries its domain's reputation more than a footnote
+    # page does) + plain mean popularity. Consulted by authority_for ONLY
+    # behind NEXUS_DOMAIN_AUTHORITY_FALLBACK (default off).
+    domain_pages: dict[str, list[int]] = {}
+    for u, i in idx.items():
+        domain_pages.setdefault((urlsplit(u).hostname or "").lower(), []).append(i)
+    domains: dict[str, tuple[float, float, int]] = {}
+    for domain, members in sorted(domain_pages.items()):
+        weights = np.asarray([pr[i] for i in members], dtype=np.float64)
+        auths = np.asarray([scores[urls[i]][0] for i in members])
+        pops = np.asarray([scores[urls[i]][1] for i in members])
+        total = float(weights.sum())
+        d_auth = float((weights * auths).sum() / total) if total > 0 else 0.0
+        domains[domain] = (d_auth, float(pops.mean()), len(members))
+
+    _write_scores(graph, scores, anchors=anchor_text, domains=domains,
+                  version=version,
+                  seconds=time.time() - started)
     stats.pages = n
     stats.iterations = it
     stats.converged = converged
@@ -137,8 +195,12 @@ def compute_authority(graph: LinkGraph) -> AuthorityStats:
     return stats
 
 
-def _write_scores(graph: LinkGraph, scores: dict, seconds: float) -> None:
-    """Shadow-swap the scores table: readers never see a partial rewrite."""
+def _write_scores(graph: LinkGraph, scores: dict, anchors: dict,
+                  domains: dict, version: int, seconds: float) -> None:
+    """Shadow-swap the scores table: readers never see a partial rewrite.
+    Also rebuilds the derived tables (url_anchors, domain_authority) and
+    records the computed edge-set version (the incremental guard), then
+    drops the in-memory read cache (own-commit data_version blindness)."""
     now = time.time()
     with graph.lock:
         conn = graph.conn
@@ -155,6 +217,23 @@ def _write_scores(graph: LinkGraph, scores: dict, seconds: float) -> None:
                 "inlink_domains, authority, popularity, computed_at) VALUES (?,?,?,?,?,?,?)",
                 [(u, pr, ic, idom, auth, pop, now)
                  for u, (auth, pop, ic, idom, pr) in scores.items()])
+        # derived tables are rebuilt whole (idempotent-by-replacement)
+        conn.execute("DELETE FROM url_anchors")
+        if anchors:
+            conn.executemany(
+                "INSERT INTO url_anchors (url, anchor_text) VALUES (?,?)",
+                sorted(anchors.items()))
+        conn.execute("DELETE FROM domain_authority")
+        if domains:
+            conn.executemany(
+                "INSERT INTO domain_authority (domain, authority, popularity, "
+                "pages, computed_at) VALUES (?,?,?,?,?)",
+                [(d, auth, pop, pages, now)
+                 for d, (auth, pop, pages) in sorted(domains.items())])
+        conn.execute(
+            "INSERT INTO graph_meta (key, value) VALUES ('computed_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(version),))
         conn.commit()  # shadow complete — Python begins an implicit txn on DDL
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -165,3 +244,4 @@ def _write_scores(graph: LinkGraph, scores: dict, seconds: float) -> None:
             conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
+        graph.invalidate_authority_cache()

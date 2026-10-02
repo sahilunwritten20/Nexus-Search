@@ -81,7 +81,7 @@ class TestDomainPairCap(_GraphTest):
 class TestDomainColumnsMigration(_GraphTest):
     def test_v2_columns_and_backfill(self):
         from nexus_search.core.migrations import get_version
-        self.assertEqual(get_version(self.graph.conn, "link_graph"), 2)
+        self.assertEqual(get_version(self.graph.conn, "link_graph"), 3)
         row = self.graph.conn.execute(
             "SELECT from_domain, to_domain FROM link_edges LIMIT 1").fetchone()
         if row:  # may be empty table
