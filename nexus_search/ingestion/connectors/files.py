@@ -65,6 +65,53 @@ def read_text_file(path: Path) -> str:
     return raw.decode(_detect_encoding(raw), errors="replace")
 
 
+def read_markdown_file(path: Path) -> str:
+    """Markdown reader (WP6): everything stays searchable, but the MARKUP
+    doesn't leak into the index as noise:
+    - YAML front matter (leading --- block) is dropped
+    - fenced code blocks keep their text, drop the ``` fences + language tags
+    - heading markers (#) are dropped, heading text kept
+    - links [text](url) keep the text; images ![alt](url) keep the alt
+    - emphasis/strong/strikethrough markers are unwrapped
+    - blockquote markers and list bullets are stripped
+    """
+    text = read_text_file(path)
+
+    # front matter: a leading --- ... --- block
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:].lstrip("\n")
+
+    out_lines = []
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue  # fence markers and language tags are not content
+        if in_fence:
+            out_lines.append(line)  # code text verbatim
+            continue
+        # heading markers
+        if stripped.startswith("#"):
+            line = line.lstrip("# \t")
+        # blockquote markers
+        if stripped.startswith(">"):
+            line = line.lstrip("> ")
+        # images before links (they share the bracket syntax)
+        import re as _re
+        line = _re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", line)
+        # links: keep the anchor text, drop the URL
+        line = _re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)
+        # emphasis / strong / strikethrough
+        line = _re.sub(r"(\*\*\*|___|\*\*|__|~~|_|\*)(?=\S)(.*?\S)\1", r"\2", line)
+        # list bullets
+        line = _re.sub(r"^(\s*)[-*+]\s+", r"\1", line)
+        out_lines.append(line.rstrip())
+    return "\n".join(out_lines).strip("\n")
+
+
 def read_csv_file(path: Path) -> str:
     """Stream a CSV row-by-row — no full-file materialization. Detection
     samples the first 64KB only; the body is decoded incrementally, so a
@@ -195,20 +242,26 @@ def read_pptx_file(path: Path) -> str:
 
 
 _READERS: dict[str, Callable[[Path], str]] = {
-    ".txt": read_text_file, ".md": read_text_file, ".rst": read_text_file,
-    ".csv": read_csv_file, ".json": read_json_file,
+    ".txt": read_text_file, ".md": read_markdown_file, ".markdown": read_markdown_file,
+    ".rst": read_text_file, ".csv": read_csv_file, ".json": read_json_file,
     ".html": read_html_file, ".htm": read_html_file,
     ".pdf": read_pdf_file, ".docx": read_docx_file,
     ".xlsx": read_xlsx_file, ".pptx": read_pptx_file,
 }
 
+# content-type -> reader: magic bytes beat lying extensions (WP6)
+_CONTENT_READERS = {
+    "application/pdf": read_pdf_file,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": read_docx_file,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": read_xlsx_file,
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": read_pptx_file,
+}
+
 
 def read_file(path: Path) -> str:
-    """Read a file according to its extension; '' (and a logged warning) on
-    failure or when the file exceeds the size limit."""
-    reader = _READERS.get(path.suffix.lower())
-    if reader is None:
-        return ""
+    """Read a file; '' (and a logged warning) on failure or over the size
+    limit. Routing: magic bytes first (a PDF named .txt parses as PDF),
+    extension second — `mime.py` holds the detection policy."""
     limit = _max_ingest_bytes()
     try:
         size = path.stat().st_size  # stat BEFORE opening: size guard costs nothing
@@ -219,6 +272,17 @@ def read_file(path: Path) -> str:
                        path, size, limit)
         return ""
     try:
+        from ..mime import sniff_content_type
+        sniffed = sniff_content_type(path)
+        if sniffed == "application/octet-stream":
+            logger.warning("Refusing to read %s: binary content", path)
+            return ""
+        reader = _CONTENT_READERS.get(sniffed)
+        if reader is not None:
+            return reader(path)
+        reader = _READERS.get(path.suffix.lower())
+        if reader is None:
+            return ""
         return reader(path)
     except Exception as exc:  # corrupt file, missing optional dependency, ...
         logger.warning("Could not read %s: %s: %s", path, type(exc).__name__, exc)

@@ -431,6 +431,7 @@ class Frontier:
         self,
         url: str,
         error: str,
+        permanent: bool = False,
     ) -> None:
         """Mark a crawl attempt as failed.
 
@@ -439,19 +440,18 @@ class Frontier:
         permanently. Now the row becomes status='error' with exponential
         backoff and is retried by next_batch() until MAX_FETCH_ATTEMPTS, at
         which point it leaves the frontier (the full error log stays in
-        crawl_errors either way)."""
+        crawl_errors either way).
 
+        `permanent=True` (BUG-07): the error is terminal by definition — a
+        404/410/403 will never succeed on retry — so the URL leaves the
+        frontier IMMEDIATELY after being logged. Refetching a dead link
+        three times with backoff was pure waste and impolite to the host."""
         norm = normalize_url(url)
         now = time.time()
 
         with self.lock:
 
-            row = self.conn.execute(
-                "SELECT retry_count FROM frontier WHERE url = ?", (norm,)
-            ).fetchone()
-            attempts = (row[0] if row else 0) + 1
-
-            # Store the error.
+            # Store the error (full log, both paths).
             self.conn.execute(
                 """
                 INSERT INTO crawl_errors (
@@ -472,17 +472,25 @@ class Frontier:
                 ),
             )
 
-            if attempts >= MAX_FETCH_ATTEMPTS:
-                # exhausted: leave the frontier (rediscovery via add() works
-                # again), the failure history stays in crawl_errors
+            if permanent:
+                # terminal: no retry budget, leave the frontier now
                 self.conn.execute("DELETE FROM frontier WHERE url = ?", (norm,))
             else:
-                backoff = min(2.0 ** attempts, _ERROR_BACKOFF_MAX)
-                self.conn.execute(
-                    "UPDATE frontier SET status = 'error', retry_count = ?, "
-                    "next_retry_at = ? WHERE url = ?",
-                    (attempts, now + backoff, norm),
-                )
+                row = self.conn.execute(
+                    "SELECT retry_count FROM frontier WHERE url = ?", (norm,)
+                ).fetchone()
+                attempts = (row[0] if row else 0) + 1
+                if attempts >= MAX_FETCH_ATTEMPTS:
+                    # exhausted: leave the frontier (rediscovery via add() works
+                    # again), the failure history stays in crawl_errors
+                    self.conn.execute("DELETE FROM frontier WHERE url = ?", (norm,))
+                else:
+                    backoff = min(2.0 ** attempts, _ERROR_BACKOFF_MAX)
+                    self.conn.execute(
+                        "UPDATE frontier SET status = 'error', retry_count = ?, "
+                        "next_retry_at = ? WHERE url = ?",
+                        (attempts, now + backoff, norm),
+                    )
 
             self.conn.commit()
 

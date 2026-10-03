@@ -95,3 +95,35 @@ class ExperimentLog:
     def close(self):
         with self.lock:
             self.conn.close()
+
+
+def main(argv=None) -> int:
+    """Retention CLI for the query log (raw query text is stored — schedule
+    this when queries may contain PII; see .env.example):
+        python -m nexus_search.ranking.ab purge --db nexus_search.db --days 30
+        python -m nexus_search.ranking.ab count --db nexus_search.db
+    """
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(description="A/B query-log retention")
+    parser.add_argument("command", choices=["purge", "count"])
+    parser.add_argument("--db", default=os.environ.get("NEXUS_DB", "nexus_search.db"))
+    parser.add_argument("--days", type=float, default=30.0,
+                        help="delete rows older than this many days")
+    args = parser.parse_args(argv)
+    log = ExperimentLog(args.db)
+    try:
+        if args.command == "count":
+            print(f"{log.count()} rows")
+            return 0
+        deleted = log.purge_older_than(days=args.days)
+        print(f"purged {deleted} rows older than {args.days} days "
+              f"({log.count()} remain)")
+        return 0
+    finally:
+        log.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

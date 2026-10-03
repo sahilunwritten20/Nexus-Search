@@ -50,8 +50,11 @@ class TestLinkGraphStore(unittest.TestCase):
         # 501st edge to same domain pair should be refused
         self.assertFalse(self.graph.record_edge("https://src.com/page", "https://target.com/overflow", "overflow", "rel"))
 
-    def test_self_link_rejected(self):
-        self.assertFalse(self.graph.record_edge("a.com", "a.com", "self", ""))
+    def test_self_link_after_normalization_rejected(self):
+        # (renamed: a duplicate test_self_link_rejected here shadowed the
+        # first one - both must run)
+        self.assertFalse(self.graph.record_edge("http://a.com/x",
+                                                "http://a.com/x#frag"))
 
     def test_migration_version(self):
         from nexus_search.core.migrations import get_version

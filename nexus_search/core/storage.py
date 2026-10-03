@@ -57,7 +57,12 @@ class Storage:
         # Schema comes up through the migration runner: v1 is the baseline
         # schema; future column changes become v2, v3, ... (see migrations.py)
         self.schema_version = apply_migrations(
-            self.conn, "storage", [(1, SCHEMA)]
+            self.conn, "storage",
+            [(1, SCHEMA),
+             # v2 (WP6): freshness sorting reads added_at for the whole
+             # candidate pool; the index makes the batch read cheap.
+             (2, "CREATE INDEX IF NOT EXISTS idx_documents_added_at "
+                 "ON documents (added_at);")],
         )
 
     def upsert_document(
@@ -239,6 +244,19 @@ class Storage:
     def all_doc_ids(self) -> list[str]:
         with self.lock:
             return [r[0] for r in self.conn.execute("SELECT doc_id FROM documents ORDER BY doc_id")]
+
+    def added_at_map(self, doc_ids: list[str]) -> dict[str, float]:
+        """added_at for many docs in ONE query — the freshness sort fetches
+        the whole candidate pool at once (per-doc get_document was the N+1).
+        Missing ids are absent from the map (caller decides the default)."""
+        if not doc_ids:
+            return {}
+        with self.lock:
+            placeholders = ",".join("?" for _ in doc_ids)
+            rows = self.conn.execute(
+                f"SELECT doc_id, added_at FROM documents "
+                f"WHERE doc_id IN ({placeholders})", doc_ids).fetchall()
+        return {doc_id: ts for doc_id, ts in rows}
 
     def all_terms(self) -> list[str]:
         """Sorted index vocabulary (distinct postings terms). Phase 5 query

@@ -250,6 +250,29 @@ def _rate_limit_key(request: Request) -> str:
     key = request.headers.get("X-API-Key")
     if key:
         return "key:" + hashlib.sha256(key.encode()).hexdigest()[:24]
+    # BUG-09-hygiene / reverse proxies: behind a proxy, every client shares
+    # the proxy's socket address, so raw remote-address keying lumps all
+    # traffic into one bucket. NEXUS_TRUST_PROXY=N takes the client IP as
+    # the Nth-from-right X-Forwarded-For entry (N = trusted proxy hops).
+    # OFF by default: an untrusted XFF header must never forge a bucket.
+    raw = (os.environ.get("NEXUS_TRUST_PROXY") or "").strip()
+    if raw:
+        try:
+            hops = int(raw)
+        except ValueError:
+            hops = 0
+        if hops > 0:
+            xff = [h.strip() for h in
+                   request.headers.get("X-Forwarded-For", "").split(",") if h.strip()]
+            if len(xff) >= hops:
+                candidate = xff[-hops]
+                import ipaddress
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    pass  # junk XFF: fall through to the socket address
+                else:
+                    return "ip:" + candidate
     return get_remote_address(request) or "unknown"
 
 
@@ -369,9 +392,18 @@ def search(
     highlight: bool = Query(default=False),
     facets: Optional[str] = Query(default=None),
     cursor: Optional[str] = Query(default=None),
+    api_key: Optional[str] = Security(_api_key_header),
 ):
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must not be empty")
+    # BUG-08: debug=true exposes per-retriever score contributions — the
+    # same internals /search/explain key-gates. When a key is configured,
+    # gate it identically here (401, not silently open).
+    if debug and _API_KEY:
+        import hmac as _hmac
+        if api_key is None or not _hmac.compare_digest(api_key, _API_KEY):
+            raise HTTPException(status_code=401,
+                                detail="debug output requires the API key")
     if len(q) > MAX_QUERY_CHARS:
         raise HTTPException(status_code=400, detail="q too long")
     if len(q.split()) > MAX_QUERY_WORDS:

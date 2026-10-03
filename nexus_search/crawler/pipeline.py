@@ -15,7 +15,7 @@ from .fetcher import Fetcher
 from .frontier import Frontier, FrontierEntry
 from .metrics import CrawlerMetrics
 from .politeness import PolitenessManager
-from .security import pin_dns_for_url, validate_url
+from .security import install_dns_pinning, pin_dns_for_url, validate_url
 from .sitemap import maybe_gzip, parse_sitemap, parse_sitemap_index
 from .url_utils import get_domain
 
@@ -86,6 +86,9 @@ class CrawlPipeline:
                            "(allowed only because allow_private_hosts=True)")
             user_agent = DEFAULT_USER_AGENT
         self.frontier = Frontier(db_path)
+        # DNS pinning must be installed before any fetch on the public path
+        # (explicit install — importing this module alone patches nothing).
+        install_dns_pinning()
         # Webmaster opt-out: shares the frontier DB (one crawl-state file).
         # Precedence: blocklist > robots.txt > allow-list.
         self.blocklist = Blocklist(db_path)
@@ -231,7 +234,13 @@ class CrawlPipeline:
             return
 
         if result.error or result.html is None:
-            self.frontier.mark_error(entry.url, result.error or f"status {result.status_code}")
+            # BUG-07: 4xx (except 408 timeout / 429 rate-limit) is terminal —
+            # retrying a 404 three times was wasted fetches + impolite.
+            status = result.status_code
+            permanent = (isinstance(status, int) and 400 <= status < 500
+                         and status not in (408, 429))
+            self.frontier.mark_error(entry.url, result.error or f"status {status}",
+                                     permanent=permanent)
             self._bump("errors")
             return
 

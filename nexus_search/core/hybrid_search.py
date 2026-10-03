@@ -289,10 +289,11 @@ class HybridSearch:
         if sort == "title":
             return sorted(results, key=lambda r: ((r.title or "").lower(), r.doc_id))
         if sort == "freshness":
-            def added_at(r):
-                doc = self.storage.get_document(r.doc_id)
-                return doc.added_at if doc else 0.0
-            return sorted(results, key=lambda r: (-added_at(r), r.doc_id))
+            # WP6: one batched added_at read for the whole candidate list
+            # instead of a get_document per result (the N+1 the audit noted);
+            # behavior is unchanged (same values, same sort keys).
+            added = self.storage.added_at_map([r.doc_id for r in results])
+            return sorted(results, key=lambda r: (-added.get(r.doc_id, 0.0), r.doc_id))
         return results
 
     def _merge_results(

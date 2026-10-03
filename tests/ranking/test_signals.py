@@ -79,7 +79,8 @@ class TestTitleMatch(_Base):
 
 
 class TestUrlMatch(_Base):
-    def test_normal(self):
+    def test_url_tokens_overlap(self):
+        # (renamed: a duplicate `test_normal` here shadowed TestTitleMatch's)
         doc = self.add_doc("u", "body", metadata={"url": "https://x.com/python/tutorial"})
         self.assertEqual(signals.compute_url_match(doc, "python tutorial", self.ctx), 1.0)
 
@@ -87,7 +88,9 @@ class TestUrlMatch(_Base):
         doc = self.add_doc("u", "body")
         self.assertEqual(signals.compute_url_match(doc, "python", self.ctx), 0.0)
 
-    def test_none_doc_no_crash(self):
+    def test_url_none_doc_no_crash(self):
+        # (renamed: a duplicate `test_none_doc_no_crash` here shadowed the
+        # TestTitleMatch one — both must run)
         self.assertEqual(signals.compute_url_match(None, "python", self.ctx), 0.0)
 
 

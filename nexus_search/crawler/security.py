@@ -82,10 +82,29 @@ def validate_url(url: str) -> bool:
 # getaddrinfo() call for that exact host, for the lifetime of the
 # connection attempt, returns those same addresses instead of asking DNS
 # again.
+#
+# Installation is EXPLICIT (no import side effects): crawler entry points
+# call install_dns_pinning() once. Tests that exercise pinning call it in
+# setUp. Non-crawler importers of this module get no global socket patch.
 # ---------------------------------------------------------------------------
 
 _tls = threading.local()
 _real_getaddrinfo = socket.getaddrinfo
+_installed = False
+_install_lock = threading.Lock()
+
+
+def install_dns_pinning() -> None:
+    """Patch socket.getaddrinfo with the pin-aware resolver (idempotent).
+    Safe process-wide: the patched function only changes behavior for a
+    hostname the CURRENT thread has explicitly pinned (thread-local), so
+    concurrent crawler workers never affect each other's DNS lookups."""
+    global _installed
+    with _install_lock:
+        if _installed:
+            return
+        socket.getaddrinfo = _pinned_getaddrinfo
+        _installed = True
 
 
 def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
@@ -112,10 +131,8 @@ def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     return _real_getaddrinfo(host, port, family, type, proto, flags)
 
 
-# Installed once, process-wide. Safe: it only changes behavior for a
-# hostname the CURRENT thread has explicitly pinned (thread-local), so
-# concurrent crawler workers never affect each other's DNS lookups.
-socket.getaddrinfo = _pinned_getaddrinfo
+# (installation is EXPLICIT - see install_dns_pinning above; the crawler
+# pipeline and the pinning tests call it, ordinary importers do not)
 
 
 @contextlib.contextmanager

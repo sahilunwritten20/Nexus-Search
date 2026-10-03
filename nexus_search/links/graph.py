@@ -309,46 +309,85 @@ class LinkGraph:
             return True
 
     def record_edges(self, edges) -> int:
-        """Bulk record for trusted backfills/tests (self-links dropped; the
-        anti-flood per-page/domain-pair caps are enforced by record_edge,
-        the path live crawls use). One commit per 5,000 rows — a per-edge
-        commit would make big crawls commit-bound. Returns rows inserted.
-        Endpoints are normalized through the same choke point as
-        record_edge (BUG-02) — bulk callers cannot bypass identity."""
+        """Bulk record for trusted backfills/tests and the graph benchmark.
+        Shares record_edge's contract EXACTLY (BUG-09): normalization at the
+        choke point, per-source-page and per-domain-pair caps (running
+        counters + one DB COUNT per distinct page/pair), and recrawl upsert
+        semantics that PRESERVE first_seen. One commit per 5,000 rows — a
+        per-edge commit would make big crawls commit-bound. Returns rows
+        written."""
         if isinstance(edges, (str, bytes)):
             raise TypeError("edges must be (from_url, to_url, anchor, rel) rows")
         now = time.time()
-        inserted, pending = 0, []
+        # normalize + in-batch dedup: the LAST (anchor, rel) observation wins
+        normalized: dict[tuple[str, str], tuple[str, str]] = {}
+        for from_url, to_url, anchor_text, rel_attrs in edges:
+            pair = self._norm_pair(from_url, to_url)
+            if pair is None:
+                continue
+            normalized[pair] = (anchor_text, rel_attrs)
+
+        written = 0
         with self.lock:
-            for from_url, to_url, anchor_text, rel_attrs in edges:
-                pair = self._norm_pair(from_url, to_url)
-                if pair is None:
-                    continue
-                fn, tn = pair
-                pending.append((fn, tn, anchor_text, rel_attrs,
-                                _domain_of(fn), _domain_of(tn),
-                                1 if _domain_of(fn) == _domain_of(tn) else 0,
-                                now, now))
+            out_counts: dict[str, int] = {}
+            pair_counts: dict[tuple[str, str], int] = {}
+
+            def _out_count(url: str) -> int:
+                if url not in out_counts:
+                    out_counts[url] = self.conn.execute(
+                        "SELECT COUNT(*) FROM link_edges WHERE from_url = ?",
+                        (url,)).fetchone()[0]
+                return out_counts[url]
+
+            def _pair_count(f_dom: str, t_dom: str) -> int:
+                key = (f_dom, t_dom)
+                if key not in pair_counts:
+                    pair_counts[key] = self.conn.execute(
+                        "SELECT COUNT(*) FROM link_edges "
+                        "WHERE from_domain = ? AND to_domain = ?",
+                        key).fetchone()[0]
+                return pair_counts[key]
+
+            pending = []
+            for (fn, tn), (anchor, rel) in sorted(normalized.items()):
+                if _out_count(fn) >= MAX_EDGES_PER_SOURCE_PAGE:
+                    continue  # per-source-page cap (same rule as record_edge)
+                f_dom, t_dom = _domain_of(fn), _domain_of(tn)
+                if f_dom and t_dom and \
+                        _pair_count(f_dom, t_dom) >= MAX_EDGES_PER_DOMAIN_PAIR:
+                    continue  # per-domain-pair cap (exact-host policy)
+                pending.append((fn, tn, anchor, rel, f_dom, t_dom,
+                                1 if f_dom == t_dom else 0, now, now))
+                out_counts[fn] = _out_count(fn) + 1
+                if f_dom and t_dom:
+                    pair_counts[(f_dom, t_dom)] = _pair_count(f_dom, t_dom) + 1
                 if len(pending) >= 5000:
-                    self.conn.executemany(
-                        "INSERT OR REPLACE INTO link_edges (from_url, to_url, "
-                        "anchor_text, rel_attrs, from_domain, to_domain, "
-                        "is_internal, first_seen, last_seen) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)", pending)
-                    self.conn.commit()
-                    inserted += len(pending)
-                    pending.clear()
+                    written += self._upsert_edges(pending)
+                    pending = []
             if pending:
-                self.conn.executemany(
-                    "INSERT OR REPLACE INTO link_edges (from_url, to_url, anchor_text, "
-                    "rel_attrs, from_domain, to_domain, is_internal, "
-                    "first_seen, last_seen) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)", pending)
-                self.conn.commit()
-                inserted += len(pending)
-            if inserted:
-                self.bump_edges_version()
-        return inserted
+                written += self._upsert_edges(pending)
+        if written:
+            self.bump_edges_version()
+        return written
+
+    def _upsert_edges(self, rows: list[tuple]) -> int:
+        """One executemany + commit. ON CONFLICT refreshes anchor/rel/
+        domains/last_seen but PRESERVES first_seen — recrawl semantics,
+        not the pre-BUG-09 INSERT OR REPLACE that reset edge history."""
+        self.conn.executemany(
+            "INSERT INTO link_edges (from_url, to_url, anchor_text, rel_attrs, "
+            "from_domain, to_domain, is_internal, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(from_url, to_url) DO UPDATE SET "
+            "anchor_text = excluded.anchor_text, "
+            "rel_attrs = excluded.rel_attrs, "
+            "from_domain = excluded.from_domain, "
+            "to_domain = excluded.to_domain, "
+            "is_internal = excluded.is_internal, "
+            "last_seen = excluded.last_seen",
+            rows)
+        self.conn.commit()
+        return len(rows)
 
     # -------------------------------------------------------------- reads
 
