@@ -26,6 +26,10 @@ class _Handler(BaseHTTPRequestHandler):
 class TestDnsPinning(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # explicit install (WP6): importing security.py patches nothing;
+        # these tests exercise the pinned resolver, so install it once
+        # (idempotent, process-wide — same call the crawler pipeline makes)
+        security.install_dns_pinning()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.port = cls.server.server_port
@@ -55,6 +59,22 @@ class TestDnsPinning(unittest.TestCase):
         with security.pinned_resolution("pinme.test", addrs):
             result = socket.getaddrinfo("pinme.test", 8080, 0, socket.SOCK_STREAM)
         self.assertEqual([(r[1], r[4]) for r in result], [(socket.SOCK_STREAM, ("93.184.216.34", 8080))])
+
+    def test_type_zero_pinned_entry_serves_any_requested_type(self):
+        """Windows getaddrinfo(host, service=None) yields type=0 entries
+        (found live in WP9's real-web crawl: the strict type filter dropped
+        every pinned entry and requests failed with 'no pinned address').
+        A type-0 pin must satisfy a SOCK_STREAM request."""
+        addrs = [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+        with security.pinned_resolution("zero-type.test", addrs):
+            result = socket.getaddrinfo("zero-type.test", 443, 0, socket.SOCK_STREAM)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1], socket.SOCK_STREAM)
+        self.assertEqual(result[0][4], ("93.184.216.34", 443))
+        # and a datagram request on the same pin is served too
+        with security.pinned_resolution("zero-type.test", addrs):
+            dgram = socket.getaddrinfo("zero-type.test", 53, 0, socket.SOCK_DGRAM)
+        self.assertEqual(dgram[0][1], socket.SOCK_DGRAM)
 
     def test_real_fetch_works_with_pinning_enabled(self):
         # 127.0.0.1 plays "a public site" here; only the public/private check is relaxed.

@@ -118,9 +118,18 @@ def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
                 return _real_getaddrinfo(host, port, family, type, proto, flags)
             result = []
             for fam, stype, prot, canon, sa in pinned:
-                if (family and fam != family) or (type and stype != type):
+                if family and fam != family:
                     continue
-                entry = (fam, stype, prot, canon, (sa[0], port_num) + tuple(sa[2:]))
+                # A pinned entry with a CONCRETE socket type must match the
+                # request. But Windows getaddrinfo(host, service=None) yields
+                # type=0 entries (observed live: the real-web crawl pinned
+                # type-0 entries, then every SOCK_STREAM request hit
+                # "no pinned address"). A type-0 entry satisfies any
+                # requested type — proto 0 means "default for family/type".
+                if type and stype and stype != type:
+                    continue
+                out_type = type or stype or socket.SOCK_STREAM
+                entry = (fam, out_type, prot, canon, (sa[0], port_num) + tuple(sa[2:]))
                 if entry not in result:
                     result.append(entry)
             if not result:
