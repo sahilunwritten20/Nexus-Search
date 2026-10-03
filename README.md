@@ -47,7 +47,15 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_AUTHORITY_WEIGHT` | `0.0` | Phase 6: link-graph authority weight in rerank (0=inert; 0.1–0.3 typical). Rollback = set to 0 + restart |
 | `NEXUS_POPULARITY_WEIGHT` | `0.0` | Phase 6: link-graph popularity weight in rerank. Same rollback |
 | `NEXUS_RATE_LIMIT` | `60/minute`  | Per-client limit on `/search` and write endpoints (`0` disables) |
-| `NEXUS_EMBEDDER` | *(auto)*       | `hash:384` (offline) or `st:all-MiniLM-L6-v2` |
+| `NEXUS_TRUST_PROXY` | *(off)*     | `N`: rate-limit key on the Nth-from-right `X-Forwarded-For` entry (reverse-proxy deployments); off = spoofed XFF ignored |
+| `NEXUS_ANCHOR_WEIGHT` | `0.0`     | Phase 6: inbound-anchor/query-overlap weight in rerank (same rollout/rollback as authority) |
+| `NEXUS_AUTHORITY_RECOMPUTE_INTERVAL` | `0` | Seconds between background PageRank passes (`0` = off; CLI recompute unaffected) |
+| `NEXUS_DOMAIN_AUTHORITY_FALLBACK` | `0` | `1`: unknown URLs fall back to their domain's aggregate score |
+| `NEXUS_RERANK_WEIGHTS` | *(unset)*    | JSON object overriding any subset of rerank signal weights, clamped [0,1] (e.g. `{"title_match":0.3}`) |
+| `NEXUS_SPELL_MAX_TERM_LEN` etc. | see `.env.example` | Spell-correction bounds (BUG-01): term 20, dist-2 12, 8 corrections/query, 4000-comparison budget |
+| `NEXUS_MAX_QUERY_TERMS` | `128`       | Max positive terms per query (extras dropped deterministically) |
+| `NEXUS_MAX_CANDIDATES` | `1000`       | Fused-pool hard bound; `offset+top_k` past it is a clear 400 |
+| `NEXUS_EMBEDDER` | `hash:384`  | offline-safe default; set `st:sentence-transformers/all-MiniLM-L6-v2` for real semantics (model pre-baked in the image) |
 | `NEXUS_MAX_QUERY_TERMS` | `128`  | Max positive terms per query; extras dropped deterministically (BUG-01) |
 | `NEXUS_SPELL_*` | see `.env.example` | Spell-correction bounds: term len 20, dist-2 len 12, 8 corrections, 4000-comparison budget (BUG-01) |
 | `NEXUS_MAX_CANDIDATES` | `1000` | Hard bound on a fused candidate pool; `offset+top_k` past it is a clear 400 (BUG-03/04) |
@@ -82,6 +90,12 @@ python -m nexus_search.crawler.cli authority --show https://example.com
 # Graph stats
 python -m nexus_search.crawler.cli authority
 ```
+Graph ops: `python -m nexus_search.crawler.cli dead-links|orphans --db $NEXUS_DB`
+(read-only reports). Backups: `python -m nexus_search.core.backup --db $NEXUS_DB
+--out backups/ --with-frontier` (consistent snapshot under WAL; restore = copy
+back while the writer is stopped). A/B log retention:
+`python -m nexus_search.ranking.ab purge --db $NEXUS_DB --days 30`.
+
 **Rollout:** set `NEXUS_AUTHORITY_WEIGHT=0.2` (and optionally
 `NEXUS_POPULARITY_WEIGHT=0.1`) + restart. **Rollback:** set both to 0 +
 restart — the signal is additive and disappears immediately (no reindex
@@ -107,9 +121,9 @@ Operations notes:
 Test suite: **633 passed, 4 skipped** (offline; sentence-transformers cases
 self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
 
-**Embedder default is lexical, not semantic.** The default
-`NEXUS_EMBEDDER=hash:384` (also the docker-compose default) is a deterministic
-offline hasher — hybrid mode works and degrades honestly, but it is NOT
+**Embedder default is lexical, not semantic.** `NEXUS_EMBEDDER` now
+defaults to `hash:384` in code, compose AND this table (they agree since the
+audit): a deterministic offline hasher — hybrid mode works and degrades honestly, but it is NOT
 sentence-transformer semantics. For real semantic vectors set
 `NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2`; the Docker image
 pre-bakes this model, so no HuggingFace egress is needed on first boot.
@@ -395,36 +409,50 @@ interfaces awaiting Phase 6/7 data sources.
 
 # Phase 6 --- Link Intelligence
 
--   Outgoing Link Extraction
--   Source URL Storage
--   Destination URL Storage
--   Anchor Text Storage
--   Link Metadata
--   Internal Links
--   External Links
--   URL Graph
--   Graph Storage
--   Graph Traversal
--   Connected Components
--   Dead-Link Detection
--   Orphan-Page Detection
--   PageRank
--   Iterative PageRank
--   Page Authority
--   Domain Authority Signals
--   Link Weight Calculation
--   Anchor-Text Relevance
--   Link Quality Signals
--   Spam/Link Manipulation Detection
--   Link Score in Ranking
--   Configurable Authority Weight
--   Ranking Evaluation
--   Before/After PageRank Benchmark
--   Incremental Graph Updates
--   Background PageRank
--   Graph Caching
--   Large Graph Benchmark
--   Failure Recovery
+Implemented (verified by tests — status markers added by the audit
+remediation; every bullet below matches shipped code):
+
+-   [x] Outgoing Link Extraction
+-   [x] Source URL Storage
+-   [x] Destination URL Storage (normalized: fragments/utm/case/ports
+      collapse — one node per page)
+-   [x] Anchor Text Storage
+-   [x] Link Metadata (rel flags, first/last seen)
+-   [x] Internal Links (is_internal: same exact host, migration-backfilled)
+-   [x] External Links (per-page internal/external counts)
+-   [x] URL Graph
+-   [x] Graph Storage (versioned migrations v1-v3, WAL, anti-flood caps)
+-   [x] Graph Traversal (neighbors out|in|both, bounded iterative BFS,
+      key-gated GET /graph/neighbors)
+-   [x] Connected Components (iterative union-find, deterministic ids)
+-   [x] Dead-Link Detection (frontier 4xx cross-ref; CLI dead-links; never fetches)
+-   [x] Orphan-Page Detection (CLI orphans; seeds excluded)
+-   [x] PageRank
+-   [x] Iterative PageRank (d=0.85, dangling redistribution, tol 1e-6)
+-   [x] Page Authority
+-   [x] Domain Authority Signals (PR-weighted aggregate; fallback behind
+      NEXUS_DOMAIN_AUTHORITY_FALLBACK, default off)
+-   [x] Link Weight Calculation (nofollow zero-pass, reciprocal 0.25)
+-   [x] Anchor-Text Relevance (url_anchors aggregation; NEXUS_ANCHOR_WEIGHT,
+      default 0.0, zero-weight identity test-pinned)
+-   [x] Link Quality Signals (nofollow/sponsored/ugc + reciprocal discount)
+-   [x] Spam/Link Manipulation Detection (heuristics: caps, reciprocal
+      discount, domain-diversity weighting; NO ML classifier — documented
+      limit, distributed farms can still defeat it)
+-   [x] Link Score in Ranking
+-   [x] Configurable Authority Weight
+-   [x] Ranking Evaluation (evaluation/authority_benchmark.py)
+-   [x] Before/After PageRank Benchmark (mission shape: NDCG@10
+      0.541 -> 1.000 with weights on)
+-   [x] Incremental Graph Updates (edge-set version counter; recompute
+      skipped when nothing changed; anchor/rel changes count)
+-   [x] Background PageRank (NEXUS_AUTHORITY_RECOMPUTE_INTERVAL, default
+      off; overlap-guarded worker, clean lifespan shutdown)
+-   [x] Graph Caching (in-memory authority read cache, invalidated on
+      in-process swap + cross-process data_version polling)
+-   [x] Large Graph Benchmark (10k pages / 100k edges: recompute 3.2s
+      against the committed 30s bound; smoke mode in CI)
+-   [x] Failure Recovery (shadow-swap scores; concurrent-writes test)
 
 ------------------------------------------------------------------------
 

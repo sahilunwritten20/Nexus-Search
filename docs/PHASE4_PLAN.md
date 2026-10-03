@@ -1,3 +1,11 @@
+> **Historical plan — superseded internals.** This document is the
+> Phase 4 design as written before implementation. The shipped system
+> differs deliberately: one `doc_vectors` table replaced the planned
+> `embeddings`+`vectors` pair, RRF fusion was added alongside weighted
+> fusion, and the debug surface became the key-gated POST /search/explain
+> plus /search?debug=true. Current design: nexus_search/core/ and
+> docs/CHANGELOG_UPGRADE.md.
+
 # Phase 4 — Hybrid Search Implementation Plan
 
 ## Architecture Overview

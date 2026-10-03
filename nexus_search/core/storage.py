@@ -245,6 +245,20 @@ class Storage:
         with self.lock:
             return [r[0] for r in self.conn.execute("SELECT doc_id FROM documents ORDER BY doc_id")]
 
+    def matching_doc_count(self, terms: list[str]) -> int:
+        """COUNT(DISTINCT doc_id) over any term — the BM25 candidate-pool
+        upper bound for a query, from ONE indexed IN query. Used to size
+        the hybrid pool before the first retrieval pass (the scale
+        benchmark showed the old fetch-then-refetch paid the whole
+        candidate scan twice)."""
+        if not terms:
+            return 0
+        with self.lock:
+            placeholders = ",".join("?" for _ in terms)
+            return self.conn.execute(
+                f"SELECT COUNT(DISTINCT doc_id) FROM postings "
+                f"WHERE term IN ({placeholders})", terms).fetchone()[0]
+
     def added_at_map(self, doc_ids: list[str]) -> dict[str, float]:
         """added_at for many docs in ONE query — the freshness sort fetches
         the whole candidate pool at once (per-doc get_document was the N+1).

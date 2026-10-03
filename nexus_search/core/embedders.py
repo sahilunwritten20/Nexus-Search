@@ -236,9 +236,12 @@ def get_embedder() -> Embedder:
     """Get the configured embedder instance (singleton).
     
     Configuration via NEXUS_EMBEDDER env var:
-    - "hash[:dim]" - HashEmbedder (default dim=384)
-    - "st:model_name" - SentenceTransformerEmbedder
-    Default: "st:sentence-transformers/all-MiniLM-L6-v2"
+    - "hash[:dim]" - HashEmbedder (offline, deterministic, LEXICAL)
+    - "st:model_name" - SentenceTransformerEmbedder (real semantics)
+    Default: "hash:384" — an offline-safe first boot (no surprise model
+    download, no surprise CPU/GPU cost). Operators who want real semantic
+    vectors set NEXUS_EMBEDDER=st:... explicitly; the Docker image pre-bakes
+    the default model so that switch needs no network.
     """
     global _embedder_instance
     if _embedder_instance is not None:
@@ -248,7 +251,7 @@ def get_embedder() -> Embedder:
         if _embedder_instance is not None:
             return _embedder_instance
         
-        config = os.environ.get("NEXUS_EMBEDDER", "st:sentence-transformers/all-MiniLM-L6-v2")
+        config = os.environ.get("NEXUS_EMBEDDER", "hash:384")
         
         if config.startswith("hash"):
             if ":" in config:

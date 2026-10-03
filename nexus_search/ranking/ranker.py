@@ -58,7 +58,14 @@ class RankingWeights:
         ship OFF (0.0) until an operator opts in after evaluating uplift —
         NEXUS_AUTHORITY_WEIGHT / NEXUS_POPULARITY_WEIGHT /
         NEXUS_ANCHOR_WEIGHT / NEXUS_RERANK_WEIGHT_CLICK, each clamped to
-        [0,1] so a fat-fingered env value can't zero the whole ranking score."""
+        [0,1] so a fat-fingered env value can't zero the whole ranking score.
+
+        NEXUS_RERANK_WEIGHTS (optional) overrides ANY subset of the signal
+        weights as a JSON object, e.g. {"title_match": 0.3, "freshness": 0}.
+        Unknown keys and non-numeric values are logged and ignored — never a
+        boot failure — and every value clamps to [0,1]. When unset (the
+        default) nothing changes:         constructor defaults apply."""
+        import json
         import os
         weights = cls()
         for env, field_name in (("NEXUS_AUTHORITY_WEIGHT", "source_authority"),
@@ -71,12 +78,40 @@ class RankingWeights:
             try:
                 value = float(raw)
             except ValueError:
-                logger.warning("%s=%r is not a float; left at 0.0", env, raw)
+                logger.warning("%s=%r is not a float; left at default", env, raw)
                 continue
             clamped = max(0.0, min(1.0, value))
             if clamped != value:
                 logger.warning("%s=%r clamped to %.2f", env, raw, clamped)
             setattr(weights, field_name, clamped)
+        raw = (os.environ.get("NEXUS_RERANK_WEIGHTS") or "").strip()
+        if raw:
+            try:
+                overrides = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                logger.warning("NEXUS_RERANK_WEIGHTS is not valid JSON (%s); "
+                                "constructor defaults apply", exc)
+                overrides = None
+            if isinstance(overrides, dict):
+                for key, value in overrides.items():
+                    if key not in weights.__dataclass_fields__:
+                        logger.warning("NEXUS_RERANK_WEIGHTS: unknown signal %r "
+                                       "ignored", key)
+                        continue
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        logger.warning("NEXUS_RERANK_WEIGHTS: %r=%r is not a "
+                                       "float; ignored", key, value)
+                        continue
+                    clamped = max(0.0, min(1.0, numeric))
+                    if clamped != numeric:
+                        logger.warning("NEXUS_RERANK_WEIGHTS: %r clamped to %.2f",
+                                       key, clamped)
+                    setattr(weights, key, clamped)
+            elif overrides is not None:
+                logger.warning("NEXUS_RERANK_WEIGHTS must be a JSON object; "
+                                "constructor defaults apply")
         return weights
 
 

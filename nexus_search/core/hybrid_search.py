@@ -538,10 +538,16 @@ class HybridSearch:
         # Pool stability (found by the WP3 walk test): a pool that grows with
         # `offset` re-ranks the boundary between requests — pages overlapped
         # (120 fetched, 95 unique). The pool must be a function of the QUERY,
-        # not the page: once BM25 reports the true match count, the pool is
-        # grown to cover it (bounded by NEXUS_MAX_CANDIDATES) and refetched
-        # once, so every page of this query ranks over the SAME candidate set.
+        # not the page. Size it ONCE: a cheap indexed COUNT over the query's
+        # terms gives the match-set upper bound (scale benchmark showed the
+        # fetch-then-refetch variant paid the candidate scan twice); the
+        # exact filtered total still comes from the retrieval pass, and the
+        # growth safety net below stays for any pre-count/filtered mismatch.
         pool_k = self._candidate_k(top_k, candidates, offset)
+        if parsed.terms:
+            rough_total = self.storage.matching_doc_count(list(set(parsed.terms)))
+            if rough_total > pool_k:
+                pool_k = min(rough_total, max_candidates())
         bm25_results = {}
         bm25_total = 0
         if w_bm25 > 0:

@@ -182,11 +182,19 @@ class BM25Search:
             # byte-identical (pinned by tests/golden).
             postings_by_term = self.storage.postings_for_terms(list(term_set))
             df_by_term = self.storage.document_frequencies(list(term_set))
+            # One batched document fetch for every candidate id (the scale
+            # benchmark showed the per-doc get_document loop was the BM25
+            # cost at 10K docs). The per-request dict cache stays for the
+            # phrase/title/token gates below.
+            candidate_ids = {doc_id
+                             for rows in postings_by_term.values()
+                             for doc_id, _tf in rows}
+            docs_by_id = self.storage.get_documents(list(candidate_ids))
             for term in term_set:
                 n_t = df_by_term.get(term, 0)
                 idf = math.log((n_docs - n_t + 0.5) / (n_t + 0.5) + 1)
                 for doc_id, tf in postings_by_term.get(term, ()):
-                    doc = get(doc_id)
+                    doc = docs_by_id.get(doc_id)
                     if doc is None or not matches_filters(doc, parsed.filters, parsed.not_filters):
                         continue
                     norm = 1 - self.b + self.b * (doc.length / avg_len if avg_len else 1)

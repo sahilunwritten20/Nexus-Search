@@ -26,6 +26,20 @@ jobs:
           NEXUS_EMBEDDER: hash:384
         run: python -m pytest -q
 
+      - name: Lint - no duplicate test names (BUG-13 class)
+        run: python scripts/dev/check_duplicate_tests.py
+
+      - name: Lint - env vars documented in .env.example
+        run: python scripts/dev/check_env_docs.py
+
+      - name: Graph benchmark smoke (reduced mode)
+        env:
+          NEXUS_GRAPH_BENCH_SMOKE: "1"
+        run: python -m nexus_search.evaluation.graph_benchmark
+
+      - name: Authority on/off benchmark
+        run: python -m nexus_search.evaluation.authority_benchmark
+
   docker:
     runs-on: ubuntu-latest
     needs: test
