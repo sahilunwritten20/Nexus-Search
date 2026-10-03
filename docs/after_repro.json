@@ -1,0 +1,25 @@
+{
+  "ingest": {
+    "record_edge_1000_edges_s": 2.42,
+    "record_edge_250_edges_s": 0.77,
+    "record_edge_500_edges_s": 1.16,
+    "record_edges_10k_s": 0.62
+  },
+  "junk_query": {
+    "1689chars_s": 0.006,
+    "2000chars_s": 0.005,
+    "229chars_s": 0.002,
+    "629chars_s": 0.002
+  },
+  "pagination": {
+    "offset50_results": 50,
+    "offset50_total": 120,
+    "page1_results": 50,
+    "topk100_results": 100
+  },
+  "url_variants": {
+    "authority": 0.7,
+    "authority_found": true,
+    "edges_stored": 4
+  }
+}

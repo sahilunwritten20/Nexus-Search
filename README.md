@@ -118,8 +118,11 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **633 passed, 4 skipped** (offline; sentence-transformers cases
-self-skip unless `NEXUS_RUN_MODEL_TESTS=1`). Run: `python -m pytest -q`.
+Test suite: **760 passed, 7 skipped** offline (hash embedder; skips are
+model/benchmark-gated: set `NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM
+for **765 passed, 2 skipped**). CI additionally runs the graph-benchmark
+smoke, the authority on/off benchmark, the duplicate-test-name lint and the
+env-var documentation check. Run: `python -m pytest -q`.
 
 **Embedder default is lexical, not semantic.** `NEXUS_EMBEDDER` now
 defaults to `hash:384` in code, compose AND this table (they agree since the
