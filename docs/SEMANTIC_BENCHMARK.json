@@ -1,0 +1,251 @@
+{
+  "dev_queries": 45,
+  "docs": 168,
+  "k": 10,
+  "no_answer_top1_scores": {
+    "hybrid-rrf": [
+      0.026,
+      0.032
+    ],
+    "keyword": [
+      5.365,
+      9.072
+    ],
+    "semantic-hash": [
+      5.365,
+      9.072
+    ]
+  },
+  "per_category": {
+    "hybrid-rrf": {
+      "exact": {
+        "mrr": 1.0,
+        "ndcg@10": 0.9403,
+        "precision@10": 0.14,
+        "recall@10": 0.95
+      },
+      "multi": {
+        "mrr": 0.5186,
+        "ndcg@10": 0.4218,
+        "precision@10": 0.12,
+        "recall@10": 0.6
+      },
+      "no-answer": {
+        "mrr": 0.0,
+        "ndcg@10": 1.0,
+        "precision@10": 0.0,
+        "recall@10": 1.0
+      },
+      "paraphrase": {
+        "mrr": 0.6222,
+        "ndcg@10": 0.4969,
+        "precision@10": 0.16,
+        "recall@10": 0.8
+      },
+      "synonym": {
+        "mrr": 0.7,
+        "ndcg@10": 0.6119,
+        "precision@10": 0.14,
+        "recall@10": 0.7
+      },
+      "typo": {
+        "mrr": 0.4,
+        "ndcg@10": 0.0524,
+        "precision@10": 0.04,
+        "recall@10": 0.2
+      }
+    },
+    "keyword": {
+      "exact": {
+        "mrr": 0.9,
+        "ndcg@10": 0.9041,
+        "precision@10": 0.12,
+        "recall@10": 0.85
+      },
+      "multi": {
+        "mrr": 0.69,
+        "ndcg@10": 0.6558,
+        "precision@10": 0.18,
+        "recall@10": 0.9
+      },
+      "no-answer": {
+        "mrr": 0.0,
+        "ndcg@10": 1.0,
+        "precision@10": 0.0,
+        "recall@10": 1.0
+      },
+      "paraphrase": {
+        "mrr": 0.3056,
+        "ndcg@10": 0.3284,
+        "precision@10": 0.1,
+        "recall@10": 0.5
+      },
+      "synonym": {
+        "mrr": 0.8,
+        "ndcg@10": 0.6247,
+        "precision@10": 0.12,
+        "recall@10": 0.6
+      },
+      "typo": {
+        "mrr": 0.0,
+        "ndcg@10": 0.0,
+        "precision@10": 0.0,
+        "recall@10": 0.0
+      }
+    },
+    "semantic-hash": {
+      "exact": {
+        "mrr": 1.0,
+        "ndcg@10": 0.98,
+        "precision@10": 0.13,
+        "recall@10": 0.9
+      },
+      "multi": {
+        "mrr": 0.6,
+        "ndcg@10": 0.5814,
+        "precision@10": 0.16,
+        "recall@10": 0.8
+      },
+      "no-answer": {
+        "mrr": 0.0,
+        "ndcg@10": 1.0,
+        "precision@10": 0.0,
+        "recall@10": 1.0
+      },
+      "paraphrase": {
+        "mrr": 0.2833,
+        "ndcg@10": 0.3511,
+        "precision@10": 0.1,
+        "recall@10": 0.5
+      },
+      "synonym": {
+        "mrr": 0.8,
+        "ndcg@10": 0.7149,
+        "precision@10": 0.12,
+        "recall@10": 0.6
+      },
+      "typo": {
+        "mrr": 0.5333,
+        "ndcg@10": 0.4303,
+        "precision@10": 0.1,
+        "recall@10": 0.5
+      }
+    },
+    "semantic-st": {
+      "exact": {
+        "mrr": 1.0,
+        "ndcg@10": 0.9661,
+        "precision@10": 0.15,
+        "recall@10": 1.0
+      },
+      "multi": {
+        "mrr": 0.3952,
+        "ndcg@10": 0.3459,
+        "precision@10": 0.1,
+        "recall@10": 0.5
+      },
+      "no-answer": {
+        "mrr": 0.0,
+        "ndcg@10": 1.0,
+        "precision@10": 0.0,
+        "recall@10": 1.0
+      },
+      "paraphrase": {
+        "mrr": 0.9,
+        "ndcg@10": 0.6248,
+        "precision@10": 0.16,
+        "recall@10": 0.8
+      },
+      "synonym": {
+        "mrr": 1.0,
+        "ndcg@10": 0.8691,
+        "precision@10": 0.2,
+        "recall@10": 1.0
+      },
+      "typo": {
+        "mrr": 0.4,
+        "ndcg@10": 0.0524,
+        "precision@10": 0.04,
+        "recall@10": 0.2
+      }
+    }
+  },
+  "queries_total": 77,
+  "sanity": {
+    "exact_not_hurt_by_hybrid": true,
+    "hybrid_not_below_keyword_overall": true,
+    "st_beats_hash_on_paraphrase": true
+  },
+  "significance": {
+    "hybrid_vs_keyword_ndcg10_ci95": [
+      -0.0592,
+      0.0681
+    ],
+    "st_vs_hash_ndcg10_ci95": [
+      -0.1593,
+      0.0974
+    ]
+  },
+  "split_seed": 20260101,
+  "st_available": true,
+  "systems": {
+    "hybrid-rrf": {
+      "latency_p50_ms": 33.6,
+      "latency_p95_ms": 41.1,
+      "mrr": 0.6626,
+      "ndcg@10": 0.6037,
+      "precision@10": 0.1156,
+      "recall@10": 0.7188
+    },
+    "hybrid-rrf+rerank": {
+      "latency_p50_ms": 6.8,
+      "latency_p95_ms": 13.8,
+      "mrr": 0.6332,
+      "ndcg@10": 0.5927,
+      "precision@10": 0.1156,
+      "recall@10": 0.7188
+    },
+    "hybrid-rrf+understanding": {
+      "latency_p50_ms": 36.0,
+      "latency_p95_ms": 85.6,
+      "mrr": 0.6722,
+      "ndcg@10": 0.6613,
+      "precision@10": 0.1188,
+      "recall@10": 0.7344
+    },
+    "keyword": {
+      "latency_p50_ms": 1.0,
+      "latency_p95_ms": 3.3,
+      "mrr": 0.5618,
+      "ndcg@10": 0.5964,
+      "precision@10": 0.1,
+      "recall@10": 0.6406
+    },
+    "keyword+understanding": {
+      "latency_p50_ms": 6.0,
+      "latency_p95_ms": 39.3,
+      "mrr": 0.6384,
+      "ndcg@10": 0.6783,
+      "precision@10": 0.1063,
+      "recall@10": 0.6719
+    },
+    "semantic-hash": {
+      "latency_p50_ms": 3.7,
+      "latency_p95_ms": 8.6,
+      "mrr": 0.6589,
+      "ndcg@10": 0.6934,
+      "precision@10": 0.1156,
+      "recall@10": 0.7188
+    },
+    "semantic-st": {
+      "latency_p50_ms": 4.6,
+      "latency_p95_ms": 9.0,
+      "mrr": 0.7336,
+      "ndcg@10": 0.6601,
+      "precision@10": 0.125,
+      "recall@10": 0.7656
+    }
+  },
+  "test_queries": 32,
+  "vector_coverage": 1.0
+}
