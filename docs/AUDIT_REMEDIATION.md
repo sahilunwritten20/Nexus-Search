@@ -336,3 +336,60 @@ outbound network available; used by WP9.
 - **Web-scale authority quality**: heuristics are validated on synthetic
   graphs + the real sandbox crawl, not against production spam farms
   (none exists to validate on) — stated in SPEC.md.
+
+## WP11 — Phase-7 readiness hardening (STEP 0 audit + P0/P1/P2 fixes)
+
+Scope: read-only audit of the modules NOT covered by WP0-WP10
+(`core/hybrid_search.py`, `core/query_parser.py`, `ranking/*`,
+`crawler/frontier.py`+`pipeline.py`+`cli.py`, OOXML/PDF connectors,
+`ingestion/pipeline.py`+`dedup.py`+`failures.py`, `core/reindex.py`,
+`core/backup.py`, `core/migrations.py`), then test-first fixes for the
+task-listed P0/P1/P2 items and every confirmed P0/P1 audit finding.
+
+### STEP 0 — audit report (read-only; no code changed)
+
+Baseline at audit time: `760 passed, 7 skipped` (offline, Python 3.14.7,
+Windows 11). Findings below; "task item" = already on the P0/P1/P2 work
+list, "new" = found by this audit pass.
+
+| Sev | Where | Finding / repro | Fix | Status |
+|---|---|---|---|---|
+| P0 | core/api.py:290 | `_READ_AUTH` built from `require_api_key` defined 4 lines LATER; fresh process + `NEXUS_REQUIRE_AUTH_FOR_READS=1` -> `NameError` at import (repro'd in a subprocess: `NameError: name 'require_api_key' is not defined`; the reload-based test masks it). | task item P0-1 | fixed (P0-1) |
+| P0 | core/api.py:249 | `_rate_limit_key` buckets by sha256 of ANY `X-API-Key` value; rotating random keys = fresh bucket per request = unlimited `/search` budget from one IP. | task item P0-3 | fixed (P0-3) |
+| P0 | ingestion/connectors/files.py:28 | `_detect_encoding` trusts charset-normalizer's first guess; on 3.5.1 (pinned!), "Café"(cp1252) -> `utf_16_be`, "São Paulo" -> `big5` (repro'd); on 3.4.x the audit found `mac_latin2` variants. Short-sample guesses are luck, not detection. | task item P0-4 | fixed (P0-4) |
+| P0 | .github/workflows/test.yml | Task said "deleted in working tree". ACTUAL state: tree clean, file tracked and identical to origin/main; GitHub default branch shows the FULL tree (workflows, docs/, Dockerfile, compose, scripts/dev, automation/). The "smaller tree" snapshot was stale. Remaining: push WP11 and confirm the run is green. | task item P0-2 | verified + CI watched (P0-2) |
+| P1 | links/authority.py:132-141 | Outflow normalization uses DISCOUNTED weights (`out` sums `wts`), so scaling every edge of a closed clique by 0.25 cancels: repro'd — 4-site clique + 1 honest inlink gives IDENTICAL PageRank at RECIPROCAL_FACTOR 1.0 vs 0.25. Discount is a no-op exactly where it matters (closed farms). | task item P1-5 | fixed (P1-5) |
+| P1 | core/bm25.py:_highlight | `highlight=true` emits content HTML unescaped: repro'd `hello <img src=x onerror=alert(1)> world` -> `<mark>hello</mark> <img src=x onerror=alert(1)> world`. Stored-XSS for any UI that renders snippets as HTML. | task item P1-6 | fixed (P1-6) |
+| P1 | crawler/fetcher.py:_render_with_browser | Playwright navigates itself: subresource/DNS/redirect validation bypassed entirely; `render_js` reachable via constructor with no env gate. | task item P1-7 | fixed (P1-7) |
+| P1 | ingestion/connectors/files.py (docx/xlsx/pptx readers) | NEW: zip-container readers (docx/xlsx/pptx) have NO decompressed-size guard. `NEXUS_MAX_INGEST_BYTES` caps the FILE (64 MiB), not the payload — a ~200 KiB "docx" whose XML inflates >512 MiB is fully materialized by python-docx/openpyxl/python-pptx (zip-bomb class). PDF reader also has no page-count bound ("huge pages" class). | new finding -> P1-12a | fixed (P1-12a) |
+| P2 | core/vector_store.py:284-290 | `search()` copies `_matrix` AND `_doc_ids` AND `_doc_types` AND `_languages` per query; the last two are never used for results; matrix copy is O(n·dim·4) per query. | task item P2-8 | fixed (P2-8) |
+| P2 | core/api.py:106 + core/vector_store.py:216 | API embeds synchronously per write (`EmbeddingSync(batch_size=1)`); `add()` `np.vstack`s per append -> quadratic bulk ingest; no bulk flush after `/documents/bulk`. | task item P2-9 | fixed (P2-9) |
+| P3 | crawler/pipeline.py:327 | `except Exception: pass` in `close()` — swallows real shutdown errors (e.g. frontier commit failure) silently. Pattern the audit was told to hunt. | new finding -> P1-12b | fixed (P1-12b) |
+| P3 | ingestion/connectors/files.py:58 | `except Exception: pass` in `_detect_encoding` — intentional degrade-to-utf-8 but fully silent (no log line). | fold into P0-4 | fixed (P0-4) |
+| P3 | evaluation/semantic_benchmark/runner.py:264,272 | `except Exception: pass` in benchmark cleanup paths (offline eval tool, no request path). | report only | not fixed (accepted) |
+| P3 | ranking/suggestions.py:58-95 | `related_searches` trigram fallback scans the whole vocabulary per request when the query log is empty — O(corpus vocab) CPU, bounded by index size, rate-limited endpoint. | report only | not fixed (accepted at prototype scale) |
+| P3 | core/reindex.py:52-66 | Shadow build materializes title+content of the whole corpus in RAM (snapshot dict) — CLI maintenance path, bounded by corpus size, documented. | report only | not fixed (accepted) |
+| P3 | core/models.py:29 | `/documents/bulk` worst case 500 docs x 10 MB content in one request body (uvicorn has no default body cap) — bounded by design constants but large; recommend a proxy-level body cap in deployment. | report only | not fixed (accepted) |
+| P3 | crawler/frontier.py:210 | `add()` commits per URL — per-link fsync cost during crawls, not a correctness issue (single-writer by design). | report only | not fixed (accepted) |
+| OK | core/hybrid_search.py | Fusion math, pagination bounds (`max_candidates`), fallback paths (EmbedderUnavailable vs generic, reason recorded) — clean. Candidate fetches batched; N+1s fixed in WP8. | — | — |
+| OK | core/query_parser.py | Bounded memo (512, defensive copies), term/phrase caps, boolean gate — clean. | — | — |
+| OK | ranking/{ranker,signals,features,query,ab}.py | All signals pure; spell-correction budgets (BUG-01) intact; WeakKeyDictionary vocab cache (BUG-10) intact; log parameterized + locked. | — | — |
+| OK | crawler/frontier.py (SQL/threading) | Single conn + RLock, parameterized SQL; `_ensure_column` f-strings are internal constants only. `next_batch` placeholders are `?`-only. Multi-step writes are single-transaction commits. | — | — |
+| OK | crawler/{cli,pipeline}.py (paths) | DB paths from CLI args only (operator, not remote input); UA refusal on public path; dead-letter stance intact. | — | — |
+| OK | ingestion/{pipeline,dedup,failures}.py | One shared ingest path; failures recorded AND re-raised (never swallowed); dedup locks correctly; SQLite all parameterized. | — | — |
+| OK | core/{reindex,backup,migrations}.py | Shadow-swap atomic; backup uses online API and raises on failure; migrations per-store versioned, transactional, no executescript. | — | — |
+| OK | crawler/security.py, sitemap.py, politeness.py | DNS pinning + validate_url solid (WP9); sitemap defusedxml + gzip cap; politeness fail-closed contract intact. (sitemap docstring has a stray markdown link — P3-11.) | — | — |
+
+"Before" evidence captured live on the pre-fix tree (Python 3.14.7,
+charset-normalizer 3.5.1):
+
+- P0-1 subprocess boot: `NameError: name 'require_api_key' is not defined`
+- P1-5 closed 4-clique + honest inlink: PageRank `farm0=0.257402,
+  farm1..3=0.237533` IDENTICAL at factor 1.0 and 0.25
+- P1-6: `'<mark>hello</mark> <img src=x onerror=alert(1)> world'`
+- P0-4 on pinned 3.5.1: `Café` -> `utf_16_be`, `São Paulo` -> `big5`,
+  `Café Mug` -> `utf_16_be` (mojibake); `Zürich Straße Müller` -> `cp1250`
+  (rescued by the existing cp125x fallback); long Shift-JIS -> `cp932`,
+  GBK -> `gb18030` (correct — must not regress).
+
+Per-item entries follow (one commit each).
