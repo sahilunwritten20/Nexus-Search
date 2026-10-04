@@ -1,8 +1,15 @@
 """HTTP fetcher: retries (network errors AND 429/5xx), ETag/Last-Modified,
-redirect-hop validation (SSRF), response size cap, HTTP error statuses."""
+redirect-hop validation (SSRF), response size cap, HTTP error statuses.
+
+render_js (headless-browser rendering) is an EXPLICIT opt-in behind
+NEXUS_RENDER_JS=1: a real browser navigates and loads subresources on its
+own, which is a fundamentally bigger attack surface than plain HTTP.
+See `_render_with_browser` for the protections and their residual limits.
+"""
 
 import contextlib
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable, ContextManager, Optional
@@ -11,6 +18,14 @@ from urllib.parse import urljoin
 import requests
 
 logger = logging.getLogger("nexus_search.crawler.fetcher")
+
+
+def _render_js_enabled() -> bool:
+    """NEXUS_RENDER_JS=1 unlocks the headless-browser path (P1-7). The
+    browser bypasses the plain-HTTP protections by design, so it must be
+    a conscious operator decision, never a config-file default."""
+    return (os.environ.get("NEXUS_RENDER_JS", "") or "").strip().lower() in (
+        "1", "true", "yes")
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 REDIRECT_STATUS = {301, 302, 303, 307, 308}
@@ -56,30 +71,75 @@ class Fetcher:
         self.url_validator = url_validator  # e.g. security.validate_url
         self.max_bytes = max_bytes
         self.dns_pin = dns_pin  # e.g. security.pin_dns_for_url
-        self.render_js = render_js  # opt-in headless-browser path (SPA sites)
+        self.render_js = bool(render_js)
+        if render_js and not _render_js_enabled():
+            logger.warning(
+                "render_js=True ignored: set NEXUS_RENDER_JS=1 to opt into "
+                "the headless-browser path (SSRF-hardened: every subrequest "
+                "is route-validated, but DNS stays browser-resolved)")
+            self.render_js = False
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
 
     def _render_with_browser(self, url: str) -> Optional[str]:
         """Headless-browser render for JS-heavy pages (Playwright).
 
+        SSRF protections (P1-7), in order:
+        - OPT-IN: never runs unless NEXUS_RENDER_JS=1 (constructor warns and
+          disables render_js otherwise), and only on the public path where
+          `url_validator` (validate_url) is wired.
+        - Every subrequest is intercepted with page.route("**/*") and
+          validated with the same `validate_url` as plain fetches — a page
+          cannot pull scripts/images/data from private networks.
+        - The final URL after navigation is validated too (client-side
+          redirects would otherwise be invisible).
+
+        RESIDUAL RISK (documented, accepted only behind the env gate):
+        Chromium resolves DNS on its own, so `pin_dns_for_url` CANNOT apply
+        — a DNS-rebinding server can still pass validate_url's lookup and
+        then answer the browser's second lookup from a private address.
+        Enable NEXUS_RENDER_JS only for crawls of hosts you trust, or front
+        the browser with an egress firewall.
+
         Deliberately OPTIONAL: Playwright+Chromium is a heavyweight browser,
         not a test dependency. If it isn't installed, we log the limitation
         and return None so the caller falls back to the plain HTTP body —
         honest degradation, matching the OCR path's stance (no fake DOM)."""
+        if not _render_js_enabled():  # defense in depth: the gate also
+            return None               # covers direct calls
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            logger.warning("render_js=True but playwright is not installed; "
-                           "falling back to plain HTTP GET for %s", url)
+            logger.warning("render_js requested but playwright is not "
+                           "installed; falling back to plain HTTP GET for %s",
+                           url)
             return None
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 try:
-                    page = browser.new_page(user_agent=str(self.session.headers.get("user-agent")))
+                    page = browser.new_page(
+                        user_agent=str(self.session.headers.get("user-agent")))
+
+                    def _validate_route(route):
+                        # every subrequest goes through the same SSRF gate
+                        # as the page itself
+                        target = route.request.url
+                        if self.url_validator and not self.url_validator(target):
+                            logger.warning("browser subrequest blocked "
+                                           "(SSRF): %s", target)
+                            route.abort()
+                            return
+                        route.continue_()
+
+                    page.route("**/*", _validate_route)
                     page.goto(url, timeout=int(self.timeout * 1000),
                               wait_until="networkidle")
+                    final_url = page.url
+                    if self.url_validator and not self.url_validator(final_url):
+                        logger.warning("JS render ended on a disallowed URL "
+                                       "(SSRF): %s", final_url)
+                        return None
                     return page.content()
                 finally:
                     browser.close()

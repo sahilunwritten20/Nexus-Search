@@ -56,6 +56,7 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_MAX_QUERY_TERMS` | `128`       | Max positive terms per query (extras dropped deterministically) |
 | `NEXUS_MAX_CANDIDATES` | `1000`       | Fused-pool hard bound; `offset+top_k` past it is a clear 400 |
 | `NEXUS_EMBEDDER` | `hash:384`  | offline-safe default; set `st:sentence-transformers/all-MiniLM-L6-v2` for real semantics (model pre-baked in the image) |
+| `NEXUS_RENDER_JS` | `0` | Crawler opt-in for headless-browser (Playwright) rendering of JS pages. Every subrequest + the final URL are SSRF-validated; residual DNS-rebinding risk documented in `crawler/fetcher.py` — trusted crawls only |
 | `NEXUS_MAX_QUERY_TERMS` | `128`  | Max positive terms per query; extras dropped deterministically (BUG-01) |
 | `NEXUS_SPELL_*` | see `.env.example` | Spell-correction bounds: term len 20, dist-2 len 12, 8 corrections, 4000-comparison budget (BUG-01) |
 | `NEXUS_MAX_CANDIDATES` | `1000` | Hard bound on a fused candidate pool; `offset+top_k` past it is a clear 400 (BUG-03/04) |
