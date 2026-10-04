@@ -110,18 +110,96 @@ class TestApiRateLimit(unittest.TestCase):
         self.assertEqual(r.status_code, 429)
 
     def test_limit_is_scoped_per_api_key(self):
-        # clients presenting an API key are bucketed per key; no header -> by IP
+        # P0-3 contract: only a key that VERIFIES against the configured
+        # NEXUS_API_KEY earns its own bucket. Pre-fix, ANY header value
+        # (configured or not) hashed to a fresh bucket — the very bypass
+        # the random-keys test below pins shut. This test therefore runs
+        # WITH a configured key and uses the VALID key for the bucketing
+        # claim; wrong keys fall through to the shared IP bucket.
+        saved_key = os.environ.get("NEXUS_API_KEY")
+        os.environ["NEXUS_API_KEY"] = "secret"
+        try:
+            from nexus_search.core import api
+            importlib.reload(api)
+            self.client = TestClient(api.app)
+            # the valid key gets its own bucket: 3 pass, the 4th is a 429
+            for i in range(3):
+                r = self.client.get("/search", params={"q": "x"},
+                                    headers={"X-API-Key": "secret"})
+                self.assertEqual(r.status_code, 200, f"valid-key request {i}")
+            self.assertEqual(
+                self.client.get("/search", params={"q": "x"},
+                                headers={"X-API-Key": "secret"}).status_code, 429)
+            # ...and that bucket is SEPARATE from the caller's IP bucket:
+            # a headerless request from the same client still has budget
+            self.assertEqual(self.client.get("/search", params={"q": "x"}).status_code, 200)
+            # wrong keys do NOT get their own bucket: the IP bucket is at
+            # 1/3, so two more pass and the third is a 429 regardless of
+            # which wrong value is presented
+            self.assertEqual(
+                self.client.get("/search", params={"q": "x"},
+                               headers={"X-API-Key": "wrong-a"}).status_code, 200)
+            self.assertEqual(
+                self.client.get("/search", params={"q": "x"},
+                               headers={"X-API-Key": "wrong-b"}).status_code, 200)
+            self.assertEqual(
+                self.client.get("/search", params={"q": "x"},
+                               headers={"X-API-Key": "wrong-c"}).status_code, 429)
+        finally:
+            if saved_key is None:
+                os.environ.pop("NEXUS_API_KEY", None)
+            else:
+                os.environ["NEXUS_API_KEY"] = saved_key
+            from nexus_search.core import api
+            importlib.reload(api)
+
+    def test_random_api_keys_cannot_bypass_limit(self):
+        """P0-3 (a): rotating a fresh random X-API-Key per request must NOT
+        buy a fresh rate-limit bucket — 70 requests from one IP with 70
+        different keys must still hit the limit (429 appears)."""
+        saved_limit = os.environ.get("NEXUS_RATE_LIMIT")
+        saved_key = os.environ.get("NEXUS_API_KEY")
+        os.environ["NEXUS_RATE_LIMIT"] = "60/minute"
+        os.environ["NEXUS_API_KEY"] = "secret"
+        try:
+            from nexus_search.core import api
+            importlib.reload(api)
+            self.client = TestClient(api.app)
+            statuses = [
+                self.client.get("/search", params={"q": "x"},
+                                headers={"X-API-Key": f"random-key-{i}"}).status_code
+                for i in range(70)
+            ]
+            self.assertIn(429, statuses,
+                          "rotating random keys must not bypass the IP limit")
+            self.assertLessEqual(statuses.count(429), 10)  # 60/minute => ~10
+        finally:
+            if saved_limit is None:
+                os.environ.pop("NEXUS_RATE_LIMIT", None)
+            else:
+                os.environ["NEXUS_RATE_LIMIT"] = saved_limit
+            if saved_key is None:
+                os.environ.pop("NEXUS_API_KEY", None)
+            else:
+                os.environ["NEXUS_API_KEY"] = saved_key
+            from nexus_search.core import api
+            importlib.reload(api)
+
+    def test_random_keys_ignored_when_no_api_key_configured(self):
+        """P0-3: with NEXUS_API_KEY unset the header is ignored entirely —
+        every request keys on the client IP no matter what it sends."""
+        os.environ.pop("NEXUS_API_KEY", None)  # setUp state: unset
         for i in range(3):
             r = self.client.get("/search", params={"q": "x"},
-                                headers={"X-API-Key": "client-a"})
+                                headers={"X-API-Key": f"random-{i}"})
             self.assertEqual(r.status_code, 200)
-        r = self.client.get("/search", params={"q": "x"},
-                            headers={"X-API-Key": "client-a"})
-        self.assertEqual(r.status_code, 429)
-        # a different key still has a fresh budget
-        r = self.client.get("/search", params={"q": "x"},
-                            headers={"X-API-Key": "client-b"})
-        self.assertEqual(r.status_code, 200)
+        # 3/minute exhausted for the IP bucket: any further request 429s,
+        # with or without a (meaningless) key header
+        self.assertEqual(
+            self.client.get("/search", params={"q": "x"}).status_code, 429)
+        self.assertEqual(
+            self.client.get("/search", params={"q": "x"},
+                            headers={"X-API-Key": "fresh-random"}).status_code, 429)
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")

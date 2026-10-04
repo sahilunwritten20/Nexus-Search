@@ -263,9 +263,16 @@ _RATE_LIMIT = os.environ.get("NEXUS_RATE_LIMIT", "60/minute").strip()
 
 
 def _rate_limit_key(request: Request) -> str:
+    # P0-3: a header only earns its own bucket when it VERIFIES against the
+    # configured NEXUS_API_KEY (constant-time). Pre-fix, ANY header value
+    # hashed to its own bucket, so a client rotating random values got a
+    # fresh budget per request — an unlimited /search budget from one IP.
+    # With no key configured the header is ignored entirely.
     key = request.headers.get("X-API-Key")
-    if key:
-        return "key:" + hashlib.sha256(key.encode()).hexdigest()[:24]
+    if key and _API_KEY:
+        import hmac
+        if hmac.compare_digest(key, _API_KEY):
+            return "key:" + hashlib.sha256(key.encode()).hexdigest()[:24]
     # BUG-09-hygiene / reverse proxies: behind a proxy, every client shares
     # the proxy's socket address, so raw remote-address keying lumps all
     # traffic into one bucket. NEXUS_TRUST_PROXY=N takes the client IP as
