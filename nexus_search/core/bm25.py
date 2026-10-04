@@ -81,7 +81,10 @@ class BM25Search:
     def _snippet(doc, terms: list[str], phrases: list[str], width: int = 200,
                  highlight: bool = False, mark: tuple[str, str] = ("<mark>", "</mark>")) -> str:
         """Query-focused snippet. highlight=True wraps matched terms/phrases
-        in <mark>..</mark> (configurable via `mark`). The window logic is
+        in <mark>..</mark> (configurable via `mark`) inside HTML-escaped
+        text — safe to render, untrusted content cannot inject markup
+        (P1-6). highlight=False returns the snippet as PLAIN TEXT,
+        byte-identical to the pre-highlight behavior. The window logic is
         unchanged; highlighting is applied to the chosen window, so the two
         modes can never disagree about WHERE the snippet comes from."""
         text = doc.content
@@ -104,21 +107,30 @@ class BM25Search:
 
     @staticmethod
     def _highlight(snippet: str, terms: list[str], phrases: list[str],
-                   mark: tuple[str, str]) -> str:
-        """Wrap exact (case-insensitive) phrase/term matches in the window.
+                   mark: tuple[str, str] = ("<mark>", "</mark>")) -> str:
+        """Wrap exact (case-insensitive) phrase/term matches in the window
+        and return HTML: every TEXT segment is html.escape()d, the mark
+        tags and the wrapped match text are the only live markup (P1-6 —
+        document content is untrusted and must not ride along as HTML).
         Longest-first so phrases win over their component words.
 
-        A match that lands inside an EXPLICIT <mark>..</mark> pair in the
+        Matching happens on the RAW snippet (no offset shifting); escaping
+        is applied per segment AFTER segmentation, so the two modes agree
+        exactly about WHERE the snippet and its matches are.
+
+        A match that lands inside an EXPLICIT mark-tag pair in the
         SOURCE text is not wrapped (that would emit broken nested tags) —
-        tracked via real tag spans, not counting, so document content cannot
-        suppress highlighting (counting opens before the match could be
-        thrown off by an unbalanced literal "<mark>")."""
+        tracked via real tag spans, not counting, so document content
+        cannot suppress highlighting (counting opens before the match
+        could be thrown off by an unbalanced literal tag string)."""
+        import html
         import re
         targets = sorted({p for p in phrases if p} | {t for t in terms if t},
-                         key=len, reverse=True)
-        if not targets:
-            return snippet
+                          key=len, reverse=True)
         open_m, close_m = mark
+        if not targets:
+            # still HTML output: escape even when nothing matches
+            return html.escape(snippet)
         # protected regions: paired open/close tags in the SOURCE snippet
         protected: list[tuple[int, int]] = []
         for tag_m in re.finditer(re.escape(open_m) + "|" + re.escape(close_m), snippet):
@@ -129,17 +141,14 @@ class BM25Search:
         protected = [(s, e) for s, e in protected if e is not None]
         pattern = re.compile("|".join(re.escape(t) for t in targets), re.IGNORECASE)
 
-        def wrap(match):
-            return open_m + match.group(0) + close_m
-
         out, pos = [], 0
         for m in pattern.finditer(snippet):
             if any(m.start() < end and m.end() > start for start, end in protected):
                 continue
-            out.append(snippet[pos:m.start()])
-            out.append(wrap(m))
+            out.append(html.escape(snippet[pos:m.start()]))
+            out.append(open_m + html.escape(m.group(0)) + close_m)
             pos = m.end()
-        out.append(snippet[pos:])
+        out.append(html.escape(snippet[pos:]))
         return "".join(out)
 
     def search_page(
@@ -150,8 +159,9 @@ class BM25Search:
 
         group_chunks=True collapses all chunks of one parent into a single
         result (best chunk wins); False returns raw chunk-level hits.
-        highlight=False (default) returns plain snippets, byte-identical to
-        pre-Phase-5; True wraps matches in <mark> tags.
+        highlight=False (default) returns plain-text snippets, byte-identical
+        to pre-Phase-5; True returns HTML-escaped snippets with matches
+        wrapped in <mark> tags (render-safe: content markup is escaped).
         """
         if top_k <= 0:
             return SearchPage(0)

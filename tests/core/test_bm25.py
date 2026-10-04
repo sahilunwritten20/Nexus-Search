@@ -33,6 +33,113 @@ class TestBM25(unittest.TestCase):
         results = self.search.search_page("alpha", highlight=True).results
         self.assertIn("<mark>alpha</mark>", results[0].snippet)
 
+    def test_highlight_false_stays_plain_and_byte_identical(self):
+        # highlight=False output is PLAIN TEXT and must never change: no
+        # escaping, no mark tags — byte-identical to pre-highlight behavior
+        self.indexer.add_document("s", 'hello <img src=x onerror=alert(1)> world')
+        results = self.search.search_page("hello", highlight=False).results
+        self.assertNotIn("<mark>", results[0].snippet)
+        self.assertIn("<img src=x onerror=alert(1)>", results[0].snippet)
+
+
+class TestHighlightEscaping(unittest.TestCase):
+    """P1-6: highlight=True output is HTML — content must be escaped per
+    segment so stored XSS payloads in document content can't ride along.
+    Pre-fix: content 'hello <img src=x onerror=alert(1)> world' returned
+    '<mark>hello</mark> <img src=x onerror=alert(1)> world' — payload intact."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.storage = Storage(self.path)
+        self.indexer = Indexer(self.storage)
+        self.search = BM25Search(self.storage)
+
+    def tearDown(self):
+        self.storage.close()
+        os.remove(self.path)
+
+    def _snippet_for(self, content, query):
+        self.indexer.add_document("d", content)
+        results = self.search.search_page(query, highlight=True).results
+        return results[0].snippet
+
+    def test_script_payload_escaped_and_match_marked(self):
+        import html as _html
+        snippet = self._snippet_for("hello <script>alert(1)</script> world", "hello")
+        self.assertIn("<mark>hello</mark>", snippet)
+        self.assertNotIn("<script>", snippet)
+        self.assertIn(_html.escape("<script>"), snippet)
+
+    def test_img_onerror_payload_escaped(self):
+        import html as _html
+        snippet = self._snippet_for("hello <img src=x onerror=alert(1)> world", "hello")
+        self.assertIn("<mark>hello</mark>", snippet)
+        self.assertNotIn("<img", snippet)
+        self.assertIn(_html.escape("<img"), snippet)
+
+    def test_angle_brackets_quotes_and_ampersand_escaped(self):
+        import html as _html
+        snippet = self._snippet_for(
+            'alpha "quoted" <b>bold</b> and <i>it</i>', "alpha")
+        self.assertIn("<mark>alpha</mark>", snippet)
+        self.assertNotIn("<b>", snippet)
+        self.assertNotIn('"quoted"', snippet)
+        self.assertIn(_html.escape('"quoted"'), snippet)
+        self.assertIn(_html.escape("<b>bold</b>"), snippet)
+        self.assertIn(_html.escape("and"), snippet)
+
+    def test_no_match_highlighted_output_still_escaped(self):
+        # filter-only queries carry no highlight targets: the result still
+        # exists, and its snippet is HTML output — escape it too
+        import html as _html
+        self.indexer.add_document("d", "plain <em>text</em> only", doc_type="code")
+        results = self.search.search_page("type:code", highlight=True).results
+        snippet = results[0].snippet
+        self.assertNotIn("<mark>", snippet)
+        self.assertNotIn("<em>", snippet)
+        self.assertIn(_html.escape("<em>"), snippet)
+
+    def test_term_inside_source_entity_is_matched_on_raw_text(self):
+        # the source contains the literal ampersand entity and the query
+        # hits the "amp" inside it: matching happens on RAW content (no
+        # offset shifting), escaping happens per segment afterwards
+        import html as _html
+        entity = "&" + "amp;"  # assembled so no tooling rewrites the entity
+        snippet = self._snippet_for(f"values: {entity} more alpha here", "amp")
+        self.assertIn("<mark>amp</mark>", snippet)
+        self.assertIn(_html.escape("&"), snippet)
+
+    def test_mark_literal_decoy_escaped_but_real_match_marked(self):
+        # the pinned anti-suppression case, now with escaping: the decoy
+        # literal mark-tag text is escaped, the REAL match still gets the tag
+        import html as _html
+        self.indexer.add_document("s", '<mark> decoy </mark> real alpha match here')
+        results = self.search.search_page("alpha", highlight=True).results
+        snippet = results[0].snippet
+        self.assertIn("<mark>alpha</mark>", snippet)
+        self.assertIn(_html.escape("<mark>"), snippet)
+        # exactly ONE live (unescaped) mark pair: the real match
+        self.assertEqual(snippet.count("<mark>"), 1)
+        self.assertEqual(snippet.count("</mark>"), 1)
+
+    def test_cjk_highlight_escaped_consistently(self):
+        snippet = self._snippet_for("東京都の説明文です alpha", "東京")
+        self.assertIn("<mark>東京</mark>", snippet)
+
+    def test_match_inside_protected_source_mark_not_double_wrapped(self):
+        # a query term INSIDE the source's literal mark-tag region is not
+        # wrapped (that would nest tags) — behavior preserved, and the
+        # region is escaped in the output
+        import html as _html
+        self.indexer.add_document("s", "<mark>alpha inside decoy</mark> beta tail")
+        results = self.search.search_page("alpha", highlight=True).results
+        snippet = results[0].snippet
+        self.assertEqual(snippet.count("<mark>"), 0,
+                         f"no live mark tags expected: {snippet!r}")
+        self.assertIn(_html.escape("<mark>"), snippet)
+
+
     def test_token_cache_reflects_reindex(self):
         # memoized doc tokens must refresh when the doc is rewritten
         self.indexer.add_document("x", "alpha content here")
