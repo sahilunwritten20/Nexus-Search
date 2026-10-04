@@ -2,9 +2,120 @@ import os
 import shutil
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from nexus_search.ingestion.connectors.files import iter_files, read_file, DEFAULT_MAX_INGEST_BYTES
+
+
+class TestDecompressionBombGuard(unittest.TestCase):
+    """P1-12a: zip-container readers (docx/xlsx/pptx) must refuse containers
+    whose DECLARED decompressed payload exceeds NEXUS_MAX_DECOMPRESSED_BYTES
+    BEFORE any reader materializes it, and the PDF reader must refuse
+    absurd page counts (NEXUS_MAX_PDF_PAGES). NEXUS_MAX_INGEST_BYTES caps
+    the FILE size, not the payload — a small 'docx' can declare megabytes
+    of XML and a real bomb declares gigabytes."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+        os.environ.pop("NEXUS_MAX_DECOMPRESSED_BYTES", None)
+        os.environ.pop("NEXUS_MAX_PDF_PAGES", None)
+
+    def _pad_with_huge_declared_entry(self, src: Path, pad_bytes: int) -> Path:
+        """Re-zip a real OOXML file plus one entry with a big HONEST declared
+        size (highly compressible filler) — the zip-bomb shape."""
+        out = self.dir / ("bomb_" + src.name)
+        with zipfile.ZipFile(str(src)) as zin, \
+                zipfile.ZipFile(str(out), "w", zipfile.ZIP_DEFLATED) as zout:
+            for info in zin.infolist():
+                zout.writestr(info, zin.read(info.filename))
+            zout.writestr("pad/padding.xml", b"<pad>" + b"A" * (pad_bytes - 5))
+        return out
+
+    def _legit_docx(self, name="legit.docx"):
+        from docx import Document
+        d = Document()
+        d.add_paragraph("hello docx world")
+        path = self.dir / name
+        d.save(str(path))
+        return path
+
+    def test_bomb_shaped_docx_refused_before_parsing(self):
+        os.environ["NEXUS_MAX_DECOMPRESSED_BYTES"] = "1000000"  # 1 MB
+        bomb = self._pad_with_huge_declared_entry(self._legit_docx(), 5_000_000)
+        with self.assertLogs("nexus_search.ingestion.files", level="WARNING") as logs:
+            self.assertEqual(read_file(bomb), "")
+        self.assertTrue(any("decompressed" in r.getMessage() for r in logs.records),
+                        [r.getMessage() for r in logs.records])
+
+    def test_bomb_shaped_xlsx_refused(self):
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.active["A1"] = "hello xlsx"
+        path = self.dir / "legit.xlsx"
+        wb.save(str(path))
+        os.environ["NEXUS_MAX_DECOMPRESSED_BYTES"] = "1000000"
+        bomb = self._pad_with_huge_declared_entry(path, 5_000_000)
+        self.assertEqual(read_file(bomb), "")
+
+    def test_bomb_shaped_pptx_refused(self):
+        from pptx import Presentation
+        prs = Presentation()
+        path = self.dir / "legit.pptx"
+        prs.save(str(path))
+        os.environ["NEXUS_MAX_DECOMPRESSED_BYTES"] = "1000000"
+        bomb = self._pad_with_huge_declared_entry(path, 5_000_000)
+        self.assertEqual(read_file(bomb), "")
+
+    def test_legit_ooxml_files_still_parse(self):
+        docx = self._legit_docx()
+        out = read_file(docx)
+        self.assertIn("hello docx world", out)
+
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.active["A1"] = "hello xlsx"
+        xlsx = self.dir / "legit2.xlsx"
+        wb.save(str(xlsx))
+        self.assertIn("hello xlsx", read_file(xlsx))
+
+        from pptx import Presentation
+        prs = Presentation()
+        path = self.dir / "legit2.pptx"
+        prs.save(str(path))
+        self.assertIsInstance(read_file(path), str)  # parses, no refusal
+
+    def test_huge_page_count_pdf_refused(self):
+        from pypdf import PdfWriter
+        writer = PdfWriter()
+        for _ in range(6):
+            writer.add_blank_page(width=612, height=792)
+        path = self.dir / "six.pdf"
+        with open(path, "wb") as f:
+            writer.write(f)
+        os.environ["NEXUS_MAX_PDF_PAGES"] = "5"
+        with self.assertLogs("nexus_search.ingestion.files", level="WARNING") as logs:
+            self.assertEqual(read_file(path), "")
+        self.assertTrue(any("pages" in r.getMessage() for r in logs.records))
+
+    def test_small_pdf_page_count_unaffected(self):
+        # a default-bound PDF is never page-refused (blank page -> no text
+        # -> "" is fine; the point is NO refusal)
+        from pypdf import PdfWriter
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        path = self.dir / "one.pdf"
+        with open(path, "wb") as f:
+            writer.write(f)
+        self.assertEqual(read_file(path), "")
+
+    def test_decompression_bounds_exist_with_sane_defaults(self):
+        from nexus_search.ingestion.connectors import files
+        self.assertEqual(files.DEFAULT_MAX_DECOMPRESSED_BYTES, 512 * 1024 * 1024)
+        self.assertEqual(files.DEFAULT_MAX_PDF_PAGES, 10_000)
 
 
 class TestFilesConnector(unittest.TestCase):

@@ -15,6 +15,8 @@ from typing import Callable, Iterator, Optional
 from ..types import IngestDoc
 
 DEFAULT_MAX_INGEST_BYTES = 64 * 1024 * 1024  # 64 MiB
+DEFAULT_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024  # 512 MiB payload per zip
+DEFAULT_MAX_PDF_PAGES = 10_000
 
 logger = logging.getLogger("nexus_search.ingestion.files")
 
@@ -252,7 +254,14 @@ def read_html_file(path: Path) -> str:
 def read_pdf_file(path: Path) -> str:
     from pypdf import PdfReader
 
-    pages = (page.extract_text() for page in PdfReader(str(path)).pages)
+    reader = PdfReader(str(path))
+    # P1-12a: "huge pages" guard — a pathological page count means
+    # pathological parse time; refuse before extracting anything.
+    max_pages = _max_pdf_pages()
+    if len(reader.pages) > max_pages:
+        raise ValueError(f"{len(reader.pages)} pages exceeds "
+                         f"NEXUS_MAX_PDF_PAGES ({max_pages})")
+    pages = (page.extract_text() for page in reader.pages)
     text = "\n".join(t for t in pages if t)
     if not text.strip():
         ocr = _ocr_pdf(path)
@@ -287,9 +296,32 @@ def _ocr_pdf(path: Path) -> str:
         return ""
 
 
+def _check_zip_payload(path: Path) -> None:
+    """P1-12a: refuse zip containers whose DECLARED decompressed payload
+    exceeds NEXUS_MAX_DECOMPRESSED_BYTES, BEFORE any reader materializes
+    it. NEXUS_MAX_INGEST_BYTES caps the file on disk, not the payload —
+    a ~200 KiB 'docx' whose XML entries declare gigabytes (the zip-bomb
+    class) would otherwise be fully inflated by the OOXML reader. The
+    check reads only the zip central directory (declared sizes), no
+    decompression. A header that lies SMALL truncates harmlessly inside
+    Python's zipfile; a header that lies LARGE just means the guard fires
+    early — both safe directions."""
+    import zipfile
+    bound = _max_decompressed_bytes()
+    total = 0
+    with zipfile.ZipFile(str(path)) as zf:
+        for info in zf.infolist():
+            total += info.file_size
+            if total > bound:
+                raise ValueError(
+                    f"declared decompressed payload {total} bytes exceeds "
+                    f"NEXUS_MAX_DECOMPRESSED_BYTES ({bound})")
+
+
 def read_docx_file(path: Path) -> str:
     from docx import Document
 
+    _check_zip_payload(path)
     document = Document(str(path))
     text = [p.text for p in document.paragraphs if p.text]
     for table in document.tables:  # tables were previously dropped
@@ -303,6 +335,7 @@ def read_docx_file(path: Path) -> str:
 def read_xlsx_file(path: Path) -> str:
     from openpyxl import load_workbook
 
+    _check_zip_payload(path)
     workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
         text = []
@@ -320,6 +353,7 @@ def read_xlsx_file(path: Path) -> str:
 def read_pptx_file(path: Path) -> str:
     from pptx import Presentation
 
+    _check_zip_payload(path)
     text = []
     for n, slide in enumerate(Presentation(str(path)).slides, start=1):
         text.append(f"Slide: {n}")
@@ -397,6 +431,36 @@ def _max_ingest_bytes() -> int:
         logger.warning("Invalid NEXUS_MAX_INGEST_BYTES %r; using default %d",
                        raw, DEFAULT_MAX_INGEST_BYTES)
         return DEFAULT_MAX_INGEST_BYTES
+
+
+def _max_decompressed_bytes() -> int:
+    raw = os.environ.get("NEXUS_MAX_DECOMPRESSED_BYTES")
+    if not raw:
+        return DEFAULT_MAX_DECOMPRESSED_BYTES
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid NEXUS_MAX_DECOMPRESSED_BYTES %r; using default %d",
+                       raw, DEFAULT_MAX_DECOMPRESSED_BYTES)
+        return DEFAULT_MAX_DECOMPRESSED_BYTES
+
+
+def _max_pdf_pages() -> int:
+    raw = os.environ.get("NEXUS_MAX_PDF_PAGES")
+    if not raw:
+        return DEFAULT_MAX_PDF_PAGES
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid NEXUS_MAX_PDF_PAGES %r; using default %d",
+                       raw, DEFAULT_MAX_PDF_PAGES)
+        return DEFAULT_MAX_PDF_PAGES
 
 
 def iter_files(root: str, extensions: Optional[set[str]] = None) -> Iterator[IngestDoc]:
