@@ -321,9 +321,13 @@ class CrawlPipeline:
     def close(self) -> None:
         if self._closed:
             return
-        for closer in (self.fetcher.close, self.frontier.close, self.blocklist.close):
+        for name, closer in (("fetcher", self.fetcher.close),
+                             ("frontier", self.frontier.close),
+                             ("blocklist", self.blocklist.close)):
             try:
                 closer()
-            except Exception:
-                pass
+            except Exception as exc:  # P1-12b: logged, never silent — a
+                # swallowed shutdown error could hide a lost final commit
+                logger.warning("close of %s failed: %s: %s",
+                               name, type(exc).__name__, exc)
         self._closed = True
