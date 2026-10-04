@@ -236,7 +236,23 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
 # is set; read-only /search and friends stay open (aligns with how this
 # prototype is meant to be embedded). _API_KEY/_ENV and the fail-closed boot
 # check live at the top of the module (see above).
+#
+# ORDER MATTERS (P0-1): `_api_key_header` and `require_api_key` must be
+# defined BEFORE `_READ_AUTH` below builds a Depends() from the function —
+# module top-level runs once in a fresh process, where a forward reference
+# is a NameError at import (the reload-based tests masked this by reusing
+# the already-populated namespace).
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
+    """401 when the server is configured with a key and the caller's doesn't
+    match. Constant-time compare; missing config = open dev mode."""
+    if not _API_KEY:
+        return  # dev mode, open by explicit configuration
+    import hmac
+    if api_key is None or not hmac.compare_digest(api_key, _API_KEY):
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
 # ---------------------------------------------------------------------------
@@ -289,16 +305,6 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # dependency itself still no-ops when no NEXUS_API_KEY is configured.
 _READ_AUTH = [Depends(require_api_key)] if os.environ.get(
     "NEXUS_REQUIRE_AUTH_FOR_READS", "").strip().lower() in ("1", "true", "yes") else []
-
-
-def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
-    """401 when the server is configured with a key and the caller's doesn't
-    match. Constant-time compare; missing config = open dev mode."""
-    if not _API_KEY:
-        return  # dev mode, open by explicit configuration
-    import hmac
-    if api_key is None or not hmac.compare_digest(api_key, _API_KEY):
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
 @app.post("/documents", status_code=201, dependencies=[Depends(require_api_key)])
