@@ -442,6 +442,16 @@ remediation; every bullet below matches shipped code):
 -   [x] Spam/Link Manipulation Detection (heuristics: caps, reciprocal
       discount, domain-diversity weighting; NO ML classifier — documented
       limit, distributed farms can still defeat it)
+-   [x] Reciprocal Discount Normalization (P1-5: edges normalized by
+      UNWEIGHTED out-degree with withheld mass redistributed uniformly —
+      a closed farm's discount can no longer cancel out; equal scores at
+      factor 1.0 vs 0.25 was the measured pre-fix no-op)
+-   [x] Known limit: the domain-diversity factor counts EXACT hostnames
+      (`urlsplit().hostname`), not registrable domains — a farm spread
+      over ~10 subdomains of one domain saturates the
+      `min(domains/10, 1)` cap. A public-suffix-aware count was
+      deliberately NOT added (new dependency; heuristics stay honest
+      about this edge)
 -   [x] Link Score in Ranking
 -   [x] Configurable Authority Weight
 -   [x] Ranking Evaluation (evaluation/authority_benchmark.py)

@@ -128,10 +128,23 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     dst = np.asarray(dst, dtype=np.int64)
     wts = np.asarray(wts, dtype=np.float64)
 
-    # per-source total outflow weight (dangling sources get zero here)
-    out = np.zeros(n, dtype=np.float64)
-    np.add.at(out, src, wts)
-    safe_out = np.where(out == 0.0, 1.0, out)
+    # P1-5: normalize by UNWEIGHTED out-degree, not the discounted weight
+    # sum. Normalizing by the discounted sum made the reciprocal discount a
+    # no-op for closed farms: scaling every edge of a closed clique by the
+    # factor scaled every denominator by the same factor and cancelled out
+    # (measured: identical PageRank at RECIPROCAL_FACTOR 1.0 and 0.25 for a
+    # 4-site clique). With out-degree normalization a discounted edge
+    # carries proportionally less mass; the withheld mass goes to the
+    # uniform (dangling-style) redistribution below — shared by everyone,
+    # NOT channeled back into the farm.
+    out_degree = np.zeros(n, dtype=np.float64)
+    np.add.at(out_degree, src, 1.0)
+    safe_out = np.where(out_degree == 0.0, 1.0, out_degree)
+
+    # per-source DISCOUNTED outflow (S_i): emitted mass is pr[i] * S_i/out_i,
+    # withheld mass is pr[i] * (out_i - S_i)/out_i
+    outflow = np.zeros(n, dtype=np.float64)
+    np.add.at(outflow, src, wts)
 
     pr = np.full(n, 1.0 / n)
     teleport = (1.0 - DAMPING) / n
@@ -140,10 +153,15 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     for it in range(1, MAX_ITERATIONS + 1):
         contribution = pr[src] * wts / safe_out[src]
         new = np.full(n, teleport)
-        # dangling nodes: their mass redistributes to everyone
-        dangling_mass = pr[out == 0.0].sum()
+        # dangling nodes: their mass redistributes to everyone; the mass
+        # withheld by reciprocal discounts joins the same uniform pool
+        dangling_mass = pr[out_degree == 0.0].sum()
+        has_out = out_degree > 0.0
+        withheld_mass = float(
+            (pr[has_out] * (1.0 - outflow[has_out] / out_degree[has_out])).sum()
+        ) if has_out.any() else 0.0
         np.add.at(new, dst, DAMPING * contribution)
-        new += DAMPING * dangling_mass / n
+        new += DAMPING * (dangling_mass + withheld_mass) / n
         delta = np.abs(new - pr).sum()
         pr = new
         if delta < CONVERGENCE_TOL:
