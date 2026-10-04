@@ -28,9 +28,24 @@ IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", 
 def _detect_encoding(raw: bytes) -> str:
     """Best-effort encoding detection for text payloads.
 
-    Uses charset-normalizer (already a transitive dep via requests, declared
-    in requirements.txt). Falls back to UTF-8 with replacement when detection
-    finds nothing sane — detection failure must degrade, not crash."""
+    Order (P0-4): BOM -> strict UTF-8 -> detector. charset-normalizer's
+    statistical guess on SHORT samples is unreliable even on the pinned
+    3.5.1 (measured: cp1252 "Café" -> utf_16_be, "São Paulo" -> big5 ->
+    mojibake), so an odd/non-Western guess on a short sample is only
+    trusted when it actually EXPLAINS the bytes better than cp1252:
+    - Western single-byte guesses (cp125x/iso8859/latin/mac-latin): the
+      existing cp1252 preference applies (shares the high-byte range).
+    - CJK-family guesses: kept only when decoding with them yields
+      CJK-heavy text (measured margin: real CJK ~100% of chars, misfires
+      ~12%).
+    - BOM-less utf_16/utf_32 guesses: kept only when NUL interleave or
+      (>=32 bytes of) CJK output says the sample really is UTF-16. The
+      residual trade — a tiny genuine BOM-less UTF-16 CJK file may flip
+      to cp1252 — is accepted and documented; BOM'd UTF-16 is caught
+      earlier and never reaches here.
+
+    Falls back to UTF-8 with replacement when detection finds nothing
+    sane — detection failure must degrade, not crash."""
     if not raw:
         return "utf-8"
     # BOMs first — detection libraries underweight them, and they're certain.
@@ -39,25 +54,105 @@ def _detect_encoding(raw: bytes) -> str:
                      (b"\xef\xbb\xbf", "utf-8")):
         if raw.startswith(bom):
             return enc
+    # Strict UTF-8: a clean decode is stronger evidence than any
+    # statistical guess (and covers ASCII).
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
     try:
         from charset_normalizer import from_bytes
-        best = from_bytes(raw[:65536]).best()  # sample-bound, not the whole file
-        if best and best.encoding:
-            enc = best.encoding
-            # Single-byte legacy charsets: cp1252 is a latin-1 superset that
-            # shares the high-byte range with the Western encodings the
-            # detector can confuse (cp1250 etc.). Prefer it when the sample
-            # is also valid cp1252 (i.e. contains none of its undefined
-            # control bytes) — "São" must not come back as "Săo".
-            if enc.lower().startswith(("cp125", "iso8859", "latin")):
-                sample = raw[:65536]
-                cp1252_undefined = {0x81, 0x8D, 0x8F, 0x90, 0x9D}
-                if not any(b in cp1252_undefined for b in sample):
+        sample = raw[:65536]
+        matches = from_bytes(sample)  # sample-bound, not the whole file
+        odd_short = len(sample) < 8192
+        best_enc = None
+        for rank, m in enumerate(matches):
+            enc = m.encoding
+            enc_l = enc.lower()
+            if rank == 0:
+                best_enc = enc
+            # Single-byte legacy Western charsets: cp1252 is a latin-1
+            # superset that shares the high-byte range with the encodings
+            # the detector confuses (cp1250, mac_latin2, ...). Prefer it
+            # when the sample is also strictly valid cp1252 — "São" must
+            # not come back as "Săo".
+            if enc_l.startswith(("cp125", "iso8859", "iso-8859", "latin",
+                                 "mac_latin", "mac_roman", "macintosh")):
+                if _cp1252_clean(sample):
                     return "cp1252"
-            return enc
+                if rank == 0:
+                    return enc  # Western top guess, but bytes aren't cp1252
+                continue
+            # Odd/non-Western guesses on SHORT samples are the misfire zone
+            # (P0-4): trust a guess only when it explains the bytes. The
+            # candidate scan rescues e.g. a big5 file whose TOP guess was
+            # a utf_16 misfire, while never introducing exotic codepages
+            # (cp037, koi8_r, ...) the top guess didn't already claim.
+            if odd_short and enc_l.startswith(_ODD_GUESS_PREFIXES):
+                if _odd_guess_explains(sample, enc_l):
+                    return enc
+                continue
+            if rank == 0:
+                return enc  # top guess outside the misfire families: as-is
+        # No candidate explained a short odd sample -> the cp1252 fallback
+        # is the best remaining bet when the bytes allow it.
+        if _cp1252_clean(sample):
+            return "cp1252"
+        return best_enc or "utf-8"
     except Exception:
-        pass
+        logger.debug("encoding detection failed; defaulting to utf-8",
+                     exc_info=True)
     return "utf-8"
+
+
+# cp1252 has five undefined bytes; a strict decode fails on any of them.
+_CP1252_UNDEFINED = {0x81, 0x8D, 0x8F, 0x90, 0x9D}
+
+
+def _cp1252_clean(raw: bytes) -> bool:
+    """True when raw decodes strictly as cp1252 (no undefined control bytes)."""
+    return not any(b in _CP1252_UNDEFINED for b in raw)
+
+
+# The guess families observed to misfire on short Western samples
+# (charset-normalizer 3.4.x: mac_latin2/utf_16_be/big5; 3.5.1: utf_16_be/big5).
+_ODD_GUESS_PREFIXES = (
+    "utf_16", "utf16", "utf_32", "utf32",          # BOM-less multi-byte
+    "big5", "cp932", "cp950", "shift_jis", "sjis",  # CJK double-byte
+    "gb2312", "gbk", "gb18030", "gb_", "euc_jp", "euc_kr", "cp949",
+    "johab", "iso2022_jp", "iso2022_kr", "hz",
+)
+
+
+def _cjk_share(text: str) -> float:
+    """Fraction of chars in CJK ranges (Han, kana, Hangul, compat)."""
+    if not text:
+        return 0.0
+    cjk = sum(1 for ch in text
+              if "\u3040" <= ch <= "\u30ff" or "\u3400" <= ch <= "\u4dbf"
+              or "\u4e00" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7a3"
+              or "\uf900" <= ch <= "\ufaff")
+    return cjk / len(text)
+
+
+def _odd_guess_explains(sample: bytes, enc_l: str) -> bool:
+    """Does a CJK/UTF-16-family guess actually explain this short sample
+    better than cp1252 would? Measured margins: real CJK decodes to
+    ~100% CJK chars; Western misfires land at ~12%."""
+    try:
+        decoded = sample.decode(enc_l)
+    except (UnicodeDecodeError, LookupError):
+        return False  # guess can't even read the bytes -> misfire
+    if enc_l.startswith(("utf_16", "utf16", "utf_32", "utf32")):
+        # Genuine BOM-less UTF-16 of Latin text is ~50% NUL bytes; CJK
+        # content has none but needs enough bytes for the guess to mean
+        # anything (tiny samples are exactly the "Café" misfire zone).
+        nul_share = sum(1 for b in sample if b == 0) / max(len(sample), 1)
+        if nul_share >= 1 / 16:
+            return True
+        return len(sample) >= 32 and _cjk_share(decoded) >= 0.3
+    return _cjk_share(decoded) >= 0.3
 
 
 def read_text_file(path: Path) -> str:

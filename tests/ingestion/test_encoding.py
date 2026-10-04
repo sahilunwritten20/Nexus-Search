@@ -55,6 +55,76 @@ class TestEncodingDetection(unittest.TestCase):
         self.assertIsInstance(read_text_file(f), str)
 
 
+class TestShortWesternEncoding(unittest.TestCase):
+    """P0-4: SHORT cp1252 files were misdetected by charset-normalizer even
+    on the pinned 3.5.1 ('Café' -> utf_16_be, 'São Paulo' -> big5, i.e.
+    mojibake). Detection order must be BOM -> strict UTF-8 -> detector, with
+    a cp1252 preference when the detector's guess is an odd/non-Western
+    misfire on a short sample. CJK must NOT regress."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _roundtrip(self, text, encoding):
+        f = self.dir / f"{encoding.replace('_', '-')}.txt"
+        f.write_bytes(text.encode(encoding))
+        return read_text_file(f)
+
+    def test_short_cp1252_cafe(self):
+        self.assertEqual(self._roundtrip("Café", "cp1252"), "Café")
+
+    def test_short_cp1252_sao_paulo(self):
+        self.assertEqual(self._roundtrip("São Paulo", "cp1252"), "São Paulo")
+
+    def test_short_cp1252_zurich_strasse(self):
+        self.assertEqual(self._roundtrip("Zürich Straße Müller", "cp1252"),
+                         "Zürich Straße Müller")
+
+    def test_short_cp1252_sentence(self):
+        text = "Café Mug på Ångström — naïve façade"
+        self.assertEqual(self._roundtrip(text, "cp1252"), text)
+
+    def test_longer_shift_jis_sample(self):
+        text = "東京都渋谷区で機械学習の研究会が開催されました。" * 8
+        self.assertEqual(self._roundtrip(text, "shift_jis"), text)
+
+    def test_longer_gbk_sample(self):
+        text = "北京市举办人工智能与机器学习技术研讨会。" * 8
+        self.assertEqual(self._roundtrip(text, "gbk"), text)
+
+    def test_short_cjk_survives_cp1252_preference(self):
+        """The cp1252 preference must not eat real short CJK files: a
+        CJK-family guess is kept (or better), never flipped to cp1252.
+        Note the honest limit, pinned by the pre-fix run: for very short
+        samples even the RIGHT family can be statistically ambiguous
+        (GBK bytes can decode to Hangul under cp949 with the same CJK
+        density), so the guarantee here is 'stays CJK text', not 'exact
+        roundtrip' — the longer-sample tests above carry the exact bar."""
+        def cjk_share(s):
+            cjk = sum(1 for ch in s if "\u3040" <= ch <= "\u30ff"
+                      or "\u3400" <= ch <= "\u9fff"
+                      or "\uac00" <= ch <= "\ud7a3"
+                      or "\uf900" <= ch <= "\ufaff")
+            return cjk / max(len(s), 1)
+
+        for encoding, text in (
+            ("shift_jis", "こんにちは世界"),
+            ("gbk", "你好世界"),
+            ("big5", "這是一個測試"),
+        ):
+            with self.subTest(encoding=encoding):
+                out = self._roundtrip(text, encoding)
+                self.assertGreaterEqual(
+                    cjk_share(out), 0.5,
+                    f"{encoding} sample decoded to Latin mojibake: {out!r}")
+        # Shift-JIS short samples happen to be detected exactly — keep them
+        self.assertIn("こんにちは世界",
+                      self._roundtrip("こんにちは世界", "shift_jis"))
+
+
 class TestStreamingIngestion(unittest.TestCase):
     """Large CSVs stream row-by-row; content is identical to a full read."""
 
