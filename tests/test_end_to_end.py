@@ -25,7 +25,7 @@ from nexus_search.crawler.pipeline import (
 # ============================================================
 
 
-class TestHandler(BaseHTTPRequestHandler):
+class _TestHandler(BaseHTTPRequestHandler):
 
     pages = {
         "/": """
@@ -223,7 +223,7 @@ class TestEndToEndCrawler(unittest.TestCase):
                 "127.0.0.1",
                 0,
             ),
-            TestHandler,
+            _TestHandler,
         )
 
         cls.server_thread = threading.Thread(
