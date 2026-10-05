@@ -4,7 +4,7 @@ SECURITY: sitemaps are remote, attacker-influenced XML. Parsing goes through
 defusedxml.ElementTree, which refuses DTDs/entity declarations (billion-
 laughs amplification) and extremely deep nesting with a clean exception;
 this module converts that into the same "" / [] "can't parse" outcome every
-other malformed payload gets ([](https://pypi.org/project/defusedxml/))."""
+other malformed payload gets (defusedxml is the PyPI package behind it)."""
 import zlib
 from typing import Optional
 

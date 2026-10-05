@@ -18,6 +18,14 @@ jobs:
           PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
         run: pip install -r requirements.txt
 
+      - name: Hygiene - no tracked DB/bytecode artifacts (P3-11)
+        run: |
+          bad=$(git ls-files | grep -E '\.(db|pyc)$' || true)
+          if [ -n "$bad" ]; then
+            echo "tracked artifacts must not ship:"; echo "$bad"; exit 1
+          fi
+          echo "no tracked *.db / *.pyc files"
+
       - name: Run the full suite
         env:
           # no API key in CI: the suite boots the API in explicit dev mode;
