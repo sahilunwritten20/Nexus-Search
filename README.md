@@ -78,7 +78,12 @@ Crawler ops: `python -m nexus_search.crawler.cli block <host> --reason ...`
 written before BUG-02's fix): `python -m nexus_search.crawler.cli
 normalize-links --db $NEXUS_DB --recompute` (idempotent). Reindex after tokenizer changes:
 `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow`
-(replays in-flight writes during the swap; zero-downtime).
+(replays in-flight writes during the swap; zero-downtime). NOTE (P3-10,
+approved): the tokenizer now keeps a small tech-term allowlist whole
+(`c++`, `c#`, `f#`, `node.js`, `.net`) for code search — an EXISTING
+deployment MUST run the reindex above once after upgrading, or its old
+postings miss the new terms (the pinned golden corpus contains none of
+these terms, so `tests/golden/keyword_baseline.json` is unchanged).
 
 Phase 6 link intelligence:
 ``` bash

@@ -38,6 +38,17 @@ def _get_token_re() -> re.Pattern:
     return re.compile(rf"{w}+(?:'{w}+)?")
 
 
+# P3-10 (approved): code-search terms that must survive as SINGLE tokens.
+# Casefolded patterns; boundaries require no adjacent [a-z0-9] on either
+# side, so identifiers like "objcplusplus" or "node.json" are NOT the
+# term. INDEX-AFFECTING: existing deployments must re-run
+# `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow` after
+# upgrading, or old postings miss the new terms.
+_ALLOWLIST_RE = re.compile(
+    r"(?<![a-z0-9])(c\+\+|c#|f#|node\.js|\.net)(?![a-z0-9])"
+)
+
+
 def _cjk_bigrams(run: str) -> list[str]:
     """Split a CJK run into overlapping bigrams. A lone character stays a unigram."""
     if len(run) == 1:
@@ -90,23 +101,41 @@ def stem_token(token: str, language: str = "en") -> str:
     return fn(token) if fn else token
 
 
-def tokenize(text: str, stem: "bool | None" = None) -> list[str]:
-    """Lowercase word tokens in any script. Keeps internal apostrophes
-    (don't -> "don't") and drops all other punctuation. CJK runs become
-    character bigrams; a mixed token like "iPhone15发布" is split by script
-    first, so its Latin part stays a normal word ("iphone15", "发布").
-
-    `stem=None` follows the global default (NEXUS_STEMMING, on by default);
-    pass True/False to force. Non-English-Latin tokens are never stemmed."""
-    if stem is None:
-        stem = os.environ.get("NEXUS_STEMMING", "1") != "0"
-    text = unicodedata.normalize("NFKC", text).casefold()
+def _tokens_of_segment(segment: str, stem: bool) -> list[str]:
+    """Tokenize one allowlist-free segment (already NFKC+casefolded)."""
     tokens: list[str] = []
     token_re = _get_token_re()
-    for token in token_re.findall(text):
+    for token in token_re.findall(segment):
         if not _HAS_CJK.search(token):  # fast path: nearly all tokens
             tokens.append(stem_token(token) if stem else token)
             continue
         for run in _SCRIPT_RUN.findall(token):
             tokens.extend(_cjk_bigrams(run) if _HAS_CJK.match(run) else [run])
+    return tokens
+
+
+def tokenize(text: str, stem: "bool | None" = None) -> list[str]:
+    """Lowercase word tokens in any script. Keeps internal apostrophes
+    (don't -> "don't") and drops all other punctuation. CJK runs become
+    character bigrams; a mixed token like "iPhone15发布" is split by script
+    first, so its Latin part stays a normal word ("iphone15", "发布").
+    Tech terms from the approved allowlist (c++, c#, f#, node.js, .net)
+    survive as single tokens (P3-10).
+
+    `stem=None` follows the global default (NEXUS_STEMMING, on by default);
+    pass True/False to force. Non-English-Latin tokens are never stemmed."""
+    if stem is None:
+        stem = os.environ.get("NEXUS_STEMMING", "1") != "0"
+    lowered = unicodedata.normalize("NFKC", text).casefold()
+    if not _ALLOWLIST_RE.search(lowered):
+        # fast path: no allowlist term present — output is identical to the
+        # pre-P3-10 tokenizer for this input
+        return _tokens_of_segment(lowered, stem)
+    tokens: list[str] = []
+    pos = 0
+    for m in _ALLOWLIST_RE.finditer(lowered):
+        tokens.extend(_tokens_of_segment(lowered[pos:m.start()], stem))
+        tokens.append(m.group(0))  # allowlist terms are never stemmed
+        pos = m.end()
+    tokens.extend(_tokens_of_segment(lowered[pos:], stem))
     return tokens

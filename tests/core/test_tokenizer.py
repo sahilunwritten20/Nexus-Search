@@ -52,6 +52,42 @@ class TestStemming(unittest.TestCase):
         self.assertEqual(tokenize("abc123"), ["abc123"])
         self.assertEqual(tokenize("class"), ["class"])  # false-stem guard
 
+
+class TestTechAllowlist(unittest.TestCase):
+    """P3-10: code-search terms survive as single tokens. Index-affecting:
+    deployed DBs must run `python -m nexus_search.core.reindex --shadow`
+    after upgrading (see README)."""
+
+    def test_code_terms_stay_whole(self):
+        self.assertEqual(tokenize("C++ vs C# node.js"),
+                         ["c++", "vs", "c#", "node.js"])
+
+    def test_each_allowlisted_term(self):
+        self.assertEqual(tokenize("f#"), ["f#"])
+        self.assertEqual(tokenize(".net"), [".net"])
+        self.assertEqual(tokenize("Node.JS"), ["node.js"])  # casefolded
+
+    def test_allowlist_never_stems(self):
+        self.assertEqual(tokenize("node.js frameworks"), ["node.js", "framework"])
+
+    def test_word_boundaries_respected(self):
+        # an identifier that merely CONTAINS the term is not the term
+        self.assertNotIn("c++", tokenize("objcplusplus"))       # alnum before
+        self.assertNotIn("node.js", tokenize("node.json"))      # alnum after
+        self.assertNotIn(".net", tokenize("a.net"))              # alnum before
+
+    def test_surrounding_text_untouched(self):
+        self.assertEqual(tokenize("c++ is great"), ["c++", "is", "great"])
+        self.assertEqual(tokenize("learning c# today"), ["learn", "c#", "today"])
+
+    def test_cjk_still_bigrams_alongside_allowlist(self):
+        self.assertEqual(tokenize("東京 node.js"), ["東京", "node.js"])
+
+    def test_plain_text_fast_path_unchanged(self):
+        # no allowlist term -> exactly the pre-P3-10 output
+        self.assertEqual(tokenize("running stories"), ["run", "story"])
+        self.assertEqual(tokenize("Hello, world!"), ["hello", "world"])
+
     def test_cjk_never_stemmed(self):
         self.assertEqual(tokenize("发布"), ["发布"])
 
