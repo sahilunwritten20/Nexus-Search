@@ -60,11 +60,20 @@ class VectorStore:
         self._init_schema()
         self._drop_legacy_tables()
         
-        # In-memory matrix: (n_vectors, dim) float32, L2-normalized
-        self._matrix: np.ndarray = np.empty((0, self.dim), dtype=np.float32)
-        self._doc_ids: np.ndarray = np.empty(0, dtype=object)
-        self._doc_types: np.ndarray = np.empty(0, dtype=object)
-        self._languages: np.ndarray = np.empty(0, dtype=object)
+        # In-memory matrix: (n_vectors, dim) float32, L2-normalized.
+        # Amortized-capacity buffers (P2-9): `self._matrix`/`self._doc_ids`
+        # are always VIEWS of exactly the valid rows of over-allocated
+        # buffers, so append is O(1) amortized instead of a full-matrix
+        # np.vstack (quadratic bulk ingest). All access is under
+        # _matrix_lock; views never expose rows past the valid count.
+        self._matrix_buf: np.ndarray = np.empty((16, self.dim), dtype=np.float32)
+        self._doc_ids_buf: np.ndarray = np.empty(16, dtype=object)
+        self._doc_types_buf: np.ndarray = np.empty(16, dtype=object)
+        self._languages_buf: np.ndarray = np.empty(16, dtype=object)
+        self._matrix: np.ndarray = self._matrix_buf[:0]
+        self._doc_ids: np.ndarray = self._doc_ids_buf[:0]
+        self._doc_types: np.ndarray = self._doc_types_buf[:0]
+        self._languages: np.ndarray = self._languages_buf[:0]
         self._content_hashes: dict[str, str] = {}  # doc_id -> content_hash
         self._matrix_lock = threading.RLock()
         
@@ -123,36 +132,23 @@ class VectorStore:
         
         if not rows:
             with self._matrix_lock:
-                self._matrix = np.empty((0, self.dim), dtype=np.float32)
-                self._doc_ids = np.empty(0, dtype=object)
-                self._doc_types = np.empty(0, dtype=object)
-                self._languages = np.empty(0, dtype=object)
+                self._reset_buffers(0)
                 self._content_hashes = {}
             return
-        
+
         import json
         n = len(rows)
-        matrix = np.empty((n, self.dim), dtype=np.float32)
-        doc_ids = np.empty(n, dtype=object)
-        doc_types = np.empty(n, dtype=object)
-        languages = np.empty(n, dtype=object)
-        content_hashes = {}
-        
-        for i, (doc_id, vec_blob, content_hash, doc_type, metadata) in enumerate(rows):
-            vec = np.frombuffer(vec_blob, dtype=np.float32)
-            matrix[i] = vec
-            doc_ids[i] = doc_id
-            doc_types[i] = doc_type or ""
-            meta = json.loads(metadata) if metadata else {}
-            languages[i] = meta.get("language", "") or ""
-            content_hashes[doc_id] = content_hash
-        
         with self._matrix_lock:
-            self._matrix = matrix
-            self._doc_ids = doc_ids
-            self._doc_types = doc_types
-            self._languages = languages
-            self._content_hashes = content_hashes
+            self._reset_buffers(n)
+            for i, (doc_id, vec_blob, content_hash, doc_type, metadata) in enumerate(rows):
+                vec = np.frombuffer(vec_blob, dtype=np.float32)
+                self._matrix_buf[i] = vec
+                self._doc_ids_buf[i] = doc_id
+                self._doc_types_buf[i] = doc_type or ""
+                meta = json.loads(metadata) if metadata else {}
+                self._languages_buf[i] = meta.get("language", "") or ""
+                self._content_hashes[doc_id] = content_hash
+            self._set_view(n)
         
         # Update data version for freshness
         with self.lock:
@@ -171,6 +167,69 @@ class VectorStore:
     def _serialize(self, vec: np.ndarray) -> bytes:
         return vec.astype(np.float32).tobytes()
     
+    def _reset_buffers(self, n: int) -> None:
+        """(Re)allocate the capacity buffers for `n` valid rows. Caller
+        holds _matrix_lock."""
+        cap = max(n, 16)
+        # keep existing capacity when it already fits (load-after-load)
+        if self._matrix_buf.shape[0] >= n and self._matrix is not None \
+                and len(self._matrix) == 0:
+            cap = self._matrix_buf.shape[0]
+        self._matrix_buf = np.empty((cap, self.dim), dtype=np.float32)
+        self._doc_ids_buf = np.empty(cap, dtype=object)
+        self._doc_types_buf = np.empty(cap, dtype=object)
+        self._languages_buf = np.empty(cap, dtype=object)
+        self._set_view(0)
+
+    def _set_view(self, n: int) -> None:
+        """Publish exactly the first `n` buffer rows. Caller holds
+        _matrix_lock."""
+        self._matrix = self._matrix_buf[:n]
+        self._doc_ids = self._doc_ids_buf[:n]
+        self._doc_types = self._doc_types_buf[:n]
+        self._languages = self._languages_buf[:n]
+
+    def _grow_buffers(self, need: int) -> None:
+        """Ensure capacity for `need` valid rows, doubling amortized.
+        Caller holds _matrix_lock."""
+        cap = self._matrix_buf.shape[0]
+        if need <= cap:
+            return
+        new_cap = max(need, cap * 2, 16)
+        matrix = np.empty((new_cap, self.dim), dtype=np.float32)
+        matrix[:len(self._matrix)] = self._matrix
+        doc_ids = np.empty(new_cap, dtype=object)
+        doc_ids[:len(self._doc_ids)] = self._doc_ids
+        doc_types = np.empty(new_cap, dtype=object)
+        doc_types[:len(self._doc_types)] = self._doc_types
+        languages = np.empty(new_cap, dtype=object)
+        languages[:len(self._languages)] = self._languages
+        self._matrix_buf = matrix
+        self._doc_ids_buf = doc_ids
+        self._doc_types_buf = doc_types
+        self._languages_buf = languages
+
+    def _merge_in_memory(self, doc_id: str, vector: np.ndarray,
+                         content_hash: str, doc_type: str, language: str) -> None:
+        """In-memory upsert of one already-committed row (caller holds
+        self.lock + _matrix_lock). Update-in-place or amortized append —
+        P2-9: the per-add np.vstack was quadratic bulk ingest."""
+        existing_idx = np.where(self._doc_ids == doc_id)[0]
+        if len(existing_idx) > 0:
+            idx = existing_idx[0]
+            self._matrix[idx] = vector
+            self._doc_types[idx] = doc_type
+            self._languages[idx] = language
+        else:
+            n = len(self._doc_ids)
+            self._grow_buffers(n + 1)
+            self._matrix_buf[n] = vector
+            self._doc_ids_buf[n] = doc_id
+            self._doc_types_buf[n] = doc_type
+            self._languages_buf[n] = language
+            self._set_view(n + 1)
+        self._content_hashes[doc_id] = content_hash
+
     def add(self, doc_id: str, vector: np.ndarray, content_hash: str, doc_type: str = "", language: str = ""):
         """Add or update a vector."""
         # Refresh our view of other processes' writes BEFORE merging ours into
@@ -181,12 +240,12 @@ class VectorStore:
         self._maybe_reload()
         if vector.shape != (self.dim,):
             raise ValueError(f"Vector dim {vector.shape} != expected {self.dim}")
-        
+
         # Ensure unit norm
         norm = np.linalg.norm(vector)
         if norm > 0:
             vector = vector / norm
-        
+
         # SQL commit and in-memory merge happen inside ONE critical section
         # (self.lock -> self._matrix_lock, the same order _load_matrix uses).
         # Splitting them let other threads observe/commit between the two,
@@ -203,26 +262,11 @@ class VectorStore:
                     (doc_id, self.model, self.dim, content_hash, self._serialize(vector), time.time())
                 )
                 self.conn.commit()
-
-                # Update in-memory matrix
-                existing_idx = np.where(self._doc_ids == doc_id)[0]
-                if len(existing_idx) > 0:
-                    idx = existing_idx[0]
-                    self._matrix[idx] = vector
-                    self._doc_types[idx] = doc_type
-                    self._languages[idx] = language
-                else:
-                    # Append
-                    self._matrix = np.vstack([self._matrix, vector.reshape(1, -1)])
-                    self._doc_ids = np.append(self._doc_ids, doc_id)
-                    self._doc_types = np.append(self._doc_types, doc_type)
-                    self._languages = np.append(self._languages, language)
-
-                self._content_hashes[doc_id] = content_hash
+                self._merge_in_memory(doc_id, vector, content_hash, doc_type, language)
 
     # Backward compatibility
     upsert = add
-    
+
     def remove(self, doc_id: str):
         """Remove a vector (swap-remove for O(1) delete). SQL + memory under
         ONE critical section, same as add()."""
@@ -244,12 +288,11 @@ class VectorStore:
                         self._doc_ids[idx] = self._doc_ids[last_idx]
                         self._doc_types[idx] = self._doc_types[last_idx]
                         self._languages[idx] = self._languages[last_idx]
-                    # Remove last element (.copy(): a slice keeps the whole
-                    # base array alive and shares memory with past snapshots)
-                    self._matrix = self._matrix[:last_idx].copy()
-                    self._doc_ids = self._doc_ids[:last_idx].copy()
-                    self._doc_types = self._doc_types[:last_idx].copy()
-                    self._languages = self._languages[:last_idx].copy()
+                    # Publish one fewer row: the view shrinks (no copy —
+                    # the capacity buffer stays for reuse; P2-9). search()
+                    # snapshots scores+doc_ids under the same lock, so no
+                    # reader can pair rows across the shrink.
+                    self._set_view(last_idx)
                     self._content_hashes.pop(doc_id, None)
 
     # Backward compatibility
@@ -277,10 +320,13 @@ class VectorStore:
         """
         self._maybe_reload()
 
-        # Snapshot INSIDE the lock: add()/remove() mutate these arrays. Holding
-        # live references outside the lock could pair a stale doc_id with a
-        # freshly-overwritten vector row (silent score misassignment). The copy
-        # costs one allocation per query — cheap insurance at prototype scale.
+        # Snapshot INSIDE the lock: add()/remove() mutate these arrays. — the
+        # matmul runs inside the critical section and produces a private
+        # `scores` array; only doc_ids (n*8 bytes, not n*dim*4) is copied.
+        # scores and doc_ids are captured under the SAME lock hold, so they
+        # are always a consistent pair (add()/remove() mutate only under
+        # the same lock). The old code copied the whole matrix + two unused
+        # columns on EVERY query (O(n*dim) per search).
         with self._matrix_lock:
             if len(self._matrix) == 0:
                 return []
@@ -288,11 +334,11 @@ class VectorStore:
             doc_ids = self._doc_ids.copy()
             doc_types = self._doc_types.copy()
             languages = self._languages.copy()
-        
+
         # Fast path: compute all cosine similarities
         # matrix is (n, dim), query is (dim,) -> scores is (n,)
         scores = matrix @ query_vector  # Already L2-normalized
-        
+
         # Apply filter pushdown if allowed
         if allowed is not None:
             mask = np.array([allowed(doc_ids[i]) for i in range(len(doc_ids))], dtype=bool)
@@ -304,7 +350,7 @@ class VectorStore:
             doc_ids = doc_ids[valid_indices]
             doc_types = doc_types[valid_indices]
             languages = languages[valid_indices]
-        
+
         # Filter by min_score
         if min_score > -1.0:
             mask = scores >= min_score
@@ -381,16 +427,21 @@ class VectorStoreManager:
             content_hash = self._content_hash(text)
             if self.store.get_content_hash(doc_id) != content_hash:
                 to_embed.append((doc_id, text, content_hash, doc_type, language))
-        
+
         if not to_embed:
             return
-        
+
         texts = [t for _, t, _, _, _ in to_embed]
         # embedding happens OUTSIDE the store locks — it's the slow part and
         # touches no shared state
         vectors = self.embedder.embed_documents(texts)
 
-        # Commit + in-memory reload inside ONE critical section (same pattern
+        # Pick up other processes' committed rows BEFORE our own merge (same
+        # eventual-consistency contract as add(); P2-9 removed the per-batch
+        # full-reload that made bulk ingest quadratic).
+        self.store._maybe_reload()
+
+        # Commit + in-memory merge inside ONE critical section (same pattern
         # as add()/remove()): without it, a concurrent search() could observe
         # a stale matrix after the batch's rows were already durable.
         with self.store.lock:
@@ -403,10 +454,13 @@ class VectorStoreManager:
                         (doc_id, model, dim, content_hash, vector, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (doc_id, self.store.model, self.store.dim, content_hash, self.store._serialize(vector), now)
+                        (doc_id, self.store.model, self.store.dim, content_hash,
+                         self.store._serialize(vector), now)
                     )
                 self.store.conn.commit()
-                self.store._load_matrix()
+                for (doc_id, _, content_hash, doc_type, language), vector in zip(to_embed, vectors):
+                    self.store._merge_in_memory(doc_id, vector, content_hash,
+                                                doc_type, language)
     
     def delete(self, doc_id: str):
         self.store.remove(doc_id)

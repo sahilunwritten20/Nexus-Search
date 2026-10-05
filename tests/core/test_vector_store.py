@@ -154,6 +154,46 @@ class TestVectorStoreMultiInstance(unittest.TestCase):
         self.assertEqual(self.a.count(), 1)
         self.assertEqual(self.a.get_content_hash("doc_1"), "h2")
 
+    def test_amortized_bulk_add_correctness(self):
+        """P2-9: capacity-growth appends must be exactly as correct as the
+        old np.vstack path — 500 adds (crossing several growth doublings),
+        interleaved updates and removes, counts and scores stay right."""
+        vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        for i in range(500):
+            self.a.add(f"bulk{i}", vec.copy(), f"h{i}")
+        self.assertEqual(self.a.count(), 500)
+        # update a slice in place (replace, not append)
+        for i in range(0, 100):
+            self.a.add(f"bulk{i}", np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+                       f"h{i}b")
+        self.assertEqual(self.a.count(), 500)
+        # removes shrink the view without corrupting the rest
+        for i in range(200, 300):
+            self.a.remove(f"bulk{i}")
+        self.assertEqual(self.a.count(), 400)
+        hits = {r.doc_id for r in self.a.search(vec, top_k=1000)}
+        self.assertIn("bulk0", hits)     # updated row still searchable
+        self.assertNotIn("bulk250", hits)  # removed row gone
+        self.assertEqual(len(hits), 400)
+
+    def test_upsert_batch_no_full_reload_but_visible(self):
+        """P2-9: upsert_batch merges in memory (no per-batch full reload,
+        which made bulk ingest quadratic) and rows are immediately
+        searchable — the atomic-visibility contract is unchanged."""
+        from nexus_search.core.vector_store import VectorStoreManager
+
+        mgr = VectorStoreManager(self.db_path, embedder=FakeEmbedder())
+        try:
+            mgr.upsert_batch([(f"b{i}", f"text {i}", "", "") for i in range(200)])
+            self.assertEqual(mgr.store.count(), 200)
+            vec_x = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            hits = {r.doc_id for r in mgr.store.search(vec_x, top_k=5)}
+            self.assertEqual(len(hits), 5)  # top_k respected, all valid ids
+            mgr.upsert_batch([("b0", "changed text", "", "")])
+            self.assertEqual(mgr.store.count(), 200)  # replace, not append
+        finally:
+            mgr.close()
+
 
 if __name__ == "__main__":
     unittest.main()

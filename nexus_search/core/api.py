@@ -101,9 +101,24 @@ except EmbedderUnavailable as exc:
     # type name only — the raw message can carry paths/model names to clients
     _vector_error = f"embedder_unavailable:{type(exc).__name__}"
 
+def _embed_batch_size() -> int:
+    """NEXUS_EMBED_BATCH: docs per embedding flush on the API write path.
+    Default 1 keeps the exact pre-P2-9 single-doc behavior."""
+    raw = (os.environ.get("NEXUS_EMBED_BATCH") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value > 0 else 1
+
+
 if _vector_store is not None:
     _hybrid_searcher = create_hybrid_search(_storage, vector_store=_vector_store, db_path=_NEXUS_DB)
-    _embedding_sync = EmbeddingSync(_vector_store, batch_size=1)
+    # P2-9: embedding batch size is operator-configurable via
+    # NEXUS_EMBED_BATCH (default 1 = the historical flush-per-doc behavior;
+    # /documents/bulk always flushes once at the end so a larger batch
+    # never loses vectors).
+    _embedding_sync = EmbeddingSync(_vector_store, batch_size=_embed_batch_size())
     _embedding_sync.attach(_indexer)
 else:
     _hybrid_searcher = None
@@ -348,6 +363,8 @@ def add_documents_bulk(request: Request, body: BulkDocumentIn, response: Respons
             failed.append({"doc_id": doc.doc_id, "error": "storage_error"})
         except ValueError as exc:  # e.g. vector dim mismatch surfaces here
             failed.append({"doc_id": doc.doc_id, "error": type(exc).__name__})
+    if _embedding_sync is not None:
+        _embedding_sync.flush()  # P2-9: one flush finalizes the partial batch
     if indexed:
         _query_cache.clear()  # writes invalidate cached pages
     return {"indexed": indexed, "failed": failed, "total": len(body.documents)}

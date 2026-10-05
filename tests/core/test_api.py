@@ -654,5 +654,55 @@ class TestApiPhase5Ux(unittest.TestCase):
                                                             "cursor": "!!!not-base64!!!"}).status_code, 400)
 
 
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestApiBulkEmbedBatch(unittest.TestCase):
+    """P2-9: NEXUS_EMBED_BATCH configures the embedding flush size, and
+    /documents/bulk flushes ONCE at the end — vectors must never be lost to
+    a queued-but-unflushed batch."""
+
+    def setUp(self):
+        import importlib
+        self._saved = {k: os.environ.get(k) for k in
+                       ("NEXUS_ENV", "NEXUS_DB", "NEXUS_EMBED_BATCH")}
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(), "bulk.db")
+        os.environ["NEXUS_EMBED_BATCH"] = "64"
+        from nexus_search.core import api
+        importlib.reload(api)
+        self.client = TestClient(api.app)
+
+    def tearDown(self):
+        import importlib
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        from nexus_search.core import api
+        importlib.reload(api)
+
+    def test_bulk_flushes_embeddings_once_at_end(self):
+        docs = [{"doc_id": f"b{i}", "content": f"unique payload token{i} python"}
+                for i in range(30)]  # 30 < 64: stays queued until the end
+        r = self.client.post("/documents/bulk", json={"documents": docs})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["indexed"], 30)
+        # vectors MUST be searchable right away: the endpoint flushed
+        body = self.client.get("/search",
+                              params={"q": "unique payload", "mode": "semantic"}).json()
+        self.assertEqual(body["total_results"], 30)
+
+    def test_embed_batch_env_parsed_and_default_safe(self):
+        from nexus_search.core import api
+        # module read NEXUS_EMBED_BATCH=64 in setUp
+        self.assertEqual(api._embedding_sync.batch_size, 64)
+        os.environ["NEXUS_EMBED_BATCH"] = "garbage"
+        self.assertEqual(api._embed_batch_size(), 1)
+        os.environ["NEXUS_EMBED_BATCH"] = "0"
+        self.assertEqual(api._embed_batch_size(), 1)
+        os.environ["NEXUS_EMBED_BATCH"] = "128"
+        self.assertEqual(api._embed_batch_size(), 128)
+
+
 if __name__ == "__main__":
     unittest.main()
