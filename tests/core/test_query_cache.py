@@ -92,6 +92,13 @@ class TestQueryCacheApi(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
+        # P0-2/CI: NEXUS_DB is saved/restored like test_pagination_contract
+        # does. Leaving it pointing at this class's tempdir used to be
+        # harmless ONLY on Windows (open SQLite handles keep the dir alive
+        # past tearDown's rmtree). On Linux the rmtree succeeds, and every
+        # later importlib.reload(api) that restores this stale ambient value
+        # crashed with "unable to open database file" (16 CI failures).
+        self._saved_db = os.environ.get("NEXUS_DB")
         os.environ["NEXUS_DB"] = os.path.join(self.dir, "a.db")
         from nexus_search.core import api
         importlib.reload(api)
@@ -100,6 +107,10 @@ class TestQueryCacheApi(unittest.TestCase):
         self.client.post("/documents", json={"doc_id": "a", "content": "alpha beta"})
 
     def tearDown(self):
+        if self._saved_db is None:
+            os.environ.pop("NEXUS_DB", None)
+        else:
+            os.environ["NEXUS_DB"] = self._saved_db
         for _ in range(10):
             try:
                 shutil.rmtree(self.dir)
