@@ -320,7 +320,7 @@ class VectorStore:
         """
         self._maybe_reload()
 
-        # Snapshot INSIDE the lock: add()/remove() mutate these arrays. — the
+        # P2-8: snapshot under the lock WITHOUT copying the matrix — the
         # matmul runs inside the critical section and produces a private
         # `scores` array; only doc_ids (n*8 bytes, not n*dim*4) is copied.
         # scores and doc_ids are captured under the SAME lock hold, so they
@@ -330,14 +330,8 @@ class VectorStore:
         with self._matrix_lock:
             if len(self._matrix) == 0:
                 return []
-            matrix = self._matrix.copy()
+            scores = self._matrix @ query_vector
             doc_ids = self._doc_ids.copy()
-            doc_types = self._doc_types.copy()
-            languages = self._languages.copy()
-
-        # Fast path: compute all cosine similarities
-        # matrix is (n, dim), query is (dim,) -> scores is (n,)
-        scores = matrix @ query_vector  # Already L2-normalized
 
         # Apply filter pushdown if allowed
         if allowed is not None:
@@ -348,8 +342,6 @@ class VectorStore:
             valid_indices = np.where(mask)[0]
             scores = scores[valid_indices]
             doc_ids = doc_ids[valid_indices]
-            doc_types = doc_types[valid_indices]
-            languages = languages[valid_indices]
 
         # Filter by min_score
         if min_score > -1.0:
