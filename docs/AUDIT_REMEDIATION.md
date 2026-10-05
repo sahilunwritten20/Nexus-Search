@@ -425,3 +425,43 @@ Environment notes recorded honestly:
   the unrelated vocab_cold SQLite query — background machine load; the
   5,000-doc bulk timer was therefore re-run in a quiet window and is the
   number quoted for P2-9.
+
+### WP11 CI saga (reported honestly, per the ground rules)
+
+- Runs #8 (P0-1 push) and #9 (full WP11 push) were **RED** on Ubuntu/3.12
+  while the whole suite was green locally on Windows/3.14: 16 failures,
+  all `sqlite3.OperationalError: unable to open database file` in
+  `importlib.reload(api)` teardowns.
+- Root cause (read from the CI logs via the API): three test classes set
+  `NEXUS_DB` to their own `tempfile.mkdtemp()` dir, never restored it,
+  and their tearDown `rmtree`s the dir. On Windows the rmtree FAILS
+  (SQLite file locks), so the dir survives and the stale env value stays
+  openable — green by accident. On Linux the rmtree succeeds, leaving
+  `NEXUS_DB` pointing at a deleted path; every later teardown that
+  restores that ambient value then crashes at reload. The latent
+  landmines predate WP11 (WP11's new files only disturbed the
+  ambient-value chain that had kept them masked).
+- Fix: save/restore `NEXUS_DB` in `TestQueryCacheApi`
+  (tests/core/test_query_cache.py), the `tests/test_audit_validation.py`
+  API class, and `TestApiRerankToggle` (tests/ranking/test_ranker.py) —
+  the same hygiene `test_pagination_contract.py` already practiced.
+  Commits 3c55bf3 (16 -> 2 CI failures) and 8a92495 (2 -> 0).
+- Run #11 (8a92495): **GREEN — test + docker jobs both pass on
+  Ubuntu/Python 3.12** (docker job = image build + non-root assertion +
+  /health probe, which also stands in for the local docker probe this
+  machine cannot run).
+
+### WP11 final verification gate (executed 2026-10-05/06, Windows 11, Python 3.14.7)
+
+| Gate | Result |
+|---|---|
+| Offline suite (`NEXUS_ENV=dev`, plain `python -m pytest -q`) | **800 passed, 7 skipped** (6:19) — baseline was 760/7; +40 net new tests, zero pre-existing tests loosened |
+| Model-gated suite (`NEXUS_RUN_MODEL_TESTS=1`) | **805 passed, 2 skipped** (5:38) |
+| Load smoke (`NEXUS_RUN_LOAD_SMOKE=1`) | **1 passed** (8.75 s) |
+| Graph bench (`NEXUS_RUN_GRAPH_BENCH=1`, `tests/evaluation`) | **11 passed, 2 skipped** (1:20) |
+| `scripts/dev/check_duplicate_tests.py` | **no duplicate test function names** |
+| `scripts/dev/check_env_docs.py` | **env docs consistent: 29 documented vars** (was 25) |
+| Golden keyword snapshot | untouched and green through every change |
+| GitHub Actions (Ubuntu/Python 3.12) | run #11 **GREEN** (test + docker), after the two documented-and-fixed red runs #8-#10 |
+| Docker `compose build` + `/ready` locally | **unverified locally** — Docker CLI shim present but no engine/Docker Desktop on this machine; the CI docker job (build + non-root + /health probe) is green |
+| Python 3.12 local parity run | **unverified locally** (no 3.12 interpreter on this machine) — CI's green run on 3.12 is the parity evidence |
