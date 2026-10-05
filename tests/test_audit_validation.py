@@ -744,6 +744,11 @@ class TestApiHybridWeightsAndDegradedBoot(unittest.TestCase):
         from fastapi.testclient import TestClient
         self._TestClient = TestClient
         self.dir = tempfile.mkdtemp()
+        # P0-2/CI: save/restore NEXUS_DB. Leaving it pointing at this class's
+        # tempdir crashed every later importlib.reload(api) on Linux, where
+        # tearDown's rmtree actually succeeds (Windows keeps the dir alive
+        # by file lock, so the bug was CI-only).
+        self._saved_db = os.environ.get("NEXUS_DB")
         os.environ["NEXUS_DB"] = os.path.join(self.dir, "api.db")
         self._saved_embedder = os.environ.get("NEXUS_EMBEDDER", "hash:384")
         # api module boots fail-closed without a key outside dev; these tests
@@ -766,6 +771,10 @@ class TestApiHybridWeightsAndDegradedBoot(unittest.TestCase):
             os.environ.pop("NEXUS_ENV", None)
         else:
             os.environ["NEXUS_ENV"] = self._saved_env
+        if self._saved_db is None:
+            os.environ.pop("NEXUS_DB", None)
+        else:
+            os.environ["NEXUS_DB"] = self._saved_db
         for _ in range(10):
             try:
                 shutil.rmtree(self.dir)

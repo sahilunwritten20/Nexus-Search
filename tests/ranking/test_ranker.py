@@ -221,6 +221,10 @@ class TestApiRerankToggle(_Base):
     def setUp(self):
         super().setUp()
         import importlib
+        # P0-2/CI: restore NEXUS_DB afterwards — _Base's tearDown rmtrees
+        # self.dir, and a dangling value crashed later importlib.reload(api)
+        # calls on Linux (where the rmtree succeeds).
+        self._saved_db = os.environ.get("NEXUS_DB")
         os.environ["NEXUS_DB"] = os.path.join(self.dir, "api.db")
         os.environ["NEXUS_EMBEDDER"] = "hash:384"
         from nexus_search.core import embedders
@@ -230,6 +234,18 @@ class TestApiRerankToggle(_Base):
         from fastapi.testclient import TestClient
         self.client = TestClient(api.app)
         self.api = api
+
+    def tearDown(self):
+        from nexus_search.core import embedders, api
+        import importlib
+        os.environ["NEXUS_ENV"] = "dev"
+        embedders.reset_embedder()
+        importlib.reload(api)  # un-hook the module before dropping the dir
+        if self._saved_db is None:
+            os.environ.pop("NEXUS_DB", None)
+        else:
+            os.environ["NEXUS_DB"] = self._saved_db
+        super().tearDown()
 
     def test_rerank_false_identical(self):
         self.client.post("/documents", json={"doc_id": "a", "content": "python alpha", "title": "A"})
