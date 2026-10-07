@@ -200,6 +200,11 @@ class BM25Search:
                              for rows in postings_by_term.values()
                              for doc_id, _tf in rows}
             docs_by_id = self.storage.get_documents(list(candidate_ids))
+            # WP12-B4: seed the per-request cache from the batch — the
+            # ranked/grouping loops below read through `get()` and were
+            # re-fetching every doc one-by-one (the batch result was
+            # never reused; audit R3).
+            cache.update(docs_by_id)
             for term in term_set:
                 n_t = df_by_term.get(term, 0)
                 idf = math.log((n_docs - n_t + 0.5) / (n_t + 0.5) + 1)
@@ -210,10 +215,15 @@ class BM25Search:
                     norm = 1 - self.b + self.b * (doc.length / avg_len if avg_len else 1)
                     scores[doc_id] = scores.get(doc_id, 0.0) + idf * (tf * (self.k1 + 1)) / (tf + self.k1 * norm)
         elif parsed.filters or parsed.not_filters:  # filter-only query, e.g. "type:pdf" / "-type:pdf"
-            for doc_id in self.storage.all_doc_ids():
-                doc = get(doc_id)
-                if doc and matches_filters(doc, parsed.filters, parsed.not_filters):
-                    scores[doc_id] = 0.0
+            # WP12-B4: ONE metadata-only scan for the filter + ONE batched
+            # full read of just the passing docs (was a get_document per doc
+            # in the corpus).
+            meta = self.storage.get_documents_meta()
+            passing = [doc_id for doc_id, doc in meta.items()
+                       if matches_filters(doc, parsed.filters, parsed.not_filters)]
+            cache.update(self.storage.get_documents(passing))
+            for doc_id in passing:
+                scores[doc_id] = 0.0
         else:
             return SearchPage(0)
 

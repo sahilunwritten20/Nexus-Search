@@ -216,21 +216,26 @@ class HybridSearch:
         vector_results = self.vector_store.search(query_text, top_k=pool_k,
                                                    allowed_ids=allowed_ids)
 
+        # WP12-B4: ONE batched fetch for every per-candidate gate below
+        # (chunk parent, required phrases, boolean structure) — the old
+        # per-candidate get_document was the hybrid N+1 (audit R3:
+        # ~900-1,600 calls per query).
+        docs_by_id = self.storage.get_documents([vr.doc_id for vr in vector_results])
+
         results = {}
         # Tokenize required phrases once — matches BM25's phrase semantics
         # (token sequence, not substring), so "machine-learning" satisfies
         # the phrase "machine learning" on BOTH retrievers.
         phrase_tokens = [t for t in (tokenize(p) for p in parsed.phrases) if t]
         for vr in vector_results:
+            doc = docs_by_id.get(vr.doc_id)
             parent = vr.doc_id
-            # Get parent doc for chunk grouping
-            if group_chunks:
-                doc = self.storage.get_document(parent)
-                if doc:
-                    parent = doc.metadata.get("parent_id", parent)
+            # Get parent doc for chunk grouping (unchanged semantics: a
+            # missing row keeps the vector id as the parent)
+            if group_chunks and doc is not None:
+                parent = doc.metadata.get("parent_id", vr.doc_id)
             # Apply required phrases from the parsed query
             if phrase_tokens:
-                doc = self.storage.get_document(vr.doc_id)
                 if doc is None:
                     continue
                 doc_tokens = tokenize(f"{doc.title} {doc.content}")
@@ -240,7 +245,6 @@ class HybridSearch:
             # a query filter must not behave differently depending on which
             # half of the fusion produced the hit.
             if parsed.has_boolean:
-                doc = self.storage.get_document(vr.doc_id)
                 if doc is None:
                     continue
                 doc_tokens = tokenize(f"{doc.title} {doc.content}")
@@ -253,19 +257,23 @@ class HybridSearch:
     # -------------------------------------------------------------- merge
 
     def _diversify(self, merged: list[HybridSearchResult], diversity: float,
-                   threshold: float = 0.85) -> list[HybridSearchResult]:
+                    threshold: float = 0.85) -> list[HybridSearchResult]:
         """MMR pass (core/diversity.py). diversity∈(0,1]: higher = novelty wins
         harder. Ran AFTER sorting, BEFORE slicing, so diversity affects which
         items occupy the returned page."""
         from .diversity import mmr_select
         lambda_ = max(0.0, 1.0 - diversity)
 
+        # WP12-B4: ONE batched fetch for every candidate's content (was a
+        # get_document per result — the diversity N+1).
+        docs_by_id = self.storage.get_documents([r.doc_id for r in merged])
+
         def text_of(r):
             # CONTENT is the diversity signal, not title chrome: near-mirror
             # documents routinely differ only by a running index in the title
             # ("Fox variant 1" vs "Fox variant 2"), and including titles lets
             # copy-farms slip under the Jaccard threshold.
-            doc = self.storage.get_document(r.doc_id)
+            doc = docs_by_id.get(r.doc_id)
             return doc.content if doc else r.title
 
         selected = mmr_select(merged, text_of, lambda_=lambda_,
@@ -311,6 +319,13 @@ class HybridSearch:
                       self.bm25_weight if bm25_weight is None else bm25_weight,
                       self.vector_weight if vector_weight is None else vector_weight)
 
+        # WP12-B4: one batched fetch for the vector-only hits (docs the BM25
+        # side never materialized) — was a get_document per vector-only doc.
+        vector_only_ids = [vector_results[doc_id][1]
+                           for doc_id, _s, _src, _bc, _vc in fused
+                           if doc_id not in bm25_results and doc_id in vector_results]
+        vector_only_docs = self.storage.get_documents(vector_only_ids)
+
         merged = []
         for doc_id, fused_score, source, bm25_contrib, vector_contrib in fused:
             bm25_result = bm25_results.get(doc_id)
@@ -335,7 +350,7 @@ class HybridSearch:
                 ))
             else:
                 # Vector-only result
-                doc = self.storage.get_document(vector_results[doc_id][1])
+                doc = vector_only_docs.get(vector_results[doc_id][1])
                 if doc:
                     merged.append(HybridSearchResult(
                         doc_id=doc_id,
@@ -500,10 +515,14 @@ class HybridSearch:
 
             fused = _fuse({}, vector_results, fusion, bm25_weight=0.0,
                           vector_weight=w_vector)
+            # WP12-B4: one batched fetch for the whole fused page (was a
+            # get_document per result — the semantic-mode N+1).
+            docs_by_id = self.storage.get_documents(
+                [vector_results[doc_id][1] for doc_id, *_ in fused])
             merged = []
             for doc_id, fused_score, source, _, vector_contrib in fused:
                 vr_doc_id = vector_results[doc_id][1]
-                doc = self.storage.get_document(vr_doc_id)
+                doc = docs_by_id.get(vr_doc_id)
                 if doc:
                     merged.append(HybridSearchResult(
                         doc_id=doc_id,
