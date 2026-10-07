@@ -176,6 +176,24 @@ class Storage:
         return {r[0]: Document(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]), r[6])
                 for r in rows}
 
+    def get_documents_meta(self, doc_ids: list[str] | None = None) -> dict[str, Document]:
+        """Metadata-only fetch (WP12-B3): doc_id, doc_type, metadata in ONE
+        query, WITHOUT the content column. Carries Document rows whose
+        title/content/length/added_at are placeholders — the filter pushdown
+        only reads .doc_type/.metadata, and reading full content per doc was
+        O(corpus) per filtered vector search (audit R4)."""
+        with self.lock:
+            if doc_ids:
+                placeholders = ",".join("?" for _ in doc_ids)
+                rows = self.conn.execute(
+                    "SELECT doc_id, doc_type, metadata FROM documents "
+                    f"WHERE doc_id IN ({placeholders})", doc_ids).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT doc_id, doc_type, metadata FROM documents").fetchall()
+        return {r[0]: Document(r[0], "", "", r[1], 0, json.loads(r[2]), 0.0)
+                for r in rows}
+
     def delete_document(self, doc_id: str) -> bool:
         with self.lock:
             cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))

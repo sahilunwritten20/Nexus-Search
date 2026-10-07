@@ -207,13 +207,14 @@ class HybridSearch:
         return {r.doc_id: (r.score, r) for r in page.results}, page.total
 
     def _vector_candidates(self, query: str, pool_k: int, group_chunks: bool,
-                           allowed_filter: Optional[Callable[[str], bool]] = None,
-                           ) -> dict[str, tuple[float, str]]:
+                            allowed_ids: Optional[set] = None,
+                            ) -> dict[str, tuple[float, str]]:
         # Use parsed query text for embedding (no filters/phrases in embedding)
         parsed = parse_query(query)
         query_text = parsed.text
 
-        vector_results = self.vector_store.search(query_text, top_k=pool_k, allowed=allowed_filter)
+        vector_results = self.vector_store.search(query_text, top_k=pool_k,
+                                                   allowed_ids=allowed_ids)
 
         results = {}
         # Tokenize required phrases once — matches BM25's phrase semantics
@@ -354,17 +355,19 @@ class HybridSearch:
 
         return merged
 
-    def _build_allowed_filter(self, parsed) -> Optional[Callable[[str], bool]]:
-        """Build filter callable for vector search pushdown."""
+    def _build_allowed_ids(self, parsed) -> Optional[set]:
+        """Allowed doc-id set for the vector-search pushdown (WP12-B3):
+        ONE metadata-only Storage read (no content column) evaluated with
+        the SAME matches_filters semantics as every other retriever —
+        replaces allowed(doc_id) -> get_document(full content) per
+        VECTOR, which was O(corpus) SQL per filtered query (audit R4).
+        Docs missing from `documents` are simply absent -> excluded, same
+        as the old callable's None check."""
         if not parsed.filters and not parsed.not_filters:
             return None
-
-        def allowed(doc_id: str) -> bool:
-            doc = self.storage.get_document(doc_id)
-            if doc is None:
-                return False
-            return matches_filters(doc, parsed.filters, parsed.not_filters)
-        return allowed
+        meta_by_id = self.storage.get_documents_meta()
+        return {doc_id for doc_id, doc in meta_by_id.items()
+                if matches_filters(doc, parsed.filters, parsed.not_filters)}
 
     @staticmethod
     def _meta(mode_used: str, original_mode: SearchMode, start_time: float,
@@ -435,7 +438,7 @@ class HybridSearch:
         original_mode = mode
 
         parsed = parse_query(query)
-        allowed_filter = self._build_allowed_filter(parsed)
+        allowed_ids = self._build_allowed_ids(parsed)
 
         if mode == SearchMode.KEYWORD:
             need_pool = sort not in (None, "relevance") or diversity > 0.0
@@ -485,7 +488,7 @@ class HybridSearch:
                 # candidates when strict page stability matters.
                 pool_k = self._candidate_k(top_k, candidates, offset)
                 vector_results = self._vector_candidates(query, pool_k, group_chunks,
-                                                          allowed_filter)
+                                                          allowed_ids)
             except EmbedderUnavailable as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
@@ -563,7 +566,7 @@ class HybridSearch:
         try:
             if w_vector > 0:
                 vector_results = self._vector_candidates(query, pool_k, group_chunks,
-                                                          allowed_filter)
+                                                          allowed_ids)
         except EmbedderUnavailable as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
