@@ -75,6 +75,10 @@ class VectorStore:
         self._doc_types: np.ndarray = self._doc_types_buf[:0]
         self._languages: np.ndarray = self._languages_buf[:0]
         self._content_hashes: dict[str, str] = {}  # doc_id -> content_hash
+        # doc_id -> valid-row index (WP12-B5): add/remove are O(1) lookups
+        # instead of a full np.where scan over the object-dtype doc_ids
+        # array per operation (O(n) per add — quadratic bulk ingest).
+        self._id_to_idx: dict[str, int] = {}
         self._matrix_lock = threading.RLock()
         # Bumped on every in-memory mutation (add/remove/batch merge) so a
         # concurrent _load_matrix can tell whether the live buffers moved
@@ -166,6 +170,7 @@ class VectorStore:
             doc_types_buf = np.empty(cap, dtype=object)
             languages_buf = np.empty(cap, dtype=object)
             content_hashes: dict[str, str] = {}
+            id_to_idx: dict[str, int] = {}
             for i, (doc_id, vec_blob, content_hash, doc_type, metadata) in enumerate(rows):
                 matrix_buf[i] = np.frombuffer(vec_blob, dtype=np.float32)
                 doc_ids_buf[i] = doc_id
@@ -173,6 +178,7 @@ class VectorStore:
                 meta = json.loads(metadata) if metadata else {}
                 languages_buf[i] = meta.get("language", "") or ""
                 content_hashes[doc_id] = content_hash
+                id_to_idx[doc_id] = i
 
             with self.lock:
                 with self._matrix_lock:
@@ -183,6 +189,7 @@ class VectorStore:
                     self._doc_types_buf = doc_types_buf
                     self._languages_buf = languages_buf
                     self._content_hashes = content_hashes
+                    self._id_to_idx = id_to_idx
                     self._set_view(n)
                     self._data_version = version
             self._last_reload_time = time.time()
@@ -202,8 +209,10 @@ class VectorStore:
                     meta = _json.loads(metadata) if metadata else {}
                     self._languages_buf[i] = meta.get("language", "") or ""
                 self._content_hashes = {}
+                self._id_to_idx = {}
                 for i, (doc_id, _v, content_hash, _t, _m) in enumerate(rows):
                     self._content_hashes[doc_id] = content_hash
+                    self._id_to_idx[doc_id] = i
                 self._set_view(n)
                 self._data_version = version
         self._last_reload_time = time.time()
@@ -266,10 +275,11 @@ class VectorStore:
                          content_hash: str, doc_type: str, language: str) -> None:
         """In-memory upsert of one already-committed row (caller holds
         self.lock + _matrix_lock). Update-in-place or amortized append —
-        P2-9: the per-add np.vstack was quadratic bulk ingest."""
-        existing_idx = np.where(self._doc_ids == doc_id)[0]
-        if len(existing_idx) > 0:
-            idx = existing_idx[0]
+        P2-9: the per-add np.vstack was quadratic bulk ingest. WP12-B5:
+        the doc_id lookup is an O(1) dict hit (the np.where scan over the
+        object-dtype doc_ids array was O(n) per add)."""
+        idx = self._id_to_idx.get(doc_id)
+        if idx is not None:
             self._matrix[idx] = vector
             self._doc_types[idx] = doc_type
             self._languages[idx] = language
@@ -281,6 +291,7 @@ class VectorStore:
             self._doc_types_buf[n] = doc_type
             self._languages_buf[n] = language
             self._set_view(n + 1)
+            self._id_to_idx[doc_id] = n
         self._content_hashes[doc_id] = content_hash
         self._mem_version += 1  # WP12-B1: reloads must not clobber this
 
@@ -332,16 +343,18 @@ class VectorStore:
                 )
                 self.conn.commit()
 
-                idx_arr = np.where(self._doc_ids == doc_id)[0]
-                if len(idx_arr) > 0:
-                    idx = idx_arr[0]
-                    # Swap with last element
+                idx = self._id_to_idx.pop(doc_id, None)
+                if idx is not None:
+                    # Swap with last element (WP12-B5: O(1) index lookup;
+                    # the moved row's map entry moves with it)
                     last_idx = len(self._doc_ids) - 1
                     if idx != last_idx:
                         self._matrix[idx] = self._matrix[last_idx]
-                        self._doc_ids[idx] = self._doc_ids[last_idx]
+                        moved_id = self._doc_ids[last_idx]
+                        self._doc_ids[idx] = moved_id
                         self._doc_types[idx] = self._doc_types[last_idx]
                         self._languages[idx] = self._languages[last_idx]
+                        self._id_to_idx[moved_id] = idx
                     # Publish one fewer row: the view shrinks (no copy —
                     # the capacity buffer stays for reuse; P2-9). search()
                     # snapshots scores+doc_ids under the same lock, so no
