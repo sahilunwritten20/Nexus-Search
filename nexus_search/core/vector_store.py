@@ -76,6 +76,10 @@ class VectorStore:
         self._languages: np.ndarray = self._languages_buf[:0]
         self._content_hashes: dict[str, str] = {}  # doc_id -> content_hash
         self._matrix_lock = threading.RLock()
+        # Bumped on every in-memory mutation (add/remove/batch merge) so a
+        # concurrent _load_matrix can tell whether the live buffers moved
+        # under it while it was building replacements (WP12-B1).
+        self._mem_version = 0
         
         # Freshness tracking
         self._data_version = 0
@@ -105,54 +109,103 @@ class VectorStore:
             self.conn.commit()
     
     def _load_matrix(self):
-        """Load all vectors for this model into memory."""
-        with self.lock:
-            # Try to join with documents for doc_type/language, but handle missing table
-            try:
-                rows = self.conn.execute(
-                    """
-                    SELECT dv.doc_id, dv.vector, dv.content_hash, d.doc_type, 
-                           COALESCE(d.metadata, '{}') as metadata
-                    FROM doc_vectors dv
-                    LEFT JOIN documents d ON d.doc_id = dv.doc_id
-                    WHERE dv.model = ? AND dv.dim = ?
-                    """,
-                    (self.model, self.dim)
-                ).fetchall()
-            except sqlite3.OperationalError:
-                # Documents table doesn't exist yet - load without metadata
-                rows = self.conn.execute(
-                    """
-                    SELECT dv.doc_id, dv.vector, dv.content_hash, '', '{}'
-                    FROM doc_vectors dv
-                    WHERE dv.model = ? AND dv.dim = ?
-                    """,
-                    (self.model, self.dim)
-                ).fetchall()
-        
-        if not rows:
-            with self._matrix_lock:
-                self._reset_buffers(0)
-                self._content_hashes = {}
-            return
+        """Load all vectors for this model into memory.
 
-        import json
-        n = len(rows)
-        with self._matrix_lock:
-            self._reset_buffers(n)
+        WP12-B1 (audit R1/R5b): the replacement buffers AND the
+        content-hash dict are built OUTSIDE the locks (a concurrent
+        search() keeps matmul'ing the old buffers instead of stalling
+        behind a full fill), then swapped in under ONE short critical
+        section. The hash map is REPLACED, not merged: after an external
+        delete + reload, get_content_hash must return None — the P2-9
+        version kept the deleted doc's stale hash forever, so a
+        VectorStoreManager.upsert of identical text was skipped as
+        'unchanged' and the doc never regained a vector.
+
+        The swap is guarded by _mem_version: an in-process add/remove that
+        lands while we build would otherwise be clobbered by the swap (its
+        own commits don't bump PRAGMA data_version, so nothing would ever
+        trigger another reload — the silent-loss class P2-9 fixed for
+        add()). On a version mismatch we simply retry; after bounded
+        attempts we fall back to building under the locks (slow but
+        consistent).
+        """
+        for attempt in range(3):
+            with self.lock:
+                # Read data_version BEFORE the fetch: a write that lands
+                # during the build bumps it again, so the next
+                # _maybe_reload re-syncs instead of missing it.
+                version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+                mem_version = self._mem_version
+                try:
+                    rows = self.conn.execute(
+                        """
+                        SELECT dv.doc_id, dv.vector, dv.content_hash, d.doc_type,
+                               COALESCE(d.metadata, '{}') as metadata
+                        FROM doc_vectors dv
+                        LEFT JOIN documents d ON d.doc_id = dv.doc_id
+                        WHERE dv.model = ? AND dv.dim = ?
+                        """,
+                        (self.model, self.dim)
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    # Documents table doesn't exist yet - load without metadata
+                    rows = self.conn.execute(
+                        """
+                        SELECT dv.doc_id, dv.vector, dv.content_hash, '', '{}'
+                        FROM doc_vectors dv
+                        WHERE dv.model = ? AND dv.dim = ?
+                        """,
+                        (self.model, self.dim)
+                    ).fetchall()
+
+            import json
+            n = len(rows)
+            cap = max(n, 16)
+            matrix_buf = np.empty((cap, self.dim), dtype=np.float32)
+            doc_ids_buf = np.empty(cap, dtype=object)
+            doc_types_buf = np.empty(cap, dtype=object)
+            languages_buf = np.empty(cap, dtype=object)
+            content_hashes: dict[str, str] = {}
             for i, (doc_id, vec_blob, content_hash, doc_type, metadata) in enumerate(rows):
-                vec = np.frombuffer(vec_blob, dtype=np.float32)
-                self._matrix_buf[i] = vec
-                self._doc_ids_buf[i] = doc_id
-                self._doc_types_buf[i] = doc_type or ""
+                matrix_buf[i] = np.frombuffer(vec_blob, dtype=np.float32)
+                doc_ids_buf[i] = doc_id
+                doc_types_buf[i] = doc_type or ""
                 meta = json.loads(metadata) if metadata else {}
-                self._languages_buf[i] = meta.get("language", "") or ""
-                self._content_hashes[doc_id] = content_hash
-            self._set_view(n)
-        
-        # Update data version for freshness
+                languages_buf[i] = meta.get("language", "") or ""
+                content_hashes[doc_id] = content_hash
+
+            with self.lock:
+                with self._matrix_lock:
+                    if self._mem_version != mem_version:
+                        continue  # in-memory mutation raced us: rebuild
+                    self._matrix_buf = matrix_buf
+                    self._doc_ids_buf = doc_ids_buf
+                    self._doc_types_buf = doc_types_buf
+                    self._languages_buf = languages_buf
+                    self._content_hashes = content_hashes
+                    self._set_view(n)
+                    self._data_version = version
+            self._last_reload_time = time.time()
+            logger.info("Loaded %d vectors for model %s (dim=%d)", n, self.model, self.dim)
+            return
+        # Contention path (rare): last resort, build under the locks so the
+        # result can never clobber a concurrent merge.
         with self.lock:
-            self._data_version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+            with self._matrix_lock:
+                import json as _json
+                n = len(rows)
+                self._reset_buffers(n)
+                for i, (doc_id, vec_blob, content_hash, doc_type, metadata) in enumerate(rows):
+                    self._matrix_buf[i] = np.frombuffer(vec_blob, dtype=np.float32)
+                    self._doc_ids_buf[i] = doc_id
+                    self._doc_types_buf[i] = doc_type or ""
+                    meta = _json.loads(metadata) if metadata else {}
+                    self._languages_buf[i] = meta.get("language", "") or ""
+                self._content_hashes = {}
+                for i, (doc_id, _v, content_hash, _t, _m) in enumerate(rows):
+                    self._content_hashes[doc_id] = content_hash
+                self._set_view(n)
+                self._data_version = version
         self._last_reload_time = time.time()
         logger.info("Loaded %d vectors for model %s (dim=%d)", n, self.model, self.dim)
     
@@ -229,6 +282,7 @@ class VectorStore:
             self._languages_buf[n] = language
             self._set_view(n + 1)
         self._content_hashes[doc_id] = content_hash
+        self._mem_version += 1  # WP12-B1: reloads must not clobber this
 
     def add(self, doc_id: str, vector: np.ndarray, content_hash: str, doc_type: str = "", language: str = ""):
         """Add or update a vector."""
@@ -294,12 +348,19 @@ class VectorStore:
                     # reader can pair rows across the shrink.
                     self._set_view(last_idx)
                     self._content_hashes.pop(doc_id, None)
+                    self._mem_version += 1  # WP12-B1: reloads must not clobber this
 
     # Backward compatibility
     delete = remove
     
     def get_content_hash(self, doc_id: str) -> Optional[str]:
-        """Get stored content hash for a doc."""
+        """Get stored content hash for a doc.
+
+        Refreshes first (_maybe_reload): the hash gates
+        VectorStoreManager.upsert's unchanged-skip, so without this an
+        external delete followed by a same-text upsert would answer from
+        a stale in-memory dict and skip re-embedding forever (WP12-B1)."""
+        self._maybe_reload()
         with self._matrix_lock:
             return self._content_hashes.get(doc_id)
     

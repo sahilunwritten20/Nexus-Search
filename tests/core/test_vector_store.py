@@ -194,6 +194,39 @@ class TestVectorStoreMultiInstance(unittest.TestCase):
         finally:
             mgr.close()
 
+    def test_external_delete_clears_stale_content_hash(self):
+        """WP12-B1 (audit R1): a reload must REPLACE the in-memory
+        content-hash map, not merge into it. After another instance deletes
+        a row, get_content_hash must return None — the P2-9 reload kept the
+        stale hash, so Manager.upsert of identical text was skipped as
+        'unchanged' forever and the doc never regained a vector."""
+        vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.a.add("keep", vec, "h-keep")
+        self.a.add("gone", vec, "h-gone")
+        self.b._maybe_reload()
+        self.b.remove("gone")          # EXTERNAL delete (other instance)
+        self.a._maybe_reload()          # a reloads on the data_version bump
+        self.assertEqual(self.a.count(), 1)
+        self.assertIsNone(self.a.get_content_hash("gone"))
+        self.assertEqual(self.a.get_content_hash("keep"), "h-keep")
+
+    def test_manager_reembeds_after_external_delete(self):
+        """WP12-B1 (audit R1), user-visible effect: the long-lived manager's
+        upsert of the SAME text after an external delete must re-embed
+        ('created'), not skip as 'unchanged' off a stale hash."""
+        from nexus_search.core.vector_store import VectorStoreManager
+
+        mgr = VectorStoreManager(self.db_path, embedder=FakeEmbedder())
+        try:
+            self.assertEqual(mgr.upsert("gone", "same text", "", ""), "created")
+            self.b._maybe_reload()
+            self.b.remove("gone")      # external delete
+            self.assertEqual(mgr.upsert("gone", "same text", "", ""), "created")
+            self.b._maybe_reload()
+            self.assertEqual(self.b.count(), 1)  # vector is back in the DB
+        finally:
+            mgr.close()
+
 
 if __name__ == "__main__":
     unittest.main()
