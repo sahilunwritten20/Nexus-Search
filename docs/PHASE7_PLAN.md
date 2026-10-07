@@ -48,6 +48,25 @@ never as instructions:
   with injection payloads must produce answers that quote the payload as
   text, never obey it (regression floor, not best-effort).
 
+## 2b. Model OUTPUT is untrusted input to the UI (WP12-B2)
+
+The same discipline P1-6 applied to `highlight=true` applies to every
+byte the LLM returns — model output can contain HTML/script/markdown
+that a rendering client would execute:
+
+- **Sanitize/escape before any UI renders it**: the response layer ships
+  answer text as PLAIN TEXT by default; any markup is stripped or
+  entity-escaped at the API boundary (the `'<mark>hello</mark> <img
+  src=x onerror=alert(1)>'` highlight bug is the precedent class).
+- **Forbid auto-rendering markdown images/links from model output**:
+  `![](http://attacker/...)` and `[x](http://attacker/...)` in an answer
+  are an exfiltration channel (the victim's client fetches the URL,
+  leaking IP/headers) and a tracking pixel channel. The renderer-level
+  ban is documented as a REQUIREMENT on any Phase 7 UI; the API's plain-
+  text default is what makes it enforceable.
+- The answer path logs/serializes model output only as data (no eval,
+  no template injection, no f-string markup paths).
+
 ## 3. Citation verification
 
 - Every citation in an answer MUST reference a `doc_id`/`chunk_id`
@@ -68,6 +87,14 @@ never as instructions:
   rolling budgets on tokens sent to the provider, over a rolling window —
   same bucketing rule as `_rate_limit_key` (P0-3: only VERIFIED keys get
   key-buckets; everything else falls through to IP).
+  OPERATIONAL LIMIT (WP12-B2): the slowapi limiter is IN-PROCESS MEMORY
+  (`Limiter(key_func=...)` holds its counters in RAM), so per-key token
+  caps share that limit — they are per-WORKER. Running uvicorn with more
+  than one worker (or multiple API replicas) multiplies the effective
+  budget by the worker count; enforcing true per-key caps then requires
+  SHARED STATE (a small SQLite table or Redis, same pattern as the
+  crawler frontier's cross-process SQLite) — a Phase 7 requirement to
+  state in the deployment docs, not to improvise later.
 - Hard request timeout on every LLM call (default ≤ 30 s) + a bounded
   retry with jitter (≤ 2 retries, non-idempotent-capable calls fail
   fast instead).
@@ -106,16 +133,35 @@ answers:
   - **answerable** (cited answer whose facts match the fixture),
   - **partial** (some facts, must still cite only verified chunks),
   - **unanswerable** — MUST refuse ("no evidence in the corpus"), scored
-    as a hard floor, because Phase 4's no-answer finding showed keyword
-    mode serves confident junk (top-1 scores 5.4-9.1) while hybrid tops
-    out at 0.03: the RAG layer must inherit hybrid's low-confidence
-    behavior, not keyword's.
+    as a hard floor. Phase 4's no-answer finding stands (keyword mode
+    serves confident junk at top-1 BM25 5.4-9.1 on nonsense queries),
+    but the OLD justification — "hybrid tops out at 0.03, so inherit
+    hybrid's low-confidence behavior" — was WRONG and is retracted
+    (WP12-B2): 0.0328 = 2/61 is just the RRF ceiling for a doc ranked
+    #1 in BOTH retrievers (weight/(k+rank) twice). It is a
+    rank/normalization artifact, NOT a confidence signal: RRF emits the
+    same 0.03279 whether the top vector cosine is 0.92 or 0.05, and
+    weighted fusion's top-1 is always 1.0·(w_bm25+w_vector) regardless
+    of raw scores (min-max normalization forces it). Fused scores from
+    either fusion mode must NEVER gate the refuse decision.
   - **injection** corpus (section 2's payloads must be quoted, never
     obeyed).
-- Regression floors in default CI (hash-embedder-derived retrieval keeps
-  the fixture deterministic); model-gated floors behind
-  `NEXUS_RUN_MODEL_TESTS=1`. Floor failures fail CI — no silent quality
-  regressions.
+- The refuse-gate uses RAW retrieval signals ONLY (WP12-B2):
+  - vector cosine floor: the RAG retrieval call passes `min_score` (a
+    raw cosine threshold) — semantic/hybrid search already supports it
+    on the vector side; the API may need to expose it for /ask.
+  - BM25 raw-score floor: the un-normalized BM25 score of the top hit
+    (the same 5.4-9.1 junk measurement is the calibration data).
+  - and/or a hybrid agreement rule (e.g. refuse when the top fused
+    result comes from only ONE retriever AND that retriever's raw score
+    is under its floor).
+  - Thresholds are CALIBRATED on the WP10 fixture
+    (`nexus_search/evaluation/semantic_benchmark/fixture.py`): measure
+    raw-score distributions for answerable vs unanswerable questions,
+    pick floors that separate them, and freeze those numbers as a CI
+    regression floor (hash-embedder-derived retrieval keeps the fixture
+    deterministic). Floor failures fail CI — no silent quality
+    regressions.
 
 ## 7. Where it plugs in
 
