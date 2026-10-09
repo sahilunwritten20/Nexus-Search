@@ -545,3 +545,280 @@ available) � only the working-tree preconditions were checked.
   head.
 - B1 and B2 are done and CI is green: **the Phase 7 RAG implementation
   gate is open.**
+
+---
+
+# WP13 — Independent re-review remediation (blocking B6 + scale bench + ledger + sign-off)
+
+Scope: the reviewer's re-audit of the WP12 zip found one blocking
+regression (encoding, item 1), a benchmark-validity gap (item 2), open
+ledger items (item 3), packaging/hygiene (item 4), unverified gates
+(item 5), an n8n decision (item 6, user decision required — options
+presented, NOT acted on) and the Phase 1-6 sign-off (item 7).
+
+Baseline re-confirmed FIRST at the WP12 head b63bdb5 (ground rule 1):
+**offline 829 passed, 7 skipped, 21 subtests (7:36)**, identical to the
+WP12 gate; all 7 skips: 3x test_embedders (sentence-transformers),
+test_graph_benchmark:30 (needs NEXUS_RUN_GRAPH_BENCH=1), 2x
+test_semantic_benchmark:64/68 (need NEXUS_RUN_MODEL_TESTS=1),
+test_load_smoke:81 (needs NEXUS_RUN_LOAD_SMOKE=1).
+
+## Item 1 — BLOCKING: WP12-B6 encoding regression (ingestion/connectors/files.py)
+
+Status: **FIXED** (commit ea10a5c, test-first: 454 test failures -> 0).
+
+Root causes (both confirmed against the reviewer's exact samples before
+fixing — `scripts/dev/wp13/b6_before_after.py`):
+
+1. **(a) Baltic collision letters.** `_LATIN_SPECIFIC["baltic"]` = "
+   ūėįųŗŪĖĮŲ" — every one of those letters sits on a byte that is a REAL
+   cp1252 letter (byte table dumped programmatically: ū@0xFB=û, ė@0xEB=ë,
+   į@0xE1=á, ų@0xF8=ø, ŗ@0xBA=º, Ū@0xDB=Û, Ė@0xCB=Ë, Į@0xC1=Á, Ų@0xD8=Ø).
+   Two interior occurrences were enough to flip a file to cp1257 —
+   independent of detector version (reproduced with a stubbed detector
+   whose top guess was cp1252). The WP12 collision exclusion had been
+   applied to the Central-European and Turkish sets only.
+2. **(b) Mismatched denominators.** `_cjk_share` divided by ALL
+   characters (spaces, digits, punctuation, Latin) while the
+   `_legacy_script_codec` share divided by letters only: a spaced Korean
+   sentence scored ~0.8 against a flat 1.0 for a mojibake decode, making
+   the "+0.10 margin" meaningless.
+
+Fix (minimal, measured at each step — probe scripts under
+`C:\Users\Admin\AppData\Local\Temp\opencode\wp13_probe*.py` during
+development; committed evidence scripts under scripts/dev/wp13/):
+
+- Both shares now use ONE denominator: non-space, non-digit,
+  non-punctuation characters (digits excluded — they carry no script
+  information and would poison the Latin 0.9 / Cyrillic 0.85 floors for
+  digit-heavy text, e.g. the reviewer's "2024年…" GBK sample).
+- A legacy decode with >5% symbols among non-space chars (and >=2 of
+  them) is rejected: CJK bytes read as single-byte legacy codecs measure
+  5-46% box-drawing/symbol soup, real legacy text 0-2%.
+- Baltic evidence reduced to the NON-COLLIDING letters only: **Ø/ø**
+  (bytes 0xA8/0xB8 = ¨/¸ in cp1252, ˇ/¸ in cp1250, box-drawing in koi8_r).
+  Æ/æ were additionally excluded because cp1250 puts Ż/ż on those bytes
+  (0xAF/0xBF). cp1257 is otherwise accepted ONLY as the detector's own
+  top guess — every other Baltic letter collides with real cp1252
+  letters (â ç è ì û …).
+- Hardening the fix exposed four further mojibake thieves, all measured
+  and fixed in the same commit:
+  - ISO-8859 tables are symbol-free, so CJK bytes ALSO read as coherent
+    Cyrillic/CE under iso8859-5/-2 (share ~1.0): a case-folded
+    script-common-letter coherence floor (0.40) rejects them — real
+    Russian 0.48-0.89, real Greek 0.615, cross-codec soup 0.07-0.32.
+  - Latin-family evidence now also needs a hit-density ratio >= 0.25 of
+    high-byte letters (real Polish/Turkish/Baltic 0.33-0.75; CJK
+    mojibake 0.07-0.16), and ONE interior ą/ł/ż/Ø/ø hit suffices — their
+    bytes are cp1252 SYMBOLS, the same decisive logic as the Turkish ıİ
+    rule (a digits-variant Polish file with a single ł+ś used to fall
+    back to cp1252).
+  - CJK candidates from the detector's own list are ranked by (share,
+    common-character coherence, rank) instead of first-explaining:
+    cross-codec decodes (Korean bytes as GBK, GBK as cp949, Greek as
+    johab) tie or beat the correct codec on share but yield rare
+    characters (correct decode 0.20-0.81 coherence, cross-codec
+    0.00-0.54, correct always highest). euc_jis_2004 joined the rankable
+    families (real euc_jp files top-guess big5 — measured).
+  - BOM-less utf_16 cjk-path evidence now requires coherence >= 0.2 too:
+    Latin text read as utf_16_be lands 0.68-0.91 cjk share (ASCII pairs
+    decode into Han/Ext-A ranges) but ~0 coherence; genuine CJK utf_16
+    keeps share ~1.0 / coherence 0.4+; the NUL-interleave rule is
+    unchanged.
+  - cp1252-clean bytes never settle for a junk single-byte top guess
+    (measured: cp775 topped a French file at the WP12 head).
+- Very short samples (<64 B) log the chosen encoding at INFO (never a
+  silent guess).
+
+Before/after evidence — every reviewer sample, three heads
+(scripts/dev/wp13/b6_before_after.py; WP11 = 3511b86 worktree, WP12 =
+b63bdb5 worktree, WP13 = current):
+
+| Sample | WP11 head | WP12 head | WP13 head |
+|---|---|---|---|
+| Korean euc_kr/cp949 "한국어 텍스트입니다 테스트 문장" | OK cp949 | **koi8_r** | OK cp949 |
+| Korean euc_kr/cp949 "안녕하세요 저는 개발자입니다…" | OK cp949 | **cp1250** | OK cp949 |
+| GBK/gb18030 spaces+Latin "Python 是一种 编程语言…" | OK gb18030 | **cp1250** | OK gb18030 |
+| GBK/gb18030 digits "2024年 我们 发布了 3 个…" | OK gb18030 | **koi8_r** | OK gb18030 |
+| Danish cp1252 (æ, ø, å x2+) | OK cp1252 | **cp1257** ("Hųyt") | OK cp1252 |
+| French cp1252 (û x3) | OK cp1252 | **cp1257** ("sūr") | OK cp1252 |
+| Dutch cp1252 (ë x4) | OK cp1252 | **cp1257** ("Zoė") | OK cp1252 |
+| Russian koi8_r ~250 B paragraph | OK koi8_r | OK koi8_r | OK koi8_r |
+| Russian koi8_r mixed Latin (the ->cp1257 class) | OK koi8_r | OK koi8_r | OK koi8_r |
+
+WP12 head: **12/14 mojibake; WP13 head: 0/14** — on charset-normalizer
+3.5.1 AND 3.4.6. The Russian rows passed at WP12 by detector-rank luck
+(the reviewer's paragraph ranked cp1257 higher); WP13 pins them
+structurally: a stubbed detector leading with cp1257 loses to the
+Cyrillic coherence scan (test_russian_paragraph_never_flips_to_cp1257).
+
+Tests added (tests/ingestion/test_wp13_encoding.py; all failed pre-fix —
+454 failures — and pass post-fix; existing P0-4/B6 tests untouched):
+- Table: reviewer samples + 11 languages x their codecs (cp1252, euc_kr,
+  cp949, gbk, gb18030, big5, shift_jis, euc_jp, cp1251, koi8_r, cp1253,
+  cp1254, cp1250) x short/~250 B/~2 KB x with/without spaces, digits,
+  punctuation — **75 rows, exact round-trip**.
+- Differential vs WP11 (fixture tests/ingestion/wp13_wp11_baseline.json,
+  generated by scripts/dev/wp13/gen_wp13_fixture.py against a 3511b86
+  worktree): **51 rows WP11 decoded correctly; zero regressions** (the
+  24 WP11-failed rows are headroom WP13 also fixed — e.g. every
+  Russian/Greek/Turkish/Polish row, Japanese euc_jp, French cp775).
+- Detector-independent: from_bytes stubbed to fake top guesses (cp1252,
+  cp949, gb18030, mac_latin2, utf_16_be, big5) — correct output for
+  every row under every stub (Japanese rows additionally get cp932 +
+  euc_jis_2004 in the list: without a Japanese codec in the candidate
+  list the correct answer does not exist — documented limit, not guessed
+  around).
+- cp1257 rules pinned via stubs (top-guess acceptance, non-colliding Øø
+  evidence, Danish/French/Dutch/Russian never flip).
+- CI: the test job is now a charset-normalizer matrix (3.5.1 pinned +
+  3.4.6) — both green locally; see the gate below for the Actions run.
+
+Documented residuals (in the files.py docstrings): genuine cp1257
+Baltic files rely on the detector's top guess (their letters are all
+cp1252-colliding — charset-normalizer top-guessed cp1258 for the
+Latvian sample, measured); CJK-vs-CJK ambiguity when the wrong CJK
+codec also fully explains the bytes (indistinguishable without language
+modeling — the detector's ranking carries those); interior ¹³¿ in
+no-space compounds ("50m³Wasser") can still read as cp1250 (pre-existing
+WP12 trade); all-caps-Latin-as-utf_16 residual.
+
+## Item 2 — Scale benchmark: selective-query scenario
+
+Status: **DONE** (commit 6179d0c... see git log; test-first).
+
+The reviewer's finding: every generated document contained "python
+search", so each query matched 100% of the corpus and latency grew
+linearly BY CONSTRUCTION (2,083 ms at 10K on a loaded Windows box vs
+47 ms at 2K on a quiet Linux box were both every-doc-matches runs).
+The benchmark now runs TWO scenarios per size: **match_all** (the old
+corpus, labelled "worst case, every doc matches" in every row) and
+**selective** (deterministic seeded Zipfian corpus — 50 topics, s=1.2,
+500-word secondary vocabulary; query = topic + rare-secondary; match
+band 1-5% asserted at build time).
+
+Measured at the WP13 head (machine state, honestly recorded: Intel
+i3-7020U 2.30 GHz, 4 GB RAM, background VS Code + Chrome active —
+"quiet" was not fully achievable; single run, nothing else measured in
+parallel):
+
+| Scenario | Docs | hybrid ms | keyword ms | semantic ms | match |
+|---|---|---|---|---|---|
+| match_all (worst case) | 1K | 61.2 | 34.2 | 1.7 | 100% |
+| selective | 1K | 3.1 | 0.9 | 1.9 | 2.7% |
+| match_all (worst case) | 5K | 883.2 | 693.5 | 4.2 | 100% |
+| selective | 5K | 9.8 | 3.1 | 2.6 | 3.0% |
+| match_all (worst case) | 10K | 1383.8 | 1249.4 | 3.4 | 100% |
+| selective | 10K | **27.0** | 13.6 | 3.4 | 2.8% |
+
+Selective hybrid at 10K = **27.0 ms << the ~200 ms threshold** — the
+reviewer's profiling conditional does not fire; no hot-path changes
+made (the match_all x22.6 growth is the labelled every-doc-matches worst
+case; selective growth is x8.7 for x10 docs). Tests:
+TestSelectiveBenchmarkScenario (2) — the 1-5% band and the deterministic
+construction are pinned at smoke size.
+
+## Item 3 — Open-items ledger (WP0-WP12) and cheap fixes
+
+Status: ledger below; the two fix-now items fixed test-first (commit
+3f9bc96); the rest decision-tabled.
+
+| Item | Sev | Decision | Reason |
+|---|---|---|---|
+| related_searches trigram fallback scanned the whole vocabulary per request (WP11 P3) | P3 | **fixed (WP13-3)** | <30 min: inverted gram->terms index built once per vocabulary change; per-request cost O(query grams x postings); output parity pinned by an in-test naive reference |
+| semantic_benchmark cleanup `except: pass` (WP11 P3) | P3 | **fixed (WP13-3)** | <30 min: `_close_quietly` — per-closer logging, remaining closers still run (WP12-1b class); the finally-path had bundled 4 closers in one try (a first failure leaked the rest) |
+| charset-normalizer 3.4.x behavior unverified (WP12 Part A) | P2 | **fixed (WP13-1)** | CI matrix leg 3.5.1+3.4.6; both green locally; encoding tests detector-independent |
+| Docker compose build + /ready locally (WP11/WP12 gates: unverified) | P2 | **verified (WP13-5)** | engine recovered this session: build OK, GET /ready -> 200 {"ready":true} |
+| Python 3.12 local parity (WP11 P3-13: unverified) | P2 | **verified (WP13-5)** | full suite on 3.12.14: 844/7/614 — identical outcomes to 3.14; only warning volume differs (upstream slowapi deprecation, 3.14-only) |
+| single-worker in-process rate limiter (per-key token caps) | P1-ops | defer to Phase 8 | architectural: needs shared state (SQLite table or Redis) — PHASE7_PLAN §4 documents the operational limit and the requirement |
+| render_js residual DNS-rebinding (Chromium resolves its own DNS) | P2 | accept, documented | cannot be fixed inside Playwright; docstring + README carry the "trusted crawls only" contract (WP12-7) |
+| exact-hostname domain-diversity limit (~10 subdomains saturate) | P2 | accept, documented | PSL dependency deliberately not added (WP4 decision); farms still bounded by the 1000/page cap |
+| reindex --shadow materializes corpus in RAM | P3 | defer | CLI maintenance path, bounded by corpus size; a streaming rewrite is Phase 7+ work, not <30 min |
+| /documents/bulk worst-case body size (500 x 10 MB) | P3 | defer | proxy-level body cap recommended at deployment (audit's own recommendation); a code cap changes API contract |
+| frontier add() commits per URL | P3 | defer | per-link fsync cost during crawls, not correctness (single-writer by design); batching changes durability semantics |
+| web-scale authority quality | P2 | accept, documented | no production spam farm exists to validate against; stated in SPEC.md |
+| slowapi + starlette deprecation warnings | P3 | accept, upstream | not our code (slowapi 0.1.10, starlette 1.7.0 pins); noted since WP11 P3-13 |
+| WP12-10 n8n workflow expansion | optional | **user decision 2026-10-09: keep as-is** | 75 nodes stay; options re-presented in Item 6 below — awaiting the user's answer; not acted on |
+| WP8-phase-deferred: click signals, LTR training, A/B analysis, Prometheus/structured logging, multi-process politeness + distributed rate limiting | planned | defer as designed | owned by Phase 7 / 7+ / production-traffic / Phase 10 / Phase 8 respectively |
+
+## Item 4 — Packaging and repo hygiene
+
+Status: **DONE** (no repo changes required — verification + local
+cleanup). `git status` clean at every WP13 commit; no tracked
+`*.db/*.pyc/*.swp` (`git ls-files` check); `.github/workflows/test.yml`
+present (now with the charset matrix); `.gitattributes` pins LF for
+Dockerfile and `*.sh` explicitly. The stray local artifacts the review
+zip shipped — `nexus_search_frontier.db` and
+`.git/.COMMIT_EDITMSG.swp` — are DELETED; `.gitignore` already covers
+`*.db`, `*.db-wal/-shm/-journal`, `*.swp`, `__pycache__/`. Hand-off zip
+built ONLY via scripts/package (git archive) and verified: **234
+entries, zero** `nexus_search_frontier.db`/`__pycache__`/`.git`
+internals/`.swp`/`.pyc`/`.db`.
+
+## Item 5 — Verification of previously-"unverified" gates
+
+| Gate | Result |
+|---|---|
+| `docker compose build` + `GET /ready` locally | **VERIFIED** (was unverified since WP11): after `docker pull docker/dockerfile:1` (transient builder-DNS failure resolved), `docker compose build` -> "Image nexus-search-api Built"; `docker compose up -d` -> `GET /ready` **200 `{"ready":true}`** after ~10 s; `GET /health` 200 `{"status":"ok",...}` |
+| Python 3.12 locally | **VERIFIED**: uv-installed CPython 3.12.14 + pinned requirements (CPU torch wheel); `NEXUS_ENV=dev NEXUS_EMBEDDER=hash:384 python -m pytest -q` -> **844 passed, 7 skipped, 1 warning, 614 subtests (9:59)**. Differences from 3.14.7 (844/7/1471 warnings/614, 7:30): NONE in outcomes — only the warning volume (slowapi's deprecated `asyncio.iscoroutinefunction` fires on 3.14 only; upstream, documented since WP11 P3-13) |
+| CI (Ubuntu/3.12, both charset legs + docker) | run result at the WP13 head recorded in the gate table below |
+
+## Item 6 — n8n workflow (DECISION REQUIRED — presented, NOT acted on)
+
+automation/nexus-search-workflow.json ("Nexus Search Core", 75 nodes)
+reimplements pipeline stages on Postgres/Qdrant/OpenAI instead of
+calling the Python API. The original ask was 300-350 nodes. Options:
+
+- **A. Keep as-is** (current state; WP12 already recorded the user's
+  "skip it, move ahead" from 2026-10-09). Effort: 0. The 75-node
+  reference workflow stays automation-only material.
+- **B. Expand to the requested 300-350 nodes calling the Nexus API over
+  HTTP** (crawl -> ingest -> index -> search -> rerank stages as HTTP
+  request nodes against this repo's documented endpoints; replace the
+  Postgres/Qdrant/OpenAI reimplementation). Effort estimate: 1-2 days
+  (design the stage graph, ~250-300 new nodes, HTTP node configs,
+  credentials wiring, end-to-end test against a running local API);
+  cannot be validated in CI (n8n has no test harness in this repo) —
+  would be smoke-verified manually only.
+- **C. Drop it** (delete automation/, note the removal in README).
+  Effort: <30 min.
+
+WP13's recommendation: A (it is optional per the reviewer, and B adds a
+large untestable artifact). **Awaiting the user's decision.**
+
+## Item 7 — Phase 1-6 sign-off and Phase 7 hand-off
+
+- README test counts + status table synced to the real WP13 runs (see
+  below); docs/PHASES_1-6_CHECKLIST.md written (one line per phase,
+  only verified claims ticked).
+- docs/PHASE7_PLAN.md re-read and CONFIRMED unchanged-accurate: the
+  refuse-gate uses RAW signals (vector min_score = raw cosine floor;
+  BM25 un-normalized raw-score floor; fused RRF/weighted scores are
+  rank/normalization artifacts, never a confidence signal — §"answer
+  refusal gate"); model output is sanitized/escaped and markdown
+  image/link auto-rendering from model output is FORBIDDEN (§2b); the
+  slowapi in-process limiter caveat (per-worker token caps) is stated
+  (§4). Nothing contradicts the code — not edited.
+- Tag `v0.6.0-phases-1-6` + `phase-7` branch created after CI green.
+
+## WP13 final verification gate (executed 2026-10-09, Windows 11, Python 3.14.7 unless stated)
+
+| Gate | Result |
+|---|---|
+| Offline suite (`NEXUS_ENV=dev`, `python -m pytest -q`) | **844 passed, 7 skipped, 1471 warnings, 614 subtests passed** (7:30) — was 829/7/21 at the WP12 head; +15 net new test functions (9 encoding + 2 scale-benchmark + 2 suggestions + 2 benchmark-cleanup), zero pre-existing tests loosened |
+| Model-gated suite (`NEXUS_RUN_MODEL_TESTS=1`) | **849 passed, 2 skipped, 614 subtests** (6:55) — was 834/2 |
+| Load smoke (`NEXUS_RUN_LOAD_SMOKE=1`, ambient `NEXUS_ENV=dev`) | **1 passed** (6.85 s) |
+| Graph bench (`NEXUS_RUN_GRAPH_BENCH=1`, tests/evaluation) | **15 passed, 2 skipped, 3 subtests** (1:35) |
+| Skipped tests (all 7 offline) | unchanged classes: 3x embedders (ST), graph-bench gate, 2x semantic-st floors gate, load-smoke gate — all green in their gated suites |
+| `scripts/dev/check_duplicate_tests.py` | **no duplicate test function names** |
+| `scripts/dev/check_env_docs.py` | **env docs consistent: 30 documented vars** |
+| Scale benchmark (both scenarios) | selective 1K/5K/10K hybrid 3.1/9.8/**27.0** ms (match 2.7-3.0%); match_all worst case 61/883/1384 ms; table above |
+| Golden keyword baseline | **byte-identical** through every WP13 change (test green) |
+| Docker `compose build` + `GET /ready` | **verified locally** (was unverified since WP11): build OK; /ready 200 `{"ready":true}`; /health 200 |
+| Python 3.12 local parity | **844/7/614 — identical to 3.14** (warnings-only delta, upstream) |
+| GitHub Actions (Ubuntu / 3.12, charset-normalizer **3.5.1 + 3.4.6** matrix legs + docker job) | pushed with the WP13 head; result recorded in the addendum below after the run completed |
+
+Phase 1-6 sign-off: **DONE** (checklist at docs/PHASES_1-6_CHECKLIST.md).
+Phase 7 hand-off: tag `v0.6.0-phases-1-6`, branch `phase-7`.
+
+### WP13 CI addendum (recorded after the push)

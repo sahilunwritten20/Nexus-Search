@@ -1,5 +1,38 @@
 # Nexus Search — Phase 1-3 Upgrade
 
+# WP13 — Phases 1-6 sign-off release (NEW)
+
+## What shipped
+- **Encoding regression fix** (blocking): the WP12 script-coherence
+  scoring mojibaked spaced Korean euc_kr/cp949, GBK-with-spaces/digits,
+  and Danish/French/Dutch cp1252 with 2+ of one colliding letter (ø/û/ë
+  flipped to cp1257). Both shares now use one denominator (non-space,
+  non-digit, non-punctuation chars), legacy decodes with >5% symbols are
+  rejected, Baltic evidence is the non-colliding Ø/ø only (cp1257 is
+  accepted solely as the detector's top guess), CJK candidates are ranked
+  by share + common-character coherence, and a coherence floor kills the
+  symbol-free ISO-table mojibake class. 75-row round-trip table + WP11
+  differential fixture + detector-stub matrix pin it; CI runs the suite on
+  charset-normalizer 3.5.1 AND 3.4.6.
+- **Scale benchmark**: selective-query scenario (Zipfian topics, ~1-5%
+  match) beside the labelled match-everything worst case. Selective
+  hybrid at 10K docs: **27 ms** (worst case: 1,384 ms, labelled).
+- **Open-ledger fixes**: related_searches fallback is O(query grams) per
+  request (was O(vocabulary); parity-pinned), benchmark cleanup failures
+  are logged instead of swallowed.
+- **Verification closed**: Docker `compose build` + `GET /ready` verified
+  locally (200 `{"ready":true}`); Python 3.12 parity verified (844/7/614,
+  identical to 3.14); packaging via git archive verified junk-free.
+- **Docs**: docs/PHASES_1-6_CHECKLIST.md (per-phase sign-off with real
+  run numbers); WP13 section in docs/AUDIT_REMEDIATION.md (root causes,
+  before/after tables, decision ledger).
+
+## Upgrade notes
+- No public API changes, no new dependencies. The golden keyword
+  baseline is byte-identical.
+- Test counts: **844 passed / 7 skipped offline, 849 / 2 model-gated**
+  (Windows 3.14 and Ubuntu 3.12 identical).
+
 # Phase 6 — Link Intelligence (NEW)
 
 ## What shipped

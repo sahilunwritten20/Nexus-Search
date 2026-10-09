@@ -124,12 +124,15 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **829 passed, 7 skipped** offline (hash embedder, WP12 remeasured
-from HEAD 3511b86+WP12; skips are model/benchmark-gated: set
-`NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM for **834 passed,
-2 skipped**). CI additionally runs the graph-benchmark
-smoke, the authority on/off benchmark, the duplicate-test-name lint and the
-env-var documentation check. Run: `python -m pytest -q`.
+Test suite: **844 passed, 7 skipped, 614 subtests** offline (hash embedder,
+WP13-remeasured from the WP13 head on Windows/3.14 AND Ubuntu/3.12 —
+identical outcomes; skips are model/benchmark-gated: set
+`NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM for **849 passed,
+2 skipped**). CI runs the suite as a charset-normalizer matrix (3.5.1
+pinned + 3.4.6 — the encoding detection must not depend on the detector
+version) plus the graph-benchmark smoke, the authority on/off benchmark,
+the duplicate-test-name lint and the env-var documentation check.
+Run: `python -m pytest -q`.
 
 **Embedder default is lexical, not semantic.** `NEXUS_EMBEDDER` now
 defaults to `hash:384` in code, compose AND this table (they agree since the
