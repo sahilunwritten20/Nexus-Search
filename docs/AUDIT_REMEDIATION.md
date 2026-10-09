@@ -455,8 +455,8 @@ Environment notes recorded honestly:
 
 | Gate | Result |
 |---|---|
-| Offline suite (`NEXUS_ENV=dev`, plain `python -m pytest -q`) | **800 passed, 7 skipped** (6:19) â€” baseline was 760/7; +40 net new tests, zero pre-existing tests loosened |
-| Model-gated suite (`NEXUS_RUN_MODEL_TESTS=1`) | **805 passed, 2 skipped** (5:38) |
+| Offline suite (`NEXUS_ENV=dev`, plain `python -m pytest -q`) | final count after P3-10 was **807 passed, 7 skipped** (the "800 passed" figure below was the pre-P3-10 run; WP12 re-verified from HEAD 3511b86 and measured exactly 807/7 â€” corrected here, see WP12) |
+| Model-gated suite (`NEXUS_RUN_MODEL_TESTS=1`) | final count after P3-10 was **812 passed, 2 skipped** (the "805" below was the pre-P3-10 run; WP12 re-measured 812/2 from HEAD 3511b86) |
 | Load smoke (`NEXUS_RUN_LOAD_SMOKE=1`) | **1 passed** (8.75 s) |
 | Graph bench (`NEXUS_RUN_GRAPH_BENCH=1`, `tests/evaluation`) | **11 passed, 2 skipped** (1:20) |
 | `scripts/dev/check_duplicate_tests.py` | **no duplicate test function names** |
@@ -465,3 +465,66 @@ Environment notes recorded honestly:
 | GitHub Actions (Ubuntu/Python 3.12) | run #11 **GREEN** (test + docker), after the two documented-and-fixed red runs #8-#10; final pushes #12/#13 also **GREEN** (test + docker) â€” head 611a901 |
 | Docker `compose build` + `/ready` locally | **unverified locally** â€” Docker CLI shim present but no engine/Docker Desktop on this machine; the CI docker job (build + non-root + /health probe) is green |
 | Python 3.12 local parity run | **unverified locally** (no 3.12 interpreter on this machine) â€” CI's green run on 3.12 is the parity evidence |
+
+---
+
+# WP12 — Independent re-verification of the external review (HEAD 3511b86) + remediation
+
+An independent reviewer re-audited the repo at HEAD 3511b86 without
+fastapi/pytest/httpx/Docker (could only run ~695 unittest-style tests).
+WP12 re-verified every claim with the full environment, then fixed each
+CONFIRMED finding test-first. Reproduction scripts:
+`scripts/dev/wp12/`.
+
+## Part A — claim verification (own evidence; command + output in scripts)
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| P0-1 read-gating broken in fresh process | **NOT REPRODUCED (already fixed)** | `scripts/dev/wp12/a2_read_auth_fresh_process.py`: fresh uvicorn, `NEXUS_ENV=production NEXUS_API_KEY=k NEXUS_REQUIRE_AUTH_FOR_READS=1` -> `/search` 401 no key, 401 wrong key, 200 correct key, POST /documents 201 |
+| P0-3 rate-limit bucket bypass | **NOT REPRODUCED (already fixed)** | `scripts/dev/wp12/a1_rate_limit_random_keys.py`: 70 reqs, 70 random X-API-Key values from one IP -> 10x 429 after the 60/min budget; verified key still 200 |
+| R1 stale content hash after external delete | **CONFIRMED** | `r1_reviewer_exact.py` at HEAD: `1 h-gone`; at cb64c36 (worktree): `1 None`. User-visible: long-lived manager re-upsert of same text -> `unchanged` (skipped), vector never returns |
+| R2 RRF ignores raw similarity; no default min_score; weighted top-1 pinned | **CONFIRMED** | `r2_rrf_ignores_similarity.py`: sim 0.92 vs 0.05 both -> 0.03279; nonsense query hits 0.578/0.341; weighted top-1 = 2.0 (= w_bm25+w_vector) for weak and strong signals alike |
+| R3 N+1 per hybrid query | **CONFIRMED** | `r3_hybrid_n_plus_one.py` (1,500 docs, hash:384): 936 / 1,629 get_document calls (reviewer: 886/1,661) |
+| R4 filtered search O(corpus) | **CONFIRMED** | `r4_filter_scan_cost.py`: type:pdf 13.0/61.7/175.9 ms at 500/1,500/3,000 docs (linear); cause pinned by `r4b_filter_cause.py`: 412 get_document calls on a 300-doc corpus (one full-content read per vector via `allowed`) |
+| R5a per-add O(n) doc_id scan | **CONFIRMED** | `r5_merge_and_lock_costs.py`: per-add 1.87 -> 5.42 ms from 2K -> 5K rows (superlinear) |
+| R5b reload fills buffers under _matrix_lock | **CONFIRMED** | `r5b_reload_lock_stall.py`: 50K-row reload holds the matrix lock 337 ms; concurrent search peak 33 ms vs 0.001 ms median |
+| R6 single-byte legacy encodings mojibake as cp1252 | **CONFIRMED** | `r6_single_byte_mojibake.py`: 0/10 round-trips (cp1251/koi8_r/cp1253/cp1254/cp1250, short+long) |
+| R7 render_js gaps | **CONFIRMED (code-level)** | fetcher.py:128-133 `if self.url_validator and ...` no-ops with validator=None; `page.route("**/*")` cannot see WS/SW; context had no `service_workers="block"` |
+| R8 zip-bomb default too generous | **CONFIRMED** | `r8_small_check.py`: 20 MiB declared XML -> 223 s parse, 100 MiB tracemalloc peak (~5x amplification) -> the 512 MiB default admits ~2.5 GB RSS from a <1 MiB file; 166 MiB version exceeded 600 s |
+| R9 review zip contained untracked junk; no packaging script | **PARTIAL** | working tree still holds untracked `nexus_search_frontier.db` (gitignored) + `__pycache__` — a naive zip would include them; `.git/COMMIT_EDITMSG.swp` NOT present now; no packaging script existed; CI hygiene rejected only `*.db/*.pyc` (not `*.swp`); `.gitattributes` already pinned LF via `* text=auto eol=lf` (Dockerfile/*.sh made explicit) |
+| R10 "hybrid tops out at 0.03" is not a confidence signal | **CONFIRMED** | 2/61 = 0.0328 is the RRF formula ceiling for a doc ranked #1 in BOTH retrievers (R2 evidence); PHASE7_PLAN's unanswerable rationale was built on it -> fixed in WP12-2 |
+| WP11 doc counts inconsistent ("800 passed" vs "800 -> 807") | **CONFIRMED** | real fresh runs at HEAD 3511b86: offline **807/7**, model-gated **812/2**; WP11 gate rows said 800/805 (pre-P3-10) — corrected above; README said 760/765 (stale) — updated to 829/834 (post-WP12) |
+
+Unverified/limits: charset-normalizer 3.4.x behavior (only 3.5.1 installed
+locally; CI pins 3.5.1); the exact bytes of the reviewer's zip (not
+available) — only the working-tree preconditions were checked.
+
+## Part B — fixes (test-first, one commit each)
+
+| Item | Status | Commit | Tests added | Before -> after |
+|---|---|---|---|---|
+| WP12-1 (R1, R5b) reload REPLACES `_content_hashes`; buffers built OUTSIDE the lock and swapped under it; `get_content_hash` refreshes (upsert re-embeds after external delete); `_mem_version` guard so a concurrent in-process add can never be clobbered by a swap | **fixed** | bbae388 | `test_external_delete_clears_stale_content_hash`, `test_manager_reembeds_after_external_delete` (both failed pre-fix: stale `'h-gone'` / `'unchanged' != 'created'`) | `1 h-gone` -> `1 None`; manager upsert `'unchanged'` -> `'created'`, vector back in DB; matrix lock no longer held during 50K reload fill |
+| WP12-2 (R2, R10) PHASE7_PLAN section 6 + unanswerable rewritten: fused RRF/weighted scores are rank/normalization artifacts, NEVER a refuse signal; gate = RAW signals (vector `min_score` cosine floor, BM25 raw-score floor, hybrid agreement), calibrated on the WP10 fixture + CI regression floor. Added: model-output sanitize/escape rule (P1-6 class), markdown image/link auto-render ban (exfiltration), slowapi in-process-limiter caveat for per-key token caps | **done (docs only, no RAG code)** | a7ba947 | n/a (plan text) | 0.03 retraction documented; refuse-gate contract now measurable |
+| WP12-3 (R4) vector filter pushdown = ONE `Storage.get_documents_meta` read (no content column) + O(n) set-lookup mask in `VectorStore.search(allowed_ids=...)`; np.isin on object arrays rejected (measured 290 ms at 3K docs) | **fixed** | dd0e9a2 | `test_wp12_pushdown.py` (2; parity type:/lang:/-type:/NOT + read-counts meta==1/get_document==0; both failed pre-fix) | filtered hybrid at 3K docs 176 -> 85 ms; plain/filtered ratio 3x -> 1.3x; 412 -> 112 full-doc reads (remainder = R3 class) |
+| WP12-4 (R3) every hybrid stage batched: `_vector_candidates` gates, `_merge_results` vector-only branch, semantic loop, `_diversify`, BM25 cache seeded from its own batch fetch + filter-only queries (meta scan + batch) | **fixed** | 6939ef3 | `test_wp12_n_plus_one.py` (2; get_document==0 and batches<=5; failed pre-fix at 100 calls) | per-query get_document: 936/1,629 -> **0**; batched reads <= 5 |
+| WP12-5 (R5a) `_id_to_idx` doc_id->row dict maintained by merge/swap-remove/reload; add/remove O(1) | **fixed** | 8c6fe9d | `test_wp12_row_index.py` (3: merge-O1 timing — 2,000 in-place merges on a 10K matrix, scan path measured ~2.4 s, bound 0.5 s; 10K-add generous bound; invariant across ops; failed pre-fix AttributeError) | 2K in-place merges on 10K rows: ~2.4 s -> < 0.5 s; SQL commit now dominates add() (profile: 82%) |
+| WP12-6 (R6) script-coherence codec scoring (cp1251/koi8_r/cp1253/cp1254/cp1250/cp1257 + iso8859-x); Latin specific-letter sets exclude cp1252-colliding letters; CJK guesses win within a +0.10 margin; chosen codec logged at INFO; residual limits documented (boundary-only Latin script letters, Icelandic ý/þ, very short samples) | **fixed** | 6097aad | `TestLegacySingleByteScripts` (6 methods / 10 subtests + cp1252 guards for m³/œ; all failed pre-fix) | 0/10 -> **10/10** round-trips; TestShortWesternEncoding green (3.5.1) |
+| WP12-7 (R7) render_js refused without url_validator (warn+disable) unless explicit `render_js_allow_private`; context created with `service_workers="block"`; WS via `route_web_socket` when the build has it (ws->http scheme mapping); docstring corrected; pipeline maps `allow_private_hosts` to the new flag | **fixed** | f73e070 | 4 fake-playwright tests (refusal, SW-block, WS route matrix, WS-absence; failed pre-fix). Two existing fallback tests adapted to the new constructor contract (`render_js_allow_private=True`), assertions unchanged | unvalidated-browser path no longer reachable by default |
+| WP12-8 (R8) zip-bomb defaults: 64 MiB total (was 512) + NEW 32 MiB per-entry cap (`NEXUS_MAX_ENTRY_BYTES`); env overrides kept; .env.example updated (30 vars) | **fixed** | 68279fe | 4 tests (bounds pin 64/32, R8-shaped 75 MiB payload refused instantly — pre-fix it parsed for 600+ s, per-entry refusal, env override) | worst-case RSS ~2.5 GB -> ~320 MiB at python-docx's measured 5x amplification |
+| WP12-9 (R9) `scripts/package.ps1` + `scripts/package.sh` build release zips via `git archive` ONLY; CI hygiene extended to `*.swp`; .gitattributes pins Dockerfile/*.sh LF explicitly | **fixed** | 592eb91 | packaging verified live: 225 entries, zero .db/.pyc/.swp/__pycache__/.git internals | no packaging script existed; CI hygiene blind to *.swp |
+| WP12-10 (workflow.json expansion) | **SKIPPED — user decision 2026-10-09** | — | — | "skip it, move ahead" (the 75-node n8n stays as-is; reviewer marked it optional) |
+
+## WP12 final verification gate (executed 2026-10-09, Windows 11, Python 3.14.7)
+
+| Gate | Result |
+|---|---|
+| Offline suite (`NEXUS_ENV=dev`, `python -m pytest -q`) | **829 passed, 7 skipped, 21 subtests passed** (8:28) — was 807/7 at HEAD 3511b86; +22 net new tests, zero pre-existing tests loosened |
+| Model-gated suite (`NEXUS_RUN_MODEL_TESTS=1`) | **834 passed, 2 skipped, 21 subtests passed** (7:05) — was 812/2 |
+| Load smoke (`NEXUS_RUN_LOAD_SMOKE=1`) | **1 passed** (7.8 s) |
+| Graph bench (`NEXUS_RUN_GRAPH_BENCH=1`, `tests/evaluation`) | **11 passed, 2 skipped** (1:37) |
+| `scripts/dev/check_duplicate_tests.py` | **no duplicate test function names** |
+| `scripts/dev/check_env_docs.py` | **env docs consistent: 30 documented vars** (NEXUS_MAX_ENTRY_BYTES added) |
+| Scale benchmark (`python -m nexus_search.evaluation.scale_benchmark`) | 1K/5K/10K hybrid 61/985/2,083 ms; 5K->10K = 2.11x (linear; WP11's fix holds), semantic 1.6/2.6/4.3 ms (WP11: 3.9/4.9/6.1 — improved again); one run under heavy machine load, hybrid/keyword absolute numbers noisy |
+| Skipped tests (all 7 offline) | 3x `test_embedders.py` (Requires sentence-transformers), `test_graph_benchmark.py:30` (full bench needs NEXUS_RUN_GRAPH_BENCH=1), 2x `test_semantic_benchmark.py:64/68` (st floors need NEXUS_RUN_MODEL_TESTS=1), `test_load_smoke.py:81` (needs NEXUS_RUN_LOAD_SMOKE=1) — all run green in their gated suites above |
+| Docker `compose build` + `GET /ready` | see Part C below |
+| GitHub Actions (Ubuntu/Python 3.12) | see Part C below |

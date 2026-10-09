@@ -124,9 +124,10 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **760 passed, 7 skipped** offline (hash embedder; skips are
-model/benchmark-gated: set `NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM
-for **765 passed, 2 skipped**). CI additionally runs the graph-benchmark
+Test suite: **829 passed, 7 skipped** offline (hash embedder, WP12 remeasured
+from HEAD 3511b86+WP12; skips are model/benchmark-gated: set
+`NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM for **834 passed,
+2 skipped**). CI additionally runs the graph-benchmark
 smoke, the authority on/off benchmark, the duplicate-test-name lint and the
 env-var documentation check. Run: `python -m pytest -q`.
 
