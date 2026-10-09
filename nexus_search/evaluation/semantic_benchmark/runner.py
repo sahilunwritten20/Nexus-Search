@@ -17,6 +17,7 @@ asserted with INVESTIGATE advice, not silently. no-answer queries report
 score distributions so confident junk is visible.
 """
 import json
+import logging
 import os
 import random
 import statistics
@@ -24,8 +25,26 @@ import time
 
 os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
 
+logger = logging.getLogger("nexus_search.evaluation.semantic_benchmark")
+
 from .fixture import SPLIT_SEED, build_fixture  # noqa: E402
 from ..metrics import evaluate_query  # noqa: E402
+
+
+def _close_quietly(closers) -> None:
+    """Close every closer, never silently: a failing close is logged at
+    WARNING and the remaining closers still run (WP13-3; the old code was
+    `except Exception: pass` per closer plus one bundled try/except around
+    four closers in the finally path — a first failure leaked the rest
+    and nothing was ever surfaced)."""
+    for closer in closers:
+        try:
+            closer()
+        except Exception as exc:  # noqa: BLE001
+            owner = getattr(closer, "__self__", None)
+            name = (type(owner).__name__ if owner is not None
+                    else getattr(closer, "__name__", str(closer)))
+            logger.warning("close of %s failed: %s", name, exc)
 
 K = 10
 
@@ -257,20 +276,10 @@ def _run_benchmark_in(tmp, docs, dev, test, report, quiet):
                 report["per_category"].get("hybrid-rrf", {}).get("exact", {})
                 .get("ndcg@10", 0) >= 0.5)
 
-            for closer in (hash_sync.close, hash_hybrid.close, hash_vs.close,
-                           hash_storage.close):
-                try:
-                    closer()
-                except Exception:  # noqa: BLE001
-                    pass
+            _close_quietly((hash_sync.close, hash_hybrid.close, hash_vs.close,
+                           hash_storage.close))
         finally:
-            try:
-                sync.close()
-                hybrid.close()
-                vs.close()
-                storage.close()
-            except Exception:  # noqa: BLE001
-                pass
+            _close_quietly((sync.close, hybrid.close, vs.close, storage.close))
     return report
 
 

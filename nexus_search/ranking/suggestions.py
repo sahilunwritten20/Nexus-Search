@@ -27,6 +27,14 @@ class Suggester:
         self.storage = storage
         self._terms: list[str] = []
         self._doc_count_at_load = -1  # cheap change detector for the cache
+        # WP13-3: inverted character-trigram index (gram -> terms) for the
+        # related-searches fallback. Built once per vocabulary change; the
+        # WP11-era code rebuilt every term's trigram set on EVERY request —
+        # O(vocab) CPU per request once the query log is empty. Prototype
+        # scale: tens of thousands of terms -> a few hundred thousand
+        # postings, tens of MB — same scale acknowledgment as _terms.
+        self._gram_index: dict[str, list[str]] = {}
+        self._gram_count_at_load = -1
 
     def _refresh(self) -> None:
         """Rebuild the sorted vocabulary when the document count changed.
@@ -36,6 +44,18 @@ class Suggester:
         if count != self._doc_count_at_load:
             self._terms = self.storage.all_terms()
             self._doc_count_at_load = count
+
+    def _refresh_grams(self) -> None:
+        """Rebuild the inverted trigram index when the vocabulary changed
+        since it was built (same cheap doc-count proxy as _refresh)."""
+        self._refresh()
+        if self._gram_count_at_load != self._doc_count_at_load:
+            index: dict[str, list[str]] = {}
+            for term in self._terms:
+                for gram in _trigrams(term):
+                    index.setdefault(gram, []).append(term)
+            self._gram_index = index
+            self._gram_count_at_load = self._doc_count_at_load
 
     def suggest(self, prefix: str, limit: int = 10) -> list[str]:
         """Up to `limit` index terms starting with `prefix` (case-folded),
@@ -81,16 +101,19 @@ class Suggester:
         # trigram-similarity fallback — a present-but-useless log object is not
         # a reason to return nothing. Fall through either way.
 
-        # Fallback: term similarity against the index vocabulary.
-        self._refresh()
+        # Fallback: term similarity against the index vocabulary, via the
+        # inverted trigram index (WP13-3): for each query gram, bump every
+        # term sharing it — the same |term_grams ∩ query_grams| score the
+        # naive per-request scan computed, at O(query grams × postings)
+        # per request instead of O(whole vocabulary).
+        self._refresh_grams()
         scored: Counter[str] = Counter()
         qgrams = set().union(*(_trigrams(t) for t in terms)) if terms else set()
-        for term in self._terms:
-            if term in terms:
-                continue
-            shared = len(_trigrams(term) & qgrams)
-            if shared:
-                scored[term] = shared
+        for gram in qgrams:
+            for term in self._gram_index.get(gram, ()):
+                if term in terms:
+                    continue
+                scored[term] += 1
         return [t for t, _ in sorted(scored.items(),
                                      key=lambda kv: (-kv[1], -self.storage.document_frequency(kv[0]), kv[0]))[:limit]]
 

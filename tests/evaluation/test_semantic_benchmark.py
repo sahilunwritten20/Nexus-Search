@@ -77,5 +77,48 @@ class TestStFloors(unittest.TestCase):
                            "embedder wiring if this flips")
 
 
+class TestCleanupNeverSilent(unittest.TestCase):
+    """WP13-3 (open-items ledger): the runner's cleanup used
+    `except Exception: pass`, silently swallowing close failures — and the
+    finally-block variant bundled four closers in ONE try, so a first
+    failure leaked the rest. A failing close must be logged and every
+    remaining closer must still run (WP12-1b class)."""
+
+    def test_failing_close_logged_and_others_still_run(self):
+        from nexus_search.evaluation.semantic_benchmark.runner import _close_quietly
+        attempts = []
+
+        def ok_one():
+            attempts.append("ok_one")
+
+        def boom():
+            attempts.append("boom")
+            raise RuntimeError("disk went away")
+
+        def ok_two():
+            attempts.append("ok_two")
+
+        with self.assertLogs("nexus_search.evaluation.semantic_benchmark",
+                             level="WARNING") as logs:
+            _close_quietly([ok_one, boom, ok_two])
+        self.assertEqual(attempts, ["ok_one", "boom", "ok_two"],
+                         "a failing closer must not stop the remaining ones")
+        self.assertTrue(any("disk went away" in line for line in logs.output),
+                        f"failure not surfaced: {logs.output}")
+
+    def test_close_quietly_names_the_failing_object(self):
+        from nexus_search.evaluation.semantic_benchmark.runner import _close_quietly
+
+        class FakeStore:
+            def close(self):
+                raise RuntimeError("lock held")
+
+        with self.assertLogs("nexus_search.evaluation.semantic_benchmark",
+                             level="WARNING") as logs:
+            _close_quietly([FakeStore().close])
+        self.assertTrue(any("FakeStore" in line for line in logs.output),
+                        f"failing object not named: {logs.output}")
+
+
 if __name__ == "__main__":
     unittest.main()

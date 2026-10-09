@@ -101,6 +101,57 @@ class TestRelatedSearches(_Base):
         log.close()
 
 
+class TestRelatedSearchesScanCost(_Base):
+    """WP13-3 (open-items ledger): the trigram fallback used to rebuild
+    every vocabulary term's trigram set on EVERY request (O(vocab) CPU
+    per request once the query log is empty). The fix keeps an inverted
+    gram->terms index built once per vocabulary change; output must stay
+    byte-identical to the naive scan."""
+
+    def _corpus(self, n_terms: int = 200):
+        for i in range(n_terms):
+            self.indexer.add_document(
+                f"d{i}", f"term{i:03d} shared{i % 7} filler{i % 13} content")
+
+    def test_fallback_matches_naive_trigram_scan_exactly(self):
+        from nexus_search.core.query_parser import parse_query
+        from nexus_search.ranking.suggestions import _trigrams
+        from collections import Counter
+        self._corpus()
+        s = Suggester(self.storage)
+        for query in ("term005 shared", "content", "filler2"):
+            with self.subTest(query=query):
+                out = s.related_searches(query, experiment_log=None, limit=5)
+                # the naive reference: same math the fallback must preserve
+                # (same term parsing incl. stemming as the implementation)
+                terms = set(parse_query(query).terms)
+                qgrams = set().union(*(_trigrams(t) for t in terms)) if terms else set()
+                scored = Counter()
+                for term in self.storage.all_terms():
+                    if term in terms:
+                        continue
+                    shared = len(_trigrams(term) & qgrams)
+                    if shared:
+                        scored[term] = shared
+                expected = [t for t, _ in sorted(
+                    scored.items(),
+                    key=lambda kv: (-kv[1],
+                                   -self.storage.document_frequency(kv[0]),
+                                   kv[0]))[:5]]
+                self.assertEqual(out, expected)
+
+    def test_gram_index_rebuilt_only_when_documents_change(self):
+        self._corpus()
+        s = Suggester(self.storage)
+        s.related_searches("term005 shared", experiment_log=None)
+        index_first = s._gram_index
+        s.related_searches("filler3 content", experiment_log=None)
+        self.assertIs(s._gram_index, index_first)  # same vocab -> same index
+        self.indexer.add_document("extra", "brandnewword appears")
+        s.related_searches("brandnewword", experiment_log=None)
+        self.assertIsNot(s._gram_index, index_first)  # vocab changed
+
+
 class TestHighlighting(_Base):
     def test_highlight_wraps_terms(self):
         self.indexer.add_document("d1", "the quick brown fox jumps over lazy dogs")
