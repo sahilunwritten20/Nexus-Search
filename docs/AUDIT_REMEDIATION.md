@@ -822,3 +822,16 @@ Phase 1-6 sign-off: **DONE** (checklist at docs/PHASES_1-6_CHECKLIST.md).
 Phase 7 hand-off: tag `v0.6.0-phases-1-6`, branch `phase-7`.
 
 ### WP13 CI addendum (recorded after the push)
+
+**Run #17 on the WP13 head 1347ce9: GREEN — all three jobs succeeded**
+(verified via the GitHub Actions API, 2026-10-09T18:17Z):
+
+- `test (py3.12, charset-normalizer 3.4.6)` — success: hygiene check, FULL
+  suite, both lints, graph-benchmark smoke, authority benchmark.
+- `test (py3.12, charset-normalizer 3.5.1)` — success: same steps.
+- `docker` — success: image build, non-root `whoami` assertion, boot +
+  `/health` probe.
+
+The blocking-encoding requirement holds in CI: the encoding tests pass
+on BOTH charset-normalizer legs of the matrix, exactly as they did
+locally (Windows/3.14 on 3.5.1 and 3.4.6).
