@@ -1,1 +1,6 @@
 * text=auto eol=lf
+
+# WP12-B9: Docker build inputs must stay LF everywhere — a CRLF Dockerfile
+# or shell script breaks the Linux builder (shebang/Dockerfile parsing).
+Dockerfile text eol=lf
+*.sh text eol=lf

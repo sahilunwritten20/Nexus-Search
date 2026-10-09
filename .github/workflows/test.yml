@@ -18,13 +18,13 @@ jobs:
           PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
         run: pip install -r requirements.txt
 
-      - name: Hygiene - no tracked DB/bytecode artifacts (P3-11)
+      - name: Hygiene - no tracked DB/bytecode/swap artifacts (P3-11, WP12-B9)
         run: |
-          bad=$(git ls-files | grep -E '\.(db|pyc)$' || true)
+          bad=$(git ls-files | grep -E '\.(db|pyc|swp)$' || true)
           if [ -n "$bad" ]; then
             echo "tracked artifacts must not ship:"; echo "$bad"; exit 1
           fi
-          echo "no tracked *.db / *.pyc files"
+          echo "no tracked *.db / *.pyc / *.swp files"
 
       - name: Run the full suite
         env:
