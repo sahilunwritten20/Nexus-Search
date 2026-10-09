@@ -1,0 +1,535 @@
+{
+ "generator": "scripts/dev/wp13/gen_wp13_fixture.py",
+ "wp11_head": "3511b86",
+ "charset_normalizer": "3.5.1",
+ "contract": "every row listed under 'passed' MUST round-trip exactly in later work packages; rows under 'failed' are the headroom WP13 is allowed (and expected) to fix",
+ "passed": [
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "short_spaced",
+   "bytes": 31,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "short_spaced2",
+   "bytes": 56,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "short_nospace",
+   "bytes": 42,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "short_digits",
+   "bytes": 46,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "medium",
+   "bytes": 276,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "euc_kr",
+   "variant": "long",
+   "bytes": 1656,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "short_spaced",
+   "bytes": 31,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "short_spaced2",
+   "bytes": 56,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "short_nospace",
+   "bytes": 42,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "short_digits",
+   "bytes": 46,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "medium",
+   "bytes": 276,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "korean",
+   "codec": "cp949",
+   "variant": "long",
+   "bytes": 1656,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gbk",
+   "variant": "short_spaced_latin",
+   "bytes": 48,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gbk",
+   "variant": "short_digits",
+   "bytes": 50,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gbk",
+   "variant": "short_nospace",
+   "bytes": 46,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gbk",
+   "variant": "medium",
+   "bytes": 231,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gbk",
+   "variant": "long",
+   "bytes": 924,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gb18030",
+   "variant": "short_spaced_latin",
+   "bytes": 48,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gb18030",
+   "variant": "short_digits",
+   "bytes": 50,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gb18030",
+   "variant": "short_nospace",
+   "bytes": 46,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gb18030",
+   "variant": "medium",
+   "bytes": 231,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "simplified_chinese",
+   "codec": "gb18030",
+   "variant": "long",
+   "bytes": 924,
+   "wp11_encoding": "gb18030"
+  },
+  {
+   "lang": "traditional_chinese",
+   "codec": "big5",
+   "variant": "short",
+   "bytes": 37,
+   "wp11_encoding": "big5"
+  },
+  {
+   "lang": "traditional_chinese",
+   "codec": "big5",
+   "variant": "short_digits",
+   "bytes": 53,
+   "wp11_encoding": "big5"
+  },
+  {
+   "lang": "traditional_chinese",
+   "codec": "big5",
+   "variant": "medium",
+   "bytes": 201,
+   "wp11_encoding": "big5"
+  },
+  {
+   "lang": "traditional_chinese",
+   "codec": "big5",
+   "variant": "long",
+   "bytes": 804,
+   "wp11_encoding": "big5"
+  },
+  {
+   "lang": "japanese",
+   "codec": "shift_jis",
+   "variant": "short",
+   "bytes": 48,
+   "wp11_encoding": "cp932"
+  },
+  {
+   "lang": "japanese",
+   "codec": "shift_jis",
+   "variant": "short2",
+   "bytes": 56,
+   "wp11_encoding": "cp932"
+  },
+  {
+   "lang": "japanese",
+   "codec": "shift_jis",
+   "variant": "short_digits",
+   "bytes": 49,
+   "wp11_encoding": "cp932"
+  },
+  {
+   "lang": "japanese",
+   "codec": "shift_jis",
+   "variant": "medium",
+   "bytes": 201,
+   "wp11_encoding": "cp932"
+  },
+  {
+   "lang": "japanese",
+   "codec": "shift_jis",
+   "variant": "long",
+   "bytes": 1206,
+   "wp11_encoding": "cp932"
+  },
+  {
+   "lang": "japanese",
+   "codec": "euc_jp",
+   "variant": "short_digits",
+   "bytes": 49,
+   "wp11_encoding": "euc_jis_2004"
+  },
+  {
+   "lang": "japanese",
+   "codec": "euc_jp",
+   "variant": "medium",
+   "bytes": 201,
+   "wp11_encoding": "euc_jis_2004"
+  },
+  {
+   "lang": "japanese",
+   "codec": "euc_jp",
+   "variant": "long",
+   "bytes": 1206,
+   "wp11_encoding": "euc_jis_2004"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "short_yo",
+   "bytes": 60,
+   "wp11_encoding": "koi8_r"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "medium",
+   "bytes": 262,
+   "wp11_encoding": "koi8_r"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "medium_mixed",
+   "bytes": 250,
+   "wp11_encoding": "koi8_r"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "long",
+   "bytes": 1572,
+   "wp11_encoding": "koi8_r"
+  },
+  {
+   "lang": "danish",
+   "codec": "cp1252",
+   "variant": "short",
+   "bytes": 76,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "danish",
+   "codec": "cp1252",
+   "variant": "short2",
+   "bytes": 72,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "danish",
+   "codec": "cp1252",
+   "variant": "short_digits",
+   "bytes": 65,
+   "wp11_encoding": "utf-8"
+  },
+  {
+   "lang": "danish",
+   "codec": "cp1252",
+   "variant": "medium",
+   "bytes": 268,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "danish",
+   "codec": "cp1252",
+   "variant": "long",
+   "bytes": 804,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "french",
+   "codec": "cp1252",
+   "variant": "short",
+   "bytes": 61,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "french",
+   "codec": "cp1252",
+   "variant": "medium",
+   "bytes": 266,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "french",
+   "codec": "cp1252",
+   "variant": "long",
+   "bytes": 798,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "dutch",
+   "codec": "cp1252",
+   "variant": "short",
+   "bytes": 57,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "dutch",
+   "codec": "cp1252",
+   "variant": "short_nospace",
+   "bytes": 47,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "dutch",
+   "codec": "cp1252",
+   "variant": "short_digits",
+   "bytes": 53,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "dutch",
+   "codec": "cp1252",
+   "variant": "medium",
+   "bytes": 251,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "dutch",
+   "codec": "cp1252",
+   "variant": "long",
+   "bytes": 753,
+   "wp11_encoding": "cp1252"
+  }
+ ],
+ "failed": [
+  {
+   "lang": "japanese",
+   "codec": "euc_jp",
+   "variant": "short",
+   "bytes": 48,
+   "wp11_encoding": "cp949"
+  },
+  {
+   "lang": "japanese",
+   "codec": "euc_jp",
+   "variant": "short2",
+   "bytes": 56,
+   "wp11_encoding": "big5"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "short",
+   "bytes": 21,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "koi8_r",
+   "variant": "short_digits",
+   "bytes": 40,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "short",
+   "bytes": 21,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "short_digits",
+   "bytes": 40,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "short_yo",
+   "bytes": 60,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "medium",
+   "bytes": 262,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "medium_mixed",
+   "bytes": 250,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "russian",
+   "codec": "cp1251",
+   "variant": "long",
+   "bytes": 1572,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "greek",
+   "codec": "cp1253",
+   "variant": "short",
+   "bytes": 15,
+   "wp11_encoding": "johab"
+  },
+  {
+   "lang": "greek",
+   "codec": "cp1253",
+   "variant": "short_digits",
+   "bytes": 45,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "greek",
+   "codec": "cp1253",
+   "variant": "medium",
+   "bytes": 241,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "greek",
+   "codec": "cp1253",
+   "variant": "long",
+   "bytes": 1446,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "turkish",
+   "codec": "cp1254",
+   "variant": "short",
+   "bytes": 15,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "turkish",
+   "codec": "cp1254",
+   "variant": "short_digits",
+   "bytes": 48,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "turkish",
+   "codec": "cp1254",
+   "variant": "medium",
+   "bytes": 258,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "turkish",
+   "codec": "cp1254",
+   "variant": "long",
+   "bytes": 1548,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "polish",
+   "codec": "cp1250",
+   "variant": "short",
+   "bytes": 17,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "polish",
+   "codec": "cp1250",
+   "variant": "short_digits",
+   "bytes": 44,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "polish",
+   "codec": "cp1250",
+   "variant": "short_interior_z",
+   "bytes": 46,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "polish",
+   "codec": "cp1250",
+   "variant": "medium",
+   "bytes": 259,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "polish",
+   "codec": "cp1250",
+   "variant": "long",
+   "bytes": 1554,
+   "wp11_encoding": "cp1252"
+  },
+  {
+   "lang": "french",
+   "codec": "cp1252",
+   "variant": "short_digits",
+   "bytes": 54,
+   "wp11_encoding": "cp775"
+  }
+ ]
+}

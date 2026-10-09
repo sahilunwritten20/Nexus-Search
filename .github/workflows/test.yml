@@ -5,6 +5,15 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # WP13-B6: the encoding tests must pass on the pinned 3.5.1 AND
+        # on a 3.4.x (the reviewer reproduced the WP12 regression on
+        # 3.4.6; detector rankings differ across versions and the
+        # script-coherence logic must not depend on either).
+        charset-normalizer: ["3.5.1", "3.4.6"]
+    name: test (py3.12, charset-normalizer ${{ matrix.charset-normalizer }})
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +25,12 @@ jobs:
       - name: Install dependencies (pinned requirements + CPU torch wheel)
         env:
           PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          if [ "${{ matrix.charset-normalizer }}" != "3.5.1" ]; then
+            pip install "charset-normalizer==${{ matrix.charset-normalizer }}"
+          fi
+          python -c "import charset_normalizer; print('charset-normalizer', charset_normalizer.__version__)"
 
       - name: Hygiene - no tracked DB/bytecode/swap artifacts (P3-11, WP12-B9)
         run: |
