@@ -125,6 +125,58 @@ class TestShortWesternEncoding(unittest.TestCase):
                       self._roundtrip("こんにちは世界", "shift_jis"))
 
 
+class TestLegacySingleByteScripts(unittest.TestCase):
+    """WP12-B6 (audit R6): cp1251/koi8_r/cp1253/cp1254/cp1250 text is
+    usually VALID cp1252 bytes too, so the cp1252 preference mojibaked
+    five writing systems. Candidates are scored by script coherence
+    (strict decode, one alphabet, family-specific letters for the Latin
+    families)."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _roundtrip(self, text, encoding):
+        f = self.dir / f"{encoding.replace('_', '-')}.txt"
+        f.write_bytes(text.encode(encoding))
+        return read_text_file(f)
+
+    def test_russian_cp1251_roundtrip(self):
+        for text in ("Привет мир, как дела?", "Привет мир! " * 40):
+            with self.subTest(len=len(text)):
+                self.assertEqual(self._roundtrip(text, "cp1251"), text)
+
+    def test_russian_koi8_r_roundtrip(self):
+        for text in ("Привет мир, как дела?", "Привет мир! " * 40):
+            with self.subTest(len=len(text)):
+                self.assertEqual(self._roundtrip(text, "koi8_r"), text)
+
+    def test_greek_cp1253_roundtrip(self):
+        for text in ("Καλημέρα κόσμε;", "Καλημέρα κόσμε! " * 40):
+            with self.subTest(len=len(text)):
+                self.assertEqual(self._roundtrip(text, "cp1253"), text)
+
+    def test_turkish_cp1254_roundtrip(self):
+        for text in ("Günaydın dünya?", "Günaydın dünya! " * 40):
+            with self.subTest(len=len(text)):
+                self.assertEqual(self._roundtrip(text, "cp1254"), text)
+
+    def test_polish_cp1250_roundtrip(self):
+        for text in ("Żółć gęślą, jaźń?", "Żółć gęślą jaźń! " * 40):
+            with self.subTest(len=len(text)):
+                self.assertEqual(self._roundtrip(text, "cp1250"), text)
+
+    def test_cp1252_latin_symbols_not_flipped(self):
+        """The Latin-family rule must not steal genuine cp1252 text: a
+        superscript byte (m³) or a French œ (byte 0x9C) has no INTERIOR
+        script-specific letter under the legacy codecs — cp1252 keeps them."""
+        for text in ("Der Tank fasst 50 m³ Wasser.", "un cœur simple, sœur aînée"):
+            with self.subTest(text=text):
+                self.assertEqual(self._roundtrip(text, "cp1252"), text)
+
+
 class TestStreamingIngestion(unittest.TestCase):
     """Large CSVs stream row-by-row; content is identical to a full read."""
 

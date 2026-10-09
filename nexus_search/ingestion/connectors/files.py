@@ -78,9 +78,19 @@ def _detect_encoding(raw: bytes) -> str:
             # superset that shares the high-byte range with the encodings
             # the detector confuses (cp1250, mac_latin2, ...). Prefer it
             # when the sample is also strictly valid cp1252 — "São" must
-            # not come back as "Săo".
+            # not come back as "Săo". WP12-B6: BEFORE settling for cp1252,
+            # check whether a legacy SCRIPT codec (cp1251/koi8_r/cp1253/
+            # cp1254/cp1250 family) explains the bytes with one coherent
+            # alphabet — those bytes are valid cp1252 too, and the cp1252
+            # read was mojibake for five writing systems (audit R6).
             if enc_l.startswith(("cp125", "iso8859", "iso-8859", "latin",
                                  "mac_latin", "mac_roman", "macintosh")):
+                legacy = _legacy_script_codec(sample, matches)
+                if legacy:
+                    logger.info("legacy script codec %s chosen for a "
+                                "sample (script-coherence, audit R6)",
+                                legacy[0])
+                    return legacy[0]
                 if _cp1252_clean(sample):
                     return "cp1252"
                 if rank == 0:
@@ -91,14 +101,47 @@ def _detect_encoding(raw: bytes) -> str:
             # candidate scan rescues e.g. a big5 file whose TOP guess was
             # a utf_16 misfire, while never introducing exotic codepages
             # (cp037, koi8_r, ...) the top guess didn't already claim.
+            # WP12-B6: a CJK-family guess that only PARTLY explains the
+            # bytes (Greek as johab: 0.875 cjk share) loses to a legacy
+            # script decode that beats it BY A MARGIN — real CJK text sits
+            # at ~0.95-1.0 cjk share (punctuation excluded) and its bytes
+            # coincidentally decode as Cyrillic under cp1251, so a bare
+            # > would flip genuine GBK files (measured regression).
             if odd_short and enc_l.startswith(_ODD_GUESS_PREFIXES):
                 if _odd_guess_explains(sample, enc_l):
+                    try:
+                        cjk = _cjk_share(sample.decode(enc_l))
+                    except (UnicodeDecodeError, LookupError):
+                        cjk = 0.0
+                    legacy = _legacy_script_codec(sample, matches)
+                    if legacy and legacy[1] > cjk + 0.10:
+                        logger.info("legacy script codec %s beats %s "
+                                    "(share %.2f > cjk %.2f, audit R6)",
+                                    legacy[0], enc, legacy[1], cjk)
+                        return legacy[0]
                     return enc
                 continue
             if rank == 0:
+                # Top guess outside the misfire/Western families. A
+                # single-byte junk guess (cp874 on koi8_r text, measured)
+                # must still lose to a script-coherent legacy codec; a
+                # real multi-byte/CJK decode was already handled above.
+                legacy = _legacy_script_codec(sample, matches)
+                if legacy:
+                    logger.info("legacy script codec %s chosen for a "
+                                "sample (script-coherence, audit R6)",
+                                legacy[0])
+                    return legacy[0]
                 return enc  # top guess outside the misfire families: as-is
         # No candidate explained a short odd sample -> the cp1252 fallback
-        # is the best remaining bet when the bytes allow it.
+        # is the best remaining bet when the bytes allow it. WP12-B6: same
+        # script-codec check as above — e.g. a koi8_r file whose detector
+        # guesses were all junk still deserves a Cyrillic read.
+        legacy = _legacy_script_codec(sample, matches)
+        if legacy:
+            logger.info("legacy script codec %s chosen for a sample "
+                        "(script-coherence, audit R6)", legacy[0])
+            return legacy[0]
         if _cp1252_clean(sample):
             return "cp1252"
         return best_enc or "utf-8"
@@ -155,6 +198,122 @@ def _odd_guess_explains(sample: bytes, enc_l: str) -> bool:
             return True
         return len(sample) >= 32 and _cjk_share(decoded) >= 0.3
     return _cjk_share(decoded) >= 0.3
+
+
+# --- WP12-B6: single-byte legacy script detection -------------------------
+# charset-normalizer cannot separate cp1251/koi8_r/cp1253/cp1254/cp1250
+# from cp1252 on short samples (their bytes are usually valid cp1252 too),
+# so the cp1252 preference mojibaked five writing systems (audit R6:
+# 0/10 round-trips). Candidates are scored by SCRIPT COHERENCE instead:
+# a strict decode whose cased letters sit overwhelmingly in ONE alphabet
+# (Cyrillic/Greek), or a Latin family whose decode contains INTERIOR
+# family-specific letters (Turkish ı İ ş ğ, Central-European ł ą ż ć ę
+# ś ź ń, Baltic ų ė į ū). Tie-breaks: detector rank first, then share of
+# the script's most common letters (separates cp1251 from koi8_r — KOI8
+# stores Cyrillic with the case bit inverted — and cp1253 from cp1251),
+# then cp125x family order.
+_LEGACY_SCRIPTS = {
+    "cp1251": "cyrillic", "koi8_r": "cyrillic", "iso8859-5": "cyrillic",
+    "cp1253": "greek", "iso8859-7": "greek",
+    "cp1254": "turkish", "iso8859-9": "turkish",
+    "cp1250": "ce", "iso8859-2": "ce",
+    "cp1257": "baltic",
+}
+_LATIN_SPECIFIC = {
+    # Only letters whose cp125x byte is a SYMBOL/punctuation in cp1252
+    # (¹ ³ ¯ ¿ — interior-word occurrences prove the legacy codec). The
+    # letters that collide with real cp1252 letters (ć↔æ, ę↔ê, ń↔ñ,
+    # ś↔œ, ź↔Ÿ) are deliberately NOT here: Danish æ, Spanish ñ, French
+    # œ/ê must keep their cp1252 read (measured false positive: "un cœur
+    # simple, sœur aînée" flipped to cp1250 when ś/ź were included).
+    "turkish": "ıİşğŞĞ",
+    "ce": "ąłżĄŁŻ",
+    "baltic": "ūėįųŗŪĖĮŲ",
+}
+# most common letters (share separates true text from cross-codec soup)
+_CYR_COMMON = set("оеаинтрс")
+_GR_COMMON = set("αετοινρκσλ")
+# 'ı'/'İ' are unambiguous in the single-byte space: cp1252 0xFD is 'ý'
+# (Icelandic, not interior-typical), and no other candidate family
+# defines it — a single interior hit is decisive for these.
+_TR_UNIQUE = set("ıİ")
+
+
+def _script_of(ch: str) -> str:
+    o = ord(ch)
+    if 0x0400 <= o <= 0x04FF:
+        return "cyrillic"
+    if 0x0370 <= o <= 0x03FF:
+        return "greek"
+    if ch.isalpha():
+        return "latin"
+    return ""
+
+
+def _legacy_script_codec(sample: bytes, matches):
+    """Best script-coherent legacy codec for a sample: (codec, share) with
+    share = the winning decode's script share (1.0 = every letter sits in
+    one alphabet), or None when nothing explains the bytes better than the
+    existing cp1252 preference. Callers compare `share` against competing
+    interpretations (e.g. a CJK misfire's cjk share).
+
+    Residual limits (documented, per audit B6): a Latin-family sample
+    whose ONLY script-specific letters sit at word boundaries (e.g. a
+    lone leading 'Ł') can stay cp1252 — the interior rule exists so
+    genuine cp1252 text ('m³', French 'cœur', Danish 'æ', Spanish 'ñ')
+    is never stolen. Conversely Icelandic 'ý'/'þ' can read as Turkish
+    'ı'/'ş' — the two families share those bytes; documented trade."""
+    if not sample or not any(b >= 0x80 for b in sample):
+        return None
+    coherent: dict[str, tuple] = {}
+    for codec, script in _LEGACY_SCRIPTS.items():
+        try:
+            text = sample.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        if any(0x80 <= ord(c) <= 0x9F for c in text):
+            continue  # C1 controls: wrong codec for these bytes
+        letters = [c for c in text if c.isalpha()]
+        if not letters:
+            continue
+        if script in ("cyrillic", "greek"):
+            in_script = [c for c in letters if _script_of(c) == script]
+            if len(in_script) < 3:
+                continue
+            share = len(in_script) / len(letters)
+            if share < 0.85:
+                continue
+            common = (_CYR_COMMON if script == "cyrillic" else _GR_COMMON)
+            coherence = sum(1 for c in in_script if c in common) / len(in_script)
+            coherent[codec] = (share, coherence, len(in_script))
+        else:  # Latin family
+            specific = _LATIN_SPECIFIC[script]
+            hits = [c for c in letters if c in specific]
+            if not hits:
+                continue
+            interior = any(
+                i >= 1 and text[i - 1].isalpha() and i + 1 < len(text)
+                and text[i + 1].isalpha()
+                for i, c in enumerate(text) if c in specific)
+            if not interior:
+                continue  # 'm³'-style boundary symbols must not flip us
+            if not (len(hits) >= 2 or (set(hits) & _TR_UNIQUE)):
+                continue  # one shared-zone letter (French œ→ś) proves little
+            latin_share = sum(1 for c in letters if _script_of(c) == "latin") / len(letters)
+            if latin_share < 0.9:
+                continue
+            coherent[codec] = (latin_share, 0.5 + 0.01 * len(hits), len(hits))
+    if not coherent:
+        return None
+    # Tie-break 1: the detector's own ranking, in match order.
+    for m in matches:
+        if m.encoding in coherent:
+            return m.encoding, coherent[m.encoding][0]
+    # Tie-break 2: script-common-letter coherence, then coverage, then
+    # cp125x family order (real-world files are overwhelmingly cp125x).
+    order = sorted(coherent.items(),
+                   key=lambda kv: (-kv[1][1], -kv[1][2], kv[0].startswith("cp125") and 0 or 1, kv[0]))
+    return order[0][0], order[0][1][0]
 
 
 def read_text_file(path: Path) -> str:
