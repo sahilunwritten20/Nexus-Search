@@ -65,6 +65,7 @@ class Fetcher:
         max_bytes: int = MAX_BYTES,
         dns_pin: Optional[Callable[[str], ContextManager]] = None,
         render_js: bool = False,
+        render_js_allow_private: bool = False,
     ):
         self.timeout = timeout
         self.max_retries = max_retries
@@ -78,6 +79,19 @@ class Fetcher:
                 "the headless-browser path (SSRF-hardened: every subrequest "
                 "is route-validated, but DNS stays browser-resolved)")
             self.render_js = False
+        # WP12-B7 (audit R7a): without a url_validator the browser path
+        # validates NOTHING (route handler and final-URL check both
+        # no-op), so refusing is the only safe default. The explicit
+        # allow-private flag documents that the operator accepts an
+        # UNVALIDATED browser (private networks reachable).
+        if self.render_js and not url_validator and not render_js_allow_private:
+            logger.warning(
+                "render_js=True refused: no url_validator is configured, so "
+                "subrequests and client-side redirects would be completely "
+                "unvalidated (SSRF). Pass url_validator=..., or set "
+                "render_js_allow_private=True to accept an unvalidated "
+                "browser explicitly.")
+            self.render_js = False
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
 
@@ -86,18 +100,32 @@ class Fetcher:
 
         SSRF protections (P1-7), in order:
         - OPT-IN: never runs unless NEXUS_RENDER_JS=1 (constructor warns and
-          disables render_js otherwise), and only on the public path where
-          `url_validator` (validate_url) is wired.
-        - Every subrequest is intercepted with page.route("**/*") and
-          validated with the same `validate_url` as plain fetches — a page
-          cannot pull scripts/images/data from private networks.
+          disables render_js otherwise), and only with a `url_validator`
+          wired (WP12-B7: no validator = nothing is checked, so the
+          constructor refuses; `render_js_allow_private=True` is the
+          explicit unvalidated escape hatch).
+        - Every HTTP(S) subrequest is intercepted with page.route("**/*")
+          and validated with the same `validate_url` as plain fetches — a
+          page cannot pull scripts/images/data from private networks.
+        - Service workers are BLOCKED at the context level
+          (service_workers="block"): page.route cannot observe SW-initiated
+          fetches, so allowing SWs would open an unvalidated channel
+          (WP12-B7, audit R7b).
+        - WebSocket upgrades are blocked/continued with
+          page.route_web_socket when the installed playwright supports it
+          (playwright >= 1.44); older builds skip this and the RESIDUAL
+          RISK (unrouted WS connections) is accepted behind the env gate
+          — the same class of limitation as DNS below (WP12-B7).
         - The final URL after navigation is validated too (client-side
           redirects would otherwise be invisible).
 
-        RESIDUAL RISK (documented, accepted only behind the env gate):
-        Chromium resolves DNS on its own, so `pin_dns_for_url` CANNOT apply
-        — a DNS-rebinding server can still pass validate_url's lookup and
-        then answer the browser's second lookup from a private address.
+        RESIDUAL RISKS (documented, accepted only behind the env gate):
+        - Chromium resolves DNS on its own, so `pin_dns_for_url` CANNOT
+          apply — a DNS-rebinding server can still pass validate_url's
+          lookup and then answer the browser's second lookup from a
+          private address.
+        - On playwright builds without route_web_socket, ws:// upgrades
+          are not interceptable by this layer.
         Enable NEXUS_RENDER_JS only for crawls of hosts you trust, or front
         the browser with an egress firewall.
 
@@ -118,7 +146,10 @@ class Fetcher:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 try:
-                    page = browser.new_page(
+                    # service_workers="block": SW fetches bypass page.route
+                    # entirely, so the only safe setting is disabled.
+                    context = browser.new_context(service_workers="block")
+                    page = context.new_page(
                         user_agent=str(self.session.headers.get("user-agent")))
 
                     def _validate_route(route):
@@ -133,6 +164,35 @@ class Fetcher:
                         route.continue_()
 
                     page.route("**/*", _validate_route)
+
+                    # WP12-B7: WebSocket upgrades are NOT covered by
+                    # page.route; route_web_socket (playwright >= 1.44)
+                    # closes the gap on builds that have it. On older
+                    # builds this is skipped and the residual risk is the
+                    # documented trade above.
+                    if hasattr(page, "route_web_socket"):
+                        def _validate_ws(ws_route):
+                            target = ws_route.url
+                            # validate_url only knows http/https; map the
+                            # WS schemes onto their HTTP equivalents so the
+                            # HOST/SSRF rules apply unchanged.
+                            check = (target.replace("wss://", "https://", 1)
+                                     if target.startswith("wss://")
+                                     else target.replace("ws://", "http://", 1))
+                            if self.url_validator and not self.url_validator(check):
+                                logger.warning("browser websocket blocked "
+                                               "(SSRF): %s", target)
+                                ws_route.abort()
+                                return
+                            ws_route.continue_()
+
+                        try:
+                            page.route_web_socket("**/*", _validate_ws)
+                        except Exception:
+                            logger.warning("route_web_socket registration "
+                                           "failed; WS stays unvalidated for "
+                                           "%s", url, exc_info=True)
+
                     page.goto(url, timeout=int(self.timeout * 1000),
                               wait_until="networkidle")
                     final_url = page.url

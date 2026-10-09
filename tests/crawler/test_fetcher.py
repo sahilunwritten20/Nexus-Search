@@ -120,7 +120,10 @@ def test_render_js_fallback_without_playwright(caplog, monkeypatch):
     """render_js=True must degrade to the plain HTTP body when Playwright
     isn't installed — log a warning, never crash (regression: logger was
     undefined in fetcher.py). P1-7: the browser path needs NEXUS_RENDER_JS=1;
-    the env is set here so this test still exercises the import-fallback."""
+    the env is set here so this test still exercises the import-fallback.
+    WP12-B7: render_js with NO url_validator needs the explicit
+    render_js_allow_private=True opt-in so this fallback scenario stays
+    reachable (assertions unchanged)."""
     import logging
 
     monkeypatch.setenv("NEXUS_RENDER_JS", "1")
@@ -131,7 +134,7 @@ def test_render_js_fallback_without_playwright(caplog, monkeypatch):
     except ImportError:
         pass
 
-    fetcher = Fetcher(render_js=True)
+    fetcher = Fetcher(render_js=True, render_js_allow_private=True)
 
     response = Mock()
     response.status_code = 200
@@ -150,7 +153,8 @@ def test_render_js_fallback_without_playwright(caplog, monkeypatch):
 def test_render_js_browser_failure_falls_back(caplog, monkeypatch):
     """If Playwright IS present but the browser launch fails, we still fall
     back to the HTTP body (warning, not exception). P1-7: NEXUS_RENDER_JS=1
-    unlocks the path."""
+    unlocks the path. WP12-B7: render_js_allow_private=True keeps this
+    unvalidated-browser scenario testable (assertions unchanged)."""
     import logging
     import sys
     import types
@@ -166,7 +170,7 @@ def test_render_js_browser_failure_falls_back(caplog, monkeypatch):
     pkg = types.ModuleType("playwright")
     pkg.sync_api = boom
 
-    fetcher = Fetcher(render_js=True)
+    fetcher = Fetcher(render_js=True, render_js_allow_private=True)
     response = Mock()
     response.status_code = 200
     response.text = "<html>Hello</html>"
@@ -245,17 +249,23 @@ class _FakeRoute:
 
 
 class _FakePage:
-    """Records the route handler; plays back a final URL and content."""
+    """Records the route handlers; plays back a final URL and content."""
 
     def __init__(self, final_url, content):
         self.final_url = final_url
         self._content = content
         self.route_handler = None
+        self.ws_route_handler = None
+        self.supports_websocket_routing = False
         self.went_to = None
 
     def route(self, pattern, handler):
         assert pattern == "**/*"  # EVERY subrequest must be intercepted
         self.route_handler = handler
+
+    def route_web_socket(self, pattern, handler):
+        assert pattern == "**/*"
+        self.ws_route_handler = handler
 
     def goto(self, url, timeout=None, wait_until=None):
         self.went_to = url
@@ -268,12 +278,26 @@ class _FakePage:
         return self._content
 
 
+class _FakeContext:
+    def __init__(self, page):
+        self.page = page
+
+    def new_page(self, user_agent=None):
+        return self.page
+
+
 class _FakeBrowser:
     def __init__(self, page):
         self.page = page
         self.closed = False
+        self.context_kwargs = {}
+
+    def new_context(self, **kwargs):
+        self.context_kwargs = dict(kwargs)
+        return _FakeContext(self.page)
 
     def new_page(self, user_agent=None):
+        # legacy path (pre-B7 direct page creation), kept for old callers
         return self.page
 
     def close(self):
@@ -405,4 +429,98 @@ def test_render_js_final_url_is_validated(monkeypatch):
 
     fetcher = Fetcher(render_js=True, url_validator=validate_url)
     assert fetcher._render_with_browser("https://example.com") is None
+    fetcher.close()
+
+
+def test_render_js_refused_without_validator(monkeypatch, caplog):
+    """WP12-B7 (audit R7a): render_js=True with url_validator=None validates
+    NOTHING (the route handler and final-URL check both no-op). It must be
+    refused with a warning unless the operator explicitly opts into the
+    unvalidated path with render_js_allow_private=True."""
+    import logging
+    import sys
+
+    monkeypatch.setenv("NEXUS_RENDER_JS", "1")
+    sys.modules.pop("playwright", None)
+    sys.modules.pop("playwright.sync_api", None)
+
+    with caplog.at_level(logging.WARNING, logger="nexus_search.crawler.fetcher"):
+        fetcher = Fetcher(render_js=True, url_validator=None)
+    assert fetcher.render_js is False
+    assert any("url_validator" in r.getMessage() for r in caplog.records)
+
+    # the explicit private-allow flag keeps the browser path armed
+    fetcher2 = Fetcher(render_js=True, url_validator=None,
+                       render_js_allow_private=True)
+    assert fetcher2.render_js is True
+    fetcher.close()
+    fetcher2.close()
+
+
+def test_render_js_service_workers_blocked(monkeypatch):
+    """WP12-B7 (audit R7b): the browser context is created with
+    service_workers="block" — page.route cannot see SW fetches, so they
+    must be disabled at the context level."""
+    from nexus_search.crawler.security import validate_url
+
+    monkeypatch.setenv("NEXUS_RENDER_JS", "1")
+    page = _FakePage("https://example.com/loaded", "<html>x</html>")
+    browser = _install_fake_playwright(monkeypatch, page)
+
+    fetcher = Fetcher(render_js=True, url_validator=validate_url)
+    assert fetcher._render_with_browser("https://example.com") == "<html>x</html>"
+    assert browser.context_kwargs.get("service_workers") == "block"
+    fetcher.close()
+
+
+def test_render_js_websockets_blocked_when_supported(monkeypatch):
+    """WP12-B7 (audit R7b): WebSocket upgrades bypass page.route; when the
+    playwright build offers route_web_socket it must be wired with the same
+    validator (private WS aborted, public continued)."""
+    from nexus_search.crawler.security import validate_url
+
+    monkeypatch.setenv("NEXUS_RENDER_JS", "1")
+
+    class _FakeWebSocketRoute:
+        def __init__(self, url):
+            self.url = url
+            self.aborted = False
+            self.continued = False
+
+        def abort(self):
+            self.aborted = True
+
+        def continue_(self):
+            self.continued = True
+
+    page = _FakePage("https://example.com/loaded", "<html>x</html>")
+    page.supports_websocket_routing = True
+    _install_fake_playwright(monkeypatch, page)
+
+    fetcher = Fetcher(render_js=True, url_validator=validate_url)
+    assert fetcher._render_with_browser("https://example.com") == "<html>x</html>"
+    assert page.ws_route_handler is not None
+
+    ws_private = _FakeWebSocketRoute("ws://127.0.0.1:9000/socket")
+    page.ws_route_handler(ws_private)
+    assert ws_private.aborted and not ws_private.continued
+
+    ws_public = _FakeWebSocketRoute("wss://example.com/live")
+    page.ws_route_handler(ws_public)
+    assert ws_public.continued and not ws_public.aborted
+    fetcher.close()
+
+
+def test_render_js_websocket_absence_is_not_fatal(monkeypatch):
+    """WP12-B7: an older playwright build without route_web_socket must
+    still render (residual WS risk is documented, not a crash)."""
+    from nexus_search.crawler.security import validate_url
+
+    monkeypatch.setenv("NEXUS_RENDER_JS", "1")
+    page = _FakePage("https://example.com/loaded", "<html>x</html>")
+    # default fake: no supports_websocket_routing flag
+    _install_fake_playwright(monkeypatch, page)
+
+    fetcher = Fetcher(render_js=True, url_validator=validate_url)
+    assert fetcher._render_with_browser("https://example.com") == "<html>x</html>"
     fetcher.close()

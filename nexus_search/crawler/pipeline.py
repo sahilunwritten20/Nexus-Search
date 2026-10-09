@@ -102,6 +102,11 @@ class CrawlPipeline:
             url_validator=None if allow_private_hosts else validate_url,  # checks redirect hops too
             dns_pin=None if allow_private_hosts else pin_dns_for_url,  # closes DNS-rebinding window
             render_js=render_js,
+            # WP12-B7: on the private-hosts path the Fetcher gets NO
+            # url_validator, so the browser path would be refused; the
+            # operator's allow_private_hosts decision IS the explicit
+            # opt-in for an unvalidated browser there.
+            render_js_allow_private=allow_private_hosts,
         )
         self.allowed_domains = set(allowed_domains or [])
         self.max_pages = max_pages
