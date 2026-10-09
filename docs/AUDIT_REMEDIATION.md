@@ -685,7 +685,7 @@ WP12 trade); all-caps-Latin-as-utf_16 residual.
 
 ## Item 2 — Scale benchmark: selective-query scenario
 
-Status: **DONE** (commit 6179d0c... see git log; test-first).
+Status: **DONE** (commit 6df2d30; test-first).
 
 The reviewer's finding: every generated document contained "python
 search", so each query matched 100% of the corpus and latency grew
