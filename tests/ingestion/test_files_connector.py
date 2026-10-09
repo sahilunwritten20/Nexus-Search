@@ -113,9 +113,61 @@ class TestDecompressionBombGuard(unittest.TestCase):
         self.assertEqual(read_file(path), "")
 
     def test_decompression_bounds_exist_with_sane_defaults(self):
+        """WP12-B8 (audit R8): python-docx materializes ~5x the declared XML
+        in RSS (measured: 20 MiB payload -> 100 MiB tracemalloc peak, 223 s
+        parse), so the old 512 MiB payload bound admitted ~2.5 GB RSS from a
+        <1 MiB file. Defaults now: 64 MiB total payload, 32 MiB per entry —
+        a measured-safe ~320 MiB worst case; env overrides unchanged."""
         from nexus_search.ingestion.connectors import files
-        self.assertEqual(files.DEFAULT_MAX_DECOMPRESSED_BYTES, 512 * 1024 * 1024)
+        self.assertEqual(files.DEFAULT_MAX_DECOMPRESSED_BYTES, 64 * 1024 * 1024)
+        self.assertEqual(files.DEFAULT_MAX_ENTRY_BYTES, 32 * 1024 * 1024)
         self.assertEqual(files.DEFAULT_MAX_PDF_PAGES, 10_000)
+
+    def test_r8_shaped_bomb_refused_under_new_default(self):
+        """Audit R8's exact shape: a <1 MiB docx whose word/document.xml
+        declares ~100 MiB of valid XML. Old default (512 MiB) let it parse
+        (~2.5 GB RSS at python-docx's 5x amplification); the new 64 MiB
+        default must refuse it with NO env var set."""
+        import zipfile
+        path = self.dir / "r8.docx"
+        with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml",
+                        '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                        '<Default Extension="xml" ContentType="application/xml"/>'
+                        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                        '</Types>')
+            zf.writestr("_rels/.rels",
+                        '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+                        '</Relationships>')
+            zf.writestr("word/_rels/document.xml.rels",
+                        '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>')
+            zf.writestr("word/document.xml",
+                        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                        + b'<w:p><w:r><w:t>lorem ipsum dolor sit amet </w:t></w:r></w:p>' * 1_750_000
+                        + b'</w:body></w:document>')
+        self.assertLess(path.stat().st_size, 1024 * 1024)  # tiny file, big claim
+        self.assertEqual(read_file(path), "")
+
+    def test_per_entry_cap_refuses_one_huge_entry(self):
+        """WP12-B8: a single zip entry declaring > 32 MiB is a bomb even
+        when the 64 MiB TOTAL bound would allow it (one huge + one small
+        entry is the classic nested-bomb shape)."""
+        os.environ.pop("NEXUS_MAX_DECOMPRESSED_BYTES", None)
+        os.environ.pop("NEXUS_MAX_ENTRY_BYTES", None)
+        bomb = self._pad_with_huge_declared_entry(self._legit_docx(), 40_000_000)
+        with self.assertLogs("nexus_search.ingestion.files", level="WARNING") as logs:
+            self.assertEqual(read_file(bomb), "")
+        self.assertTrue(any("entry" in r.getMessage() for r in logs.records),
+                        [r.getMessage() for r in logs.records])
+
+    def test_per_entry_cap_env_override_restores(self):
+        """NEXUS_MAX_ENTRY_BYTES is an env override like the total bound."""
+        bomb = self._pad_with_huge_declared_entry(self._legit_docx(), 40_000_000)
+        os.environ["NEXUS_MAX_ENTRY_BYTES"] = "100000000"  # 100 MB: allows it
+        os.environ["NEXUS_MAX_DECOMPRESSED_BYTES"] = "100000000"
+        self.assertIn("hello docx world", read_file(bomb))
 
 
 class TestFilesConnector(unittest.TestCase):

@@ -15,7 +15,13 @@ from typing import Callable, Iterator, Optional
 from ..types import IngestDoc
 
 DEFAULT_MAX_INGEST_BYTES = 64 * 1024 * 1024  # 64 MiB
-DEFAULT_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024  # 512 MiB payload per zip
+# WP12-B8 (audit R8): python-docx materializes ~5x the declared XML in RSS
+# (measured: 20 MiB payload -> 100 MiB tracemalloc peak, 223 s parse), so the
+# old 512 MiB payload bound admitted ~2.5 GB RSS from a <1 MiB file. 64 MiB
+# total / 32 MiB per entry keeps the worst case ~320 MiB; honest OOXML never
+# approaches this (a 500-page document.xml is a few MiB).
+DEFAULT_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024  # 64 MiB payload per zip
+DEFAULT_MAX_ENTRY_BYTES = 32 * 1024 * 1024  # 32 MiB per zip entry
 DEFAULT_MAX_PDF_PAGES = 10_000
 
 logger = logging.getLogger("nexus_search.ingestion.files")
@@ -457,19 +463,27 @@ def _ocr_pdf(path: Path) -> str:
 
 def _check_zip_payload(path: Path) -> None:
     """P1-12a: refuse zip containers whose DECLARED decompressed payload
-    exceeds NEXUS_MAX_DECOMPRESSED_BYTES, BEFORE any reader materializes
-    it. NEXUS_MAX_INGEST_BYTES caps the file on disk, not the payload —
-    a ~200 KiB 'docx' whose XML entries declare gigabytes (the zip-bomb
-    class) would otherwise be fully inflated by the OOXML reader. The
-    check reads only the zip central directory (declared sizes), no
-    decompression. A header that lies SMALL truncates harmlessly inside
-    Python's zipfile; a header that lies LARGE just means the guard fires
-    early — both safe directions."""
+    exceeds NEXUS_MAX_DECOMPRESSED_BYTES (total) or NEXUS_MAX_ENTRY_BYTES
+    (per entry, WP12-B8), BEFORE any reader materializes it.
+    NEXUS_MAX_INGEST_BYTES caps the file on disk, not the payload — a ~200
+    KiB 'docx' whose XML entries declare gigabytes (the zip-bomb class)
+    would otherwise be fully inflated by the OOXML reader. The check reads
+    only the zip central directory (declared sizes), no decompression. A
+    header that lies SMALL truncates harmlessly inside Python's zipfile;
+    a header that lies LARGE just means the guard fires early — both safe
+    directions. The per-entry cap catches the nested-bomb shape (one huge
+    entry padded under the total by small files)."""
     import zipfile
     bound = _max_decompressed_bytes()
+    entry_bound = _max_entry_bytes()
     total = 0
     with zipfile.ZipFile(str(path)) as zf:
         for info in zf.infolist():
+            if info.file_size > entry_bound:
+                raise ValueError(
+                    f"declared decompressed entry {info.filename} "
+                    f"({info.file_size} bytes) exceeds "
+                    f"NEXUS_MAX_ENTRY_BYTES ({entry_bound})")
             total += info.file_size
             if total > bound:
                 raise ValueError(
@@ -605,6 +619,21 @@ def _max_decompressed_bytes() -> int:
         logger.warning("Invalid NEXUS_MAX_DECOMPRESSED_BYTES %r; using default %d",
                        raw, DEFAULT_MAX_DECOMPRESSED_BYTES)
         return DEFAULT_MAX_DECOMPRESSED_BYTES
+
+
+def _max_entry_bytes() -> int:
+    raw = os.environ.get("NEXUS_MAX_ENTRY_BYTES")
+    if not raw:
+        return DEFAULT_MAX_ENTRY_BYTES
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("Invalid NEXUS_MAX_ENTRY_BYTES %r; using default %d",
+                       raw, DEFAULT_MAX_ENTRY_BYTES)
+        return DEFAULT_MAX_ENTRY_BYTES
 
 
 def _max_pdf_pages() -> int:
