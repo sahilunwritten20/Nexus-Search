@@ -148,8 +148,11 @@ answers:
     obeyed).
 - The refuse-gate uses RAW retrieval signals ONLY (WP12-B2):
   - vector cosine floor: the RAG retrieval call passes `min_score` (a
-    raw cosine threshold) — semantic/hybrid search already supports it
-    on the vector side; the API may need to expose it for /ask.
+    raw cosine threshold). SUPPORTED END-TO-END since WP14:
+    `HybridSearch.search_page(min_score=...)` floors the vector side only
+    (never fused scores), and `/search?min_score=` exposes it (validated
+    [-1, 1], cached, applied to the facet pass). `/ask` reuses the same
+    parameter — no new retrieval path.
   - BM25 raw-score floor: the un-normalized BM25 score of the top hit
     (the same 5.4-9.1 junk measurement is the calibration data).
   - and/or a hybrid agreement rule (e.g. refuse when the top fused

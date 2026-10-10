@@ -422,6 +422,7 @@ def search(
     highlight: bool = Query(default=False),
     facets: Optional[str] = Query(default=None),
     cursor: Optional[str] = Query(default=None),
+    min_score: Optional[float] = Query(default=None, ge=-1.0, le=1.0),
     api_key: Optional[str] = Security(_api_key_header),
 ):
     if not q.strip():
@@ -525,7 +526,7 @@ def search(
         q, top_k=top_k, offset=offset, mode=mode, bm25_weight=bm25_weight,
         vector_weight=vector_weight, fusion=fusion, candidates=candidates,
         debug=debug, sort=sort, highlight=highlight, rerank=rerank_flag,
-        diversity=diversity,
+        diversity=diversity, min_score=min_score,
     )
     cached_page = _query_cache.get(cache_key)
     if cached_page is not None:
@@ -537,6 +538,7 @@ def search(
             sort=sort, highlight=highlight, diversity=diversity,
             understanding=_understanding(),
             bm25_weight=bm25_weight, vector_weight=vector_weight,
+            min_score=min_score,
         )
         _query_cache.set(cache_key, page)
 
@@ -583,13 +585,17 @@ def search(
         _FACET_SAMPLE_CAP = 500
         facets_truncated = page.total > _FACET_SAMPLE_CAP
         full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                           offset=0, mode=search_mode, fusion=fusion,
-                                           understanding=_understanding(),  # facets follow retrieval
-                                           # the default candidate pool (50) would
-                                           # truncate counts below the sample cap
-                                           candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                           bm25_weight=bm25_weight,
-                                           vector_weight=vector_weight)
+                                            offset=0, mode=search_mode, fusion=fusion,
+                                            understanding=_understanding(),  # facets follow retrieval
+                                            # the default candidate pool (50) would
+                                            # truncate counts below the sample cap
+                                            candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
+                                            bm25_weight=bm25_weight,
+                                            vector_weight=vector_weight,
+                                            # the facet population is the SAME
+                                            # retrieval as the page: a raw cosine
+                                            # floor applies here too (WP14-1)
+                                            min_score=min_score)
         from ..core.filters import facet_counts
         docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
