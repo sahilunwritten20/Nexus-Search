@@ -925,3 +925,46 @@ exus_search/__init__.py now owns __version__ = '0.6.0'; api imports it. | app.ve
 | evaluation runners 44-83% | P3 | accept, documented | env-gated benchmark harnesses; CI runs graph smoke + authority bench + rerank smoke |
 | Docker ST-offline boot | P2 | **CI-carried** | engine down locally; WP13 saw the same and it later recovered |
 | n8n 300-350-node expansion | optional | **deferred user decision** (WP13 precedent) | large untestable artifact; not WP14 scope |
+
+### WP14 CI addendum (recorded after the pushes, via the Actions API)
+
+- **Run #22 on 3040c6e: GREEN — all three jobs** (both charset-normalizer
+  matrix legs with the FULL suite + all three lints incl. the new
+  checklist-paths check + graph smoke + authority benchmark; docker job
+  = image build of the WP14 Dockerfile + non-root assertion + boot +
+  /health probe). First CI run on any WP14 commit; no red run ever
+  appeared on the branch.
+- **Run #23 on a2a4c2c (README note): GREEN.**
+- **Run #24 on d1a2185 (final head): GREEN — and it closes the last
+  unverified gate.** The docker job's new step **"Offline ST boot (baked
+  model, no network)" succeeded**: the container ran with --network none
+  and NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2, and
+  /ready answered **200** — the baked /opt/hf model loaded with
+  HF_HUB_OFFLINE=1 and ZERO egress. Item 3's "UNVERIFIED-locally" is
+  therefore superseded: locally unverified (engine down all session),
+  **CI-verified end-to-end** — exactly the H3 test the mission specified.
+- Python 3.14.7 parity at the WP14 head (local .venv, after all fixes):
+  **944 passed, 7 skipped, 623 subtests** — identical outcomes to 3.12
+  (warnings-only delta, upstream slowapi, documented since WP11 P3-13).
+
+## PHASE 7 GO/NO-GO (every box earned with a command + real output)
+
+- [x] min_score reachable end-to-end (/search?min_score= + search_page),
+      raw m25_score/ector_score available to the refuse-gate (pinned
+      through fusion AND rerank, incl. None cases) — tests/core/test_min_score.py
+- [x] _run_search() exists; /search behavior unchanged (gate set green
+      with ZERO test edits) — tests/core/test_run_search.py
+- [x] ST embedder works inside the container OFFLINE — CI run #24 docker
+      step "Offline ST boot (baked model, no network)": success
+- [x] compose carries every NEXUS_* var incl. LLM-related ones
+      (env_file verified live via compose config)
+- [x] A/B retention tested (tests/ranking/test_ab.py); checklist paths all
+      exist (new CI lint green on both matrix legs)
+- [x] suite green on 3.12 (944/7/623, fresh venv) AND 3.14 (944/7/623);
+      golden byte-identical; coverage 87% -> 89% (not lower)
+- [x] no secrets in the repo (sweep clean); no tracked artifacts
+      (CI hygiene step green; package zip 240 entries, zero junk)
+- [x] CI green on the WP14 head: runs #22, #23 and #24 all GREEN
+      (run #24 = final head d1a2185)
+
+**Phase 7: GO.** Build order + per-step test gates: docs/PHASE7_KICKOFF.md.
