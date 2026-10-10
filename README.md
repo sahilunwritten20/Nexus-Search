@@ -52,7 +52,13 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_AUTHORITY_RECOMPUTE_INTERVAL` | `0` | Seconds between background PageRank passes (`0` = off; CLI recompute unaffected) |
 | `NEXUS_DOMAIN_AUTHORITY_FALLBACK` | `0` | `1`: unknown URLs fall back to their domain's aggregate score |
 | `NEXUS_RERANK_WEIGHTS` | *(unset)*    | JSON object overriding any subset of rerank signal weights, clamped [0,1] (e.g. `{"title_match":0.3}`) |
-| `NEXUS_SPELL_MAX_TERM_LEN` etc. | see `.env.example` | Spell-correction bounds (BUG-01): term 20, dist-2 12, 8 corrections/query, 4000-comparison budget |
+| `NEXUS_SPELL_MAX_TERM_LEN` etc. | see `.env.example` | Spell-correction bounds (BUG-01): `NEXUS_SPELL_MAX_TERM_LEN` 20, `NEXUS_SPELL_D2_MAX_TERM_LEN` 12, `NEXUS_SPELL_MAX_CORRECTED_TERMS` 8, `NEXUS_SPELL_CANDIDATE_BUDGET` 4000 comparisons/query |
+| `NEXUS_STEMMING` | `1` | Tokenizer stemming at index+query time. Changing it REQUIRES `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow` |
+| `NEXUS_CORS_ORIGINS` | *(unset)* | Comma-separated allowed browser origins; unset = no CORS headers (default-deny) |
+| `NEXUS_MAX_INGEST_BYTES` | `67108864` | Max bytes per file the files/code connectors read (64 MiB) |
+| `NEXUS_MAX_ENTRY_BYTES` | `33554432` | Per-entry declared-payload cap for zip containers (docx/xlsx/pptx) — nested-bomb guard (WP12-B8) |
+| `NEXUS_OCR` | `0` | OCR fallback for image-only PDFs (needs tesseract + pytesseract/pdf2image) |
+| `NEXUS_RERANK_WEIGHT_CLICK` | `0` | Click-signal rerank weight — placeholder slot until click data exists (Phase 8+) |
 | `NEXUS_MAX_QUERY_TERMS` | `128`       | Max positive terms per query (extras dropped deterministically; BUG-01) |
 | `NEXUS_MAX_CANDIDATES` | `1000`       | Fused-pool hard bound; `offset+top_k` past it is a clear 400 (BUG-03/04) |
 | `NEXUS_EMBEDDER` | `hash:384`  | offline-safe default; set `st:sentence-transformers/all-MiniLM-L6-v2` for real semantics (model pre-baked in the image) |
@@ -146,8 +152,11 @@ identical outcomes; skips are model/benchmark-gated: set
 2 skipped**). CI runs the suite as a charset-normalizer matrix (3.5.1
 pinned + 3.4.6 — the encoding detection must not depend on the detector
 version) plus the graph-benchmark smoke, the authority on/off benchmark,
-the duplicate-test-name lint and the env-var documentation check.
-Run: `python -m pytest -q`.
+the duplicate-test-name lint, the env-var documentation check and the
+checklist-paths check. Run: `python -m pytest -q` (test-only deps live in
+`requirements-dev.txt` since WP14 — runtime code never imports them).
+Rerank A/B quick-check: `python -m nexus_search.evaluation.rerank_benchmark`
+(hybrid vs hybrid+rerank on the built-in benchmark dataset).
 
 **Embedder default is lexical, not semantic.** `NEXUS_EMBEDDER` now
 defaults to `hash:384` in code, compose AND this table (they agree since the
@@ -394,7 +403,7 @@ material only, not wired into the codebase.
 -   Language Relevance
 -   Source Authority
 -   Popularity Signals
--   Click Signals
+-   Click Signals (interface only — no data source / no trainer until Phase 8+)
 
 ## Ranking System
 
@@ -403,8 +412,7 @@ material only, not wired into the codebase.
 -   Configurable Ranking Weights
 -   Candidate Generation
 -   Re-Ranking
--   Learning-to-Rank Framework
--   Ranking Model Evaluation
+-   Learning-to-Rank Framework (framework only — no labeled data exists to train a model)
 -   A/B Testing
 
 ## Search UX
@@ -431,7 +439,8 @@ Honest scope notes (per SPEC.md): learning-to-rank ships as framework +
 weighted-sum model only (no labeled data exists to train one); A/B ships as
 instrumentation (deterministic bucketing + query log) — real analysis needs
 production traffic; authority/popularity/click signals are placeholder
-interfaces awaiting Phase 6/7 data sources.
+interfaces awaiting data sources (click logs are Phase 8+, per
+docs/PHASE7_PLAN.md).
 
 ------------------------------------------------------------------------
 

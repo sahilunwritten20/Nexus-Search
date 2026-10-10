@@ -34,11 +34,15 @@ def wait_ready(client):
 
 
 def main():
+    # WP14-6g: scratch DB in a TEMP dir — this script used to litter
+    # wp12_a1_test.db{,-wal,-shm} in the repo root.
+    import tempfile
+    scratch = tempfile.mkdtemp(prefix="wp12_a1_")
     env = dict(os.environ)
     env.update({
         "NEXUS_ENV": "production",
         "NEXUS_API_KEY": "wp12-real-key",
-        "NEXUS_DB": os.path.abspath("wp12_a1_test.db"),
+        "NEXUS_DB": os.path.join(scratch, "wp12_a1_test.db"),
         "NEXUS_EMBEDDER": "hash:8",
         "NEXUS_CACHE_TTL": "0",
         "NEXUS_RATE_LIMIT": "60/minute",

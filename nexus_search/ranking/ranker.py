@@ -46,7 +46,7 @@ class RankingWeights:
     language_relevance: float = 0.05
     source_authority: float = 0.0   # Phase 6 link-graph authority (opt-in)
     popularity: float = 0.0         # Phase 6 link-graph popularity (opt-in)
-    click_signal: float = 0.0       # placeholder slot — no data until Phase 7
+    click_signal: float = 0.0       # placeholder slot — no data source until Phase 8+
     anchor_relevance: float = 0.0   # Phase 6 inbound-anchor/query overlap (opt-in)
 
     def as_dict(self) -> dict[str, float]:
@@ -135,8 +135,8 @@ class RankedResult:
 class RankingModel(ABC):
     """The LTR seam. score() takes precomputed features only — a trained
     model (LightGBM etc.) belongs BEHIND this interface, once click/relevance
-    labels exist (Phase 7+). Nothing to train on = nothing trained; the
-    framework is the deliverable."""
+    labels exist (Phase 8+; no Phase 7 data source is planned). Nothing to
+    train on = nothing trained; the framework is the deliverable."""
 
     @abstractmethod
     def score(self, features: RankingFeatures) -> float:
