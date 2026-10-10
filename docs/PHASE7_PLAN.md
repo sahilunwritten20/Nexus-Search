@@ -98,6 +98,14 @@ that a rendering client would execute:
 - Hard request timeout on every LLM call (default ≤ 30 s) + a bounded
   retry with jitter (≤ 2 retries, non-idempotent-capable calls fail
   fast instead).
+- **OPERATIONAL LIMIT (WP14-8, must be copied verbatim into the Phase 7
+  deployment docs when they are written):** the slowapi limiter is
+  IN-PROCESS MEMORY, so per-key token caps are PER-WORKER. Running more
+  than one uvicorn worker (or API replicas) multiplies the effective
+  budget by the worker count; enforcing true per-key caps then requires
+  SHARED STATE (a small SQLite table or Redis, same pattern as the
+  crawler frontier's cross-process SQLite). Phase 7 must not improvise
+  this later — the deployment doc and the compose comments carry it.
 - Concurrency limit on the LLM call: a small semaphore (default 4) —
   requests above it queue with a visible 429/Retry-After instead of
   dog-piling the provider. The `/search` rate limiter is reused as the
@@ -186,6 +194,19 @@ answers:
   `_READ_AUTH` when enabled, rate limits via the shared limiter, models
   in `core/models.py` with bounded fields, errors that never leak
   internals.
+- **WP14-8 guard rails (binding):**
+  - `/ask` and `/ask/stream` are key-gated UNCONDITIONALLY — they mount
+    `Depends(require_api_key)` directly and must NOT inherit `_READ_AUTH`
+    (which is opt-in by design for read endpoints). LLM answers are
+    spend-generating outputs, not free reads; a misconfigured
+    `NEXUS_REQUIRE_AUTH_FOR_READS=0` must never open them.
+  - The LLM provider sits behind a small internal interface
+    (`generate(prompt, ...) -> LLMResult`-shaped) with a STUB
+    implementation (canned/deterministic answers, no network, no key).
+    The suite and CI run against the stub only — CI never needs a key or
+    network. The real provider is selected by env config at boot and
+    behind the same interface; the stub also serves as the injection-test
+    oracle (§2).
 
 ---
 
