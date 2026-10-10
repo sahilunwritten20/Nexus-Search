@@ -150,7 +150,56 @@ defect), N3 (check_env_docs allowlist masks OCR/STOPWORDS entries), N4
 (symlink probe UNVERIFIED locally — privilege), N5 (7 routes declare no
 response_model — P3).
 
-## Items — per-item log (filled as work proceeds)
+## Items — per-item log
 
-(Item 1..9 entries live in docs/AUDIT_REMEDIATION.md WP14 section; commit
-hashes recorded there and in the closing table.)
+Full per-item root-cause/before-after/commit table: WP14 section in
+`docs/AUDIT_REMEDIATION.md`. Commit chain on branch `wp14` (off `phase-7`):
+
+1. `7032eba` docs — Step 0 report
+2. `fc41c95` Item 1 — min_score end-to-end (14 tests)
+3. `5bf68b4` Item 2 — _run_search extraction (13 tests, zero test edits)
+4. `e9c15ae` Item 3 — Dockerfile HF_HOME/baked-model fix (docker UNVERIFIED-local)
+5. `a7e632c` Item 4 — compose env_file pass-through (verified via compose config)
+6. `ed1939c` Item 5 — test_ab.py + checklist accuracy + paths lint in CI
+7. `3868bd8` Item 6a — __version__ 0.6.0
+8. `d779bd2` Item 6b — requirements-dev.txt split
+9. `fc69003` Item 6c/6d — rerank smoke + NEXUS_STOPWORDS honesty fix + env docs
+10. `5ed7f5f` Item 6e/6f/6g — dash, CRLF worktree, phase-drift docs, wp12 temp dirs
+11. Item 6h — packaging verified: 240 entries, zero junk (no repo change)
+12. Item 7 — coverage-gap tests (backup CLI, parser edges, vector-store,
+    security edges, mime, CLI dispatch, seed_from_sitemap): 63 new tests;
+    total 87% -> 89% (branch on)
+13. Item 8 — PHASE7_PLAN guard rails (/ask unconditional key-gating,
+    per-worker limiter must-copy note, LLM stub interface)
+14. Item 9 — n8n Qdrant point-id collision fixed (deterministic UUID of
+    hash+chunk index), n8n.md reference-only label + H13 limits, JSON
+    re-validated (75 nodes, connections resolve, no secrets)
+
+## Final gate (fresh venv, 2026-10-11)
+
+- Offline: **944 passed, 7 skipped, 623 subtests** (was 844/7/614)
+- Model-gated: **949 passed, 2 skipped** (was 849/2)
+- Load smoke **1 passed**; graph bench **16 passed, 2 skipped** (+1 rerank smoke)
+- Lints: duplicate-tests clean; env-docs 30 vars; checklist paths 6 full + 38 bare
+- rerank_benchmark: exit 0, identical metrics, now smoke-tested
+- Coverage: **89%** (was 87%); branch coverage on both runs
+- Golden: byte-identical (empty `git diff phase-7..HEAD` on the baseline)
+- Route matrix/boot-refusal/concurrency probes: all re-run from the fresh
+  venv, identical to Step 0 (the 3 dev_matrix "failures" are documented
+  probe-expectation artifacts, not app defects)
+- Docker: UNVERIFIED-locally (engine down all session despite launch
+  attempts; CI docker job carries it)
+- Repo-root litter: zero new files across all runs; stale wp12_a*_test.db*
+  scratch deleted
+
+## Honest mistakes made and fixed during WP14 (recorded)
+
+- PowerShell `Get-Content`/`WriteAllText` roundtrip mojibaked SPEC.md and
+  PHASE6_PLAN.md mid-session (caught immediately by re-reading the output;
+  both reverted via `git checkout` and redone with a safe editor).
+- The golden "before hash" comparison was corrupted once by PowerShell's
+  UTF-16 redirect; the correct proof is `git diff` on the blob (recorded).
+- First mutation-script run: ModuleNotFoundError (sys.path), fixed; first
+  test run of my own min_score suite had a harness bug (no EmbeddingSync
+  attached -> zero vectors) and a 2.0 floor outside the API's [-1,1] bound;
+  both fixed before any production code was touched.
