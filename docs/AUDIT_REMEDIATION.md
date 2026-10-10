@@ -968,3 +968,51 @@ exus_search/__init__.py now owns __version__ = '0.6.0'; api imports it. | app.ve
       (run #24 = final head d1a2185)
 
 **Phase 7: GO.** Build order + per-step test gates: docs/PHASE7_KICKOFF.md.
+
+### WP14 hostile re-read of the full branch diff (recorded as required)
+
+The full git diff phase-7..HEAD (38 files, +1672/-87) was re-read
+adversarially before sign-off. Risks found and what was done:
+
+1. **The _run_search move could have silently dropped behavior** (validation
+   order, 	op_k clamping, response shape). Disposition: the gate set
+   (golden keyword, test_api, pagination, dos, shared_searcher, boolean,
+   min_score, query_cache) passed with ZERO test edits, and
+   tests/core/test_run_search.py pins the exact 18-input signature +
+   every error path — drift is now mechanically impossible.
+2. **Reload-based API tests can litter the repo root** (the WP11 NEXUS_DB
+   lesson). Disposition: re-checked the repo root after every suite run —
+   zero new files; 
+exus_search.db mtime unchanged (10/3, pre-WP14).
+   The new test classes save/restore NEXUS_DB per the WP11 hygiene pattern.
+3. **Doc-edit encoding hazards** (I mojibake'd SPEC.md/PHASE6_PLAN.md once
+   via a PowerShell roundtrip mid-session). Disposition: both reverted via
+   git checkout immediately and redone with a safe editor; final files
+   verified valid UTF-8; recorded in the worklog's honest-mistakes section.
+4. **env_file: required:false needs compose >= 2.24** — a version
+   constraint I introduced. Disposition: documented in the README section
+   and the compose file comment.
+5. **HF_HUB_OFFLINE=1 could break the DEFAULT (hash) boot** if anything
+   touched the hub at import. Disposition: the CI docker job boots the
+   default embedder (run #22 step "Boot the container and probe /health":
+   success) AND the offline ST boot (run #24 step 6: success) — both paths
+   proven on the modified image.
+6. **The dev_matrix probe shows 3 "failed" checks** — all probe-expectation
+   artifacts, not app defects (delete-order 404, cursor-clamp-then-window
+   400, 404-body-vs-DocumentOut). Documented in the worklog so nobody
+   "fixes" correct behavior later.
+7. **Add-Content writes CRLF worktree copies of the docs** (git warned
+   once). Disposition: harmless — index is normalized to LF by
+   	ext=auto eol=lf (verified git ls-files --eol shows no tracked
+   CRLF-index files), same class as the pre-existing H9 worktree artifacts.
+
+### WP14 final CI record
+
+- Run #22 (3040c6e): GREEN — first WP14 push; full suite on both charset
+  legs, all lints incl. the new checklist-paths check, docker build/boot.
+- Run #23 (a2a4c2c): GREEN.
+- Run #24 (d1a2185): GREEN — includes the new "Offline ST boot (baked
+  model, no network)" docker step: SUCCESS (H3 verified end-to-end).
+- Run #25 (55bfc01): GREEN.
+- **Run #26 (10554d4 — the final head at sign-off): GREEN.**
+- The go/no-go box "CI green on the WP14 head" is earned by run #26.
