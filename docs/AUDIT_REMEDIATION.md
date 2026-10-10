@@ -835,3 +835,39 @@ Phase 7 hand-off: tag `v0.6.0-phases-1-6`, branch `phase-7`.
 The blocking-encoding requirement holds in CI: the encoding tests pass
 on BOTH charset-normalizer legs of the matrix, exactly as they did
 locally (Windows/3.14 on 3.5.1 and 3.4.6).
+
+# WP14 — Pre-Phase-7 hardening: STEP 0 report (audit BEFORE fixes)
+
+Scope: install and RUN everything (the prior review was static-only), confirm
+or refute its hypotheses H1–H13, discover what reading could not, then fix
+test-first. Full command/output evidence: docs/WP14_WORKLOG.md (Step 0
+sections). Baseline re-confirmed before any change: offline **844 passed,
+7 skipped, 614 subtests** (py3.12.14 + py3.14.7 identical), model-gated
+**849/2**, load smoke 1, graph bench 15/2, both lints clean, mutations
+7/7 killed, FastAPI route matrix + boot-refusal + 50-way concurrency clean.
+
+| # | Finding | Evidence (command → real output; details in WP14_WORKLOG) | Sev | Status | Action |
+|---|---|---|---|---|---|
+| H1 | min_score exists only in VectorStore.search; unreachable via HybridSearch.search_page and /search | read: vector_store.py:384/440 vs hybrid_search.py:209-217/407 (no param); failing test written test-first in Item 1 | P1 | confirmed | FIX (Item 1) |
+| H2 | /search is one ~204-line function (api.py:404–607) | read + measured line span | P2 | confirmed | FIX (Item 2, pure refactor) |
+| H3 | Dockerfile bakes MiniLM into the BUILDER stage only; runtime image has no model, no HF_HOME, runs as appuser → st: boot would download/hang at start | Dockerfile L14-18 vs L21-41; docker boot UNVERIFIED-locally (engine down) | P1 (ops honesty: README promises "pre-baked") | confirmed | FIX (Item 3) |
+| H4 | docker-compose passes only 6 of ~31 NEXUS_* vars | docker-compose.yml environment block | P2 | confirmed | FIX (Item 4) |
+| H5 | Checklist names files that don't exist: 	ests/ranking/test_ab.py, 	est_query_parser.py, 	est_hybrid*.py; robots tests actually live in 	est_politeness.py; A/B covered indirectly in 	est_ranker.py | Test-Path matrix: MISSING×2, no glob hits | P2 | confirmed | FIX (Item 5) |
+| H6 | ersion="0.4.0" vs tag v0.6.0; empty __init__.py; no pyproject.toml; test deps in production requirements.txt | api.py:73; coverage (0 stmts); git ls-files; requirements.txt §Testing | P3 | confirmed | FIX (Item 6a/6b) |
+| H7 | evaluation/rerank_benchmark.py unreferenced, 0% coverage | coverage report 0%; BUT it RUNS (exit 0, full metrics) — "may be broken" refuted | P3 | confirmed | FIX (Item 6c: smoke test + docs) |
+| H8 | Env docs drift: README missing NEXUS_CORS_ORIGINS/MAX_ENTRY_BYTES/MAX_INGEST_BYTES/OCR/RERANK_WEIGHT_CLICK/STEMMING; NEXUS_STOPWORDS absent from .env.example; "checker checks only documented vars" | README var-grep diff vs code-grep; check_env_docs.py source DOES scan code (claim refuted); spell-budget trio covered by "etc." row | P2 (+NEW N2 below) | partial | FIX (Item 6d) |
+| H9 | CRLF + non-ASCII dash | git ls-files --eol: 5 tracked files worktree-CRLF/index-LF → renormalize NOT warranted; .gitattributes byte 151 (em dash) confirmed; AUDIT_REMEDIATION.md/smoke_check.py LF (refuted); seeds.txt untracked, 1 stray CR (refuted) | P3 | partial | FIX (Item 6e, worktree + dash only) |
+| H10 | signals.py says click logs are "Phase 7"; PHASE7_PLAN defers click-feedback learning to 8+; README Phase 5 lacks interface-only tags | signals.py:11,163,176 vs PHASE7_PLAN:191; README:382,391 | P2 (doc honesty) | confirmed | FIX (Item 6f) |
+| H11 | scripts/dev/wp12/a1_*,2_* leave wp12_a*_test.db* in repo root | artifacts present (10/6); scripts use relative DB paths | P3 | confirmed | FIX (Item 6g) |
+| H12 | .github/workflows/test.yml exists and matches the audit log (charset matrix, docker job, lints, hygiene) | file read; "absent from zip" premise stale (matches WP11 P0-2) | — | confirmed | none |
+| H13 | n8n workflow: Qdrant Upsert id: chunk.index (cross-doc collision); placeholder Qdrant URLs; SSRF hostname regex (misses 172.16/12, IPv6, numeric IPs, redirects, rebinding); robots prefix-only; RAG prompt unfenced/no injection stripping; confidence 0.4+0.15×sources not a retrieval signal | node bodies extracted programmatically (75 nodes, JSON valid, connections resolve, no embedded secrets) | P2 (reference artifact) | all confirmed | FIX (Item 9) |
+| N1 | NEW: 	est_crawl_delay_holds_with_many_workers flakes under CPU load (2 fails / 3 loaded runs incl. -n auto; 0/10 isolated; CI serial ×17 green). Politeness implementation correct (component test pins slot spacing); server-thread recording jitter is the mechanism | mutation + isolation matrix in worklog | P2-ops | NEW | ledger + owner decision (test rewrite forbidden by WP14 rules) |
+| N2 | NEW: NEXUS_STOPWORDS is promised by tokenizer.py docstring ("=1 to enable") but read NOWHERE in code; stopword removal is unimplemented | repo-wide grep: 2 hits, both doc/allowlist text | P1 (documented-but-nonexistent knob) | NEW | FIX (Item 6d: correct docstring; do NOT document the lie in .env.example) |
+| N3 | NEW: check_env_docs ALLOWLIST masks NEXUS_OCR/NEXUS_STOPWORDS rather than documenting them | check_env_docs.py:14-20 | P3 | NEW | FIX (Item 6d) |
+| N4 | NEW: files-connector symlink probe UNVERIFIED locally (Windows privilege WinError 1314); no remote path input exists (operator-scoped) | probe output | P3 | NEW | document |
+| N5 | NEW: 7 routes declare no esponse_model (POST/DELETE /documents, bulk, suggest, related, graph/*, health/ready/metrics) | route decorators | P3 | NEW | ledger |
+| C1 | Coverage gaps <85%: backup.py 41% (CLI main 0%), query_parser 84%, vector_store 84% (min_score path untested — becomes tested in Item 1), crawler/cli 60%, fetcher 83% (playwright-gated), pipeline 84%, security 84%, files.py 81%, mime.py 76%, benchmark runners (0-81%, env-gated by design) | --cov --cov-branch term-missing | P2 | NEW | FIX (Item 7: add tests for behavior-bearing gaps; document why-not for env-gated/operator surfaces) |
+| C2 | Mutations: ALL 7 spot-check targets killed (require_api_key, _rate_limit_key, _blocked_ip, dns pinning, chunk cascade, zip-bomb, size guard) | mutation harness, git clean after | — | NEW (positive) | none — guards are test-pinned |
+| C3 | FastAPI audit: boot matrix, 13-route × 3-key matrix (dev/prod/read-auth), malformed-input battery, 429+Retry-After+X-RateLimit, CORS off/on, docs 404 prod / 200 dev, OpenAPI complete, no secret leaks, no internal-state leaks, 50-way concurrency + writes zero 5xx/lock errors | probe scripts (worklog §0.4) | — | NEW (positive) | none |
+
+Fix items follow (test-first, one commit each). No RAG code is written by WP14.
