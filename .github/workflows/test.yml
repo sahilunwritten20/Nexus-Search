@@ -54,6 +54,9 @@ jobs:
       - name: Lint - env vars documented in .env.example
         run: python scripts/dev/check_env_docs.py
 
+      - name: Lint - checklist test files exist (WP14-5)
+        run: python scripts/dev/check_checklist_paths.py
+
       - name: Graph benchmark smoke (reduced mode)
         env:
           NEXUS_GRAPH_BENCH_SMOKE: "1"
