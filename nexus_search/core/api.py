@@ -70,7 +70,8 @@ async def lifespan(app: FastAPI):
 # OpenAPI explorer is a dev convenience; in production it's information
 # disclosure (exact params, paths). NEXUS_ENV=dev keeps them on.
 _is_dev = _ENV == "dev"
-app = FastAPI(title="Nexus Search — Core", version="0.4.0", lifespan=lifespan,
+from .. import __version__ as _APP_VERSION  # WP14-6a: one version source
+app = FastAPI(title="Nexus Search — Core", version=_APP_VERSION, lifespan=lifespan,
               docs_url="/docs" if _is_dev else None,
               redoc_url="/redoc" if _is_dev else None,
               openapi_url="/openapi.json" if _is_dev else None)
