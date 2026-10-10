@@ -10,13 +10,15 @@ import sys
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 SRC = os.path.join(ROOT, "nexus_search")
 
-# internal/test-only knobs that intentionally do not belong in .env.example
+# internal/test-only knobs that intentionally do not belong in .env.example.
+# WP14-6d: NEXUS_OCR and NEXUS_STOPWORDS were removed from this list —
+# NEXUS_OCR is documented in .env.example (it must stay there), and
+# NEXUS_STOPWORDS never existed in code (the docstring that promised it
+# was fixed instead of documenting a lie). Only test/benchmark gates remain.
 ALLOWLIST = {
     "NEXUS_RUN_MODEL_TESTS",    # test-only gate (documented in .env.example comment already)
     "NEXUS_GRAPH_BENCH_SMOKE",  # benchmark harness mode (test-only)
     "NEXUS_RUN_GRAPH_BENCH",    # benchmark harness gate (test-only)
-    "NEXUS_OCR",                # documented in .env.example (kept here in case of drift)
-    "NEXUS_STOPWORDS",          # tokenizer knob, documented in tokenizer docstring
 }
 
 READ_PATTERN = re.compile(

@@ -8,9 +8,12 @@ recall to morphological variants. It is NOT a full Porter stemmer and does
 not pretend to be one (documented in `_stem_en`). Disable globally with
 NEXUS_STEMMING=0 or per call with tokenize(text, stem=False).
 
-Stopword REMOVAL is deliberately OFF by default (NEXUS_STOPWORDS=1 to enable
-for latency-sensitive experiments): dropping "the"/"of"/etc. silently changes
-phrase semantics, and "Honesty over completeness theater" says don't."""
+Stopword REMOVAL is NOT implemented, deliberately (WP14-6d: an earlier
+docstring promised a NEXUS_STOPWORDS=1 knob that no code ever read —
+documented behavior must match shipped behavior). Dropping "the"/"of"/etc.
+silently changes phrase semantics; "Honesty over completeness theater"
+says don't. A real stopword mode would be index-affecting (reindex
+required) and needs its own work package, not an env var."""
 
 import os
 import re
