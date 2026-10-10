@@ -111,6 +111,21 @@ after the eval harness shows uplift (see `evaluation/`).
 Docker/CI: `Dockerfile` + `docker-compose.yml` (key required), GitHub
 Actions runs the full suite + image build + `/health` probe on every push.
 
+**Configuring the container (WP14-4):** compose injects every `NEXUS_*`
+variable from an (optional, gitignored) `.env` file next to
+`docker-compose.yml` — copy `.env.example` there and edit; no need to
+extend the compose file for knobs like `NEXUS_CORS_ORIGINS`,
+`NEXUS_RERANK_WEIGHTS`, the Phase 6 weights, or the ingestion caps. The
+explicit `environment:` entries still win over `.env` values, and
+`NEXUS_API_KEY` remains fail-closed: `docker compose up` without it
+errors out (or set `NEXUS_ENV=dev` for a local throwaway). Secrets belong
+only in the environment or that `.env` — never committed.
+
+The image bakes the MiniLM model into `/opt/hf` (builder-stage download,
+copied into the runtime image, owned by `appuser`, loaded with
+`HF_HUB_OFFLINE=1`), so `NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2`
+boots with no network at all.
+
 Operations notes:
 - The A/B query log (`query_experiments`) records raw query text on every
   `/search` (including cache hits — repeated-query volume is A/B signal).
