@@ -92,3 +92,26 @@ jobs:
             sleep 2
           done
           echo "container never became healthy — logs:"; docker logs api; exit 1
+
+      # WP14-3 (H3): the MiniLM model must reach the RUNTIME image — an
+      # st: embedder boots with NO network at all (HF_HOME=/opt/hf baked in
+      # the builder, HF_HUB_OFFLINE=1 in the runtime ENV). /ready 200 =
+      # the vector subsystem loaded the local model.
+      - name: Offline ST boot (baked model, no network)
+        run: |
+          docker run -d --name st-boot --network none \
+            -e NEXUS_ENV=dev \
+            -e NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2 \
+            nexus-search:ci
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' st-boot)" != "true" ]; then
+              echo "container exited — logs:"; docker logs st-boot; exit 1
+            fi
+            if docker exec st-boot python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready').status==200 else 1)" 2>/dev/null; then
+              echo "offline ST boot: /ready 200 (baked model loaded, zero egress)"
+              docker exec st-boot python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health')))"
+              docker rm -f st-boot >/dev/null; exit 0
+            fi
+            sleep 2
+          done
+          echo "offline ST boot never became ready — logs:"; docker logs st-boot; exit 1
