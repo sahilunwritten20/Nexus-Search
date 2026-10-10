@@ -203,3 +203,14 @@ Full per-item root-cause/before-after/commit table: WP14 section in
   test run of my own min_score suite had a harness bug (no EmbeddingSync
   attached -> zero vectors) and a 2.0 floor outside the API's [-1,1] bound;
   both fixed before any production code was touched.
+
+## CI record (final)
+
+- Run #22 (3040c6e): GREEN — both charset legs + docker (build/non-root/boot).
+- Run #23 (a2a4c2c): GREEN.
+- Run #24 (d1a2185): GREEN — docker job step 6 "Offline ST boot (baked
+  model, no network)" SUCCESS: --network none + st: embedder, /ready 200,
+  zero egress. H3 verified end-to-end by CI (local engine stayed down).
+- Post-merge run on 55bfc01 (this docs commit) will follow the same green path.
+- 3.14 parity at the head: 944 passed, 7 skipped, 623 subtests (warnings-only
+  delta vs 3.12).
