@@ -22,11 +22,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies (pinned requirements + CPU torch wheel)
+      - name: Install dependencies (pinned requirements + CPU torch wheel + dev/test extras)
         env:
           PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
           if [ "${{ matrix.charset-normalizer }}" != "3.5.1" ]; then
             pip install "charset-normalizer==${{ matrix.charset-normalizer }}"
           fi
