@@ -125,7 +125,8 @@ extend the compose file for knobs like `NEXUS_CORS_ORIGINS`,
 explicit `environment:` entries still win over `.env` values, and
 `NEXUS_API_KEY` remains fail-closed: `docker compose up` without it
 errors out (or set `NEXUS_ENV=dev` for a local throwaway). Secrets belong
-only in the environment or that `.env` — never committed.
+only in the environment or that `.env` — never committed. (The optional
+env-file syntax needs Docker Compose ≥ 2.24.)
 
 The image bakes the MiniLM model into `/opt/hf` (builder-stage download,
 copied into the runtime image, owned by `appuser`, loaded with
