@@ -6,16 +6,22 @@ FROM python:3.12-slim AS builder
 
 # torch ships a much smaller CPU-only wheel from PyTorch's index; without
 # this pip pulls the multi-GB CUDA build.
+# HF_HOME pins the pre-baked model to /opt/hf (WP14-3: pre-fix the download
+# landed in root's ~/.cache/huggingface in the BUILDER stage and the runtime
+# stage never received it, so NEXUS_EMBEDDER=st:... would have tried to
+# download at container start).
 ENV PIP_NO_CACHE_DIR=1 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu \
+    HF_HOME=/opt/hf
 
 WORKDIR /app
 COPY requirements.txt ./
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -r requirements.txt \
-    # Pre-bake the default ST model so a NEXUS_EMBEDDER=st:... boot never
+    # Pre-bake the default ST model (exact NEXUS_EMBEDDER spec string) so a
+    # NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2 boot never
     # needs HuggingFace Hub egress at container start
-    && /opt/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+    && /opt/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 
 FROM python:3.12-slim
@@ -24,10 +30,15 @@ ENV PATH="/opt/venv/bin:$PATH" \
     # production default: the API refuses to boot without NEXUS_API_KEY
     # (set it, or run with NEXUS_ENV=dev for local use)
     NEXUS_ENV=production \
-    NEXUS_DB=/data/nexus_search.db
+    NEXUS_DB=/data/nexus_search.db \
+    # WP14-3: the baked model ships in the image; OFFLINE refuses any
+    # egress attempt at boot (fail loud, never silently download)
+    HF_HOME=/opt/hf \
+    HF_HUB_OFFLINE=1
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/hf /opt/hf
 COPY nexus_search ./nexus_search
 COPY crawler_config.yaml ./
 
@@ -36,7 +47,7 @@ COPY crawler_config.yaml ./
 # (chown BEFORE VOLUME so named volumes inherit the writable ownership.)
 RUN useradd --create-home --uid 1000 appuser \
     && mkdir -p /data \
-    && chown -R appuser:appuser /app /data
+    && chown -R appuser:appuser /app /data /opt/hf
 VOLUME ["/data"]
 USER appuser
 
