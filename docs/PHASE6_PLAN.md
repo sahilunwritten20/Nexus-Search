@@ -68,7 +68,8 @@ distinct-domain inlinks) IS provably handled (Stage 3 test).
 
 ### Why not "fill it from click/popularity counters"
 
-Nothing in Phases 1–5 observes clicks (that's Phase 7's problem; the A/B
+Nothing in Phases 1–5 observes clicks (click instrumentation is a Phase 8+
+concern per docs/PHASE7_PLAN.md, WP14-6f; the A/B
 log records queries, not clicks). We do not fabricate a popularity signal.
 `popularity` comes from the graph (inbound domain diversity), the only real
 attention data available.
@@ -176,7 +177,7 @@ byte-identical to the retrieval order (existing tests pin this).
 - No real-time graph updates on the request path (recompute is offline/CLI).
 - No distributed graph store or external DB (Phase 8+ territory).
 - No ML spam classifier (heuristics only, documented as such).
-- No clicks-based popularity (no click instrumentation exists; Phase 7).
+- No clicks-based popularity (no click instrumentation exists; Phase 8+ per PHASE7_PLAN, WP14-6f).
 - No fetching "to check" a link. **Link intelligence only CONSUMES pages the
   SSRF-validated crawler already fetched** — it never triggers network I/O.
 - No change to normalized URL semantics: edges are keyed by normalized URLs.

@@ -70,7 +70,8 @@ async def lifespan(app: FastAPI):
 # OpenAPI explorer is a dev convenience; in production it's information
 # disclosure (exact params, paths). NEXUS_ENV=dev keeps them on.
 _is_dev = _ENV == "dev"
-app = FastAPI(title="Nexus Search — Core", version="0.4.0", lifespan=lifespan,
+from .. import __version__ as _APP_VERSION  # WP14-6a: one version source
+app = FastAPI(title="Nexus Search — Core", version=_APP_VERSION, lifespan=lifespan,
               docs_url="/docs" if _is_dev else None,
               redoc_url="/redoc" if _is_dev else None,
               openapi_url="/openapi.json" if _is_dev else None)
@@ -401,29 +402,39 @@ MAX_QUERY_CHARS = 2000  # attacker-controlled parse cost must be bounded
 MAX_QUERY_WORDS = 128
 
 
-@app.get("/search", response_model=SearchResponse, dependencies=_READ_AUTH)
-@limiter.limit(_RATE_LIMIT)
-def search(
-    request: Request,
-    response: Response,
+def _run_search(
     q: str,
-    top_k: int = Query(default=10, ge=1),
-    offset: int = Query(default=0, ge=0, le=10_000),
-    diversity: float = Query(default=0.0, ge=0.0, le=1.0),
-    mode: str = Query(default="hybrid", pattern="^(keyword|semantic|hybrid)$"),
-    bm25_weight: float = Query(default=1.0, ge=0),
-    vector_weight: float = Query(default=1.0, ge=0),
-    fusion: str = Query(default="rrf", pattern="^(rrf|weighted)$"),
-    candidates: int = Query(default=50, ge=1, le=1000),
-    debug: bool = Query(default=False),
-    rerank: Optional[bool] = Query(default=None),
-    session: Optional[str] = Query(default=None),
-    sort: str = Query(default="relevance", pattern="^(relevance|freshness|title)$"),
-    highlight: bool = Query(default=False),
-    facets: Optional[str] = Query(default=None),
-    cursor: Optional[str] = Query(default=None),
-    api_key: Optional[str] = Security(_api_key_header),
-):
+    top_k: int,
+    offset: int,
+    diversity: float,
+    mode: str,
+    bm25_weight: float,
+    vector_weight: float,
+    fusion: str,
+    candidates: int,
+    debug: bool,
+    rerank: Optional[bool],
+    session: Optional[str],
+    sort: str,
+    highlight: bool,
+    facets: Optional[str],
+    cursor: Optional[str],
+    min_score: Optional[float],
+    api_key: Optional[str],
+) -> SearchResponse:
+    """The complete /search pipeline minus the HTTP-layer concerns (route
+    decorators, rate limiting, auth dependencies) — extracted in WP14-2 so
+    Phase 7's `/ask` can run retrieval through THE SAME validation,
+    understanding, shared-searcher and rerank path without duplicating this
+    ~180-line flow. Status codes, error messages, parameter semantics and
+    validation order are IDENTICAL to the pre-extraction endpoint; the
+    golden-keyword and API contract suites pin that (no test was edited).
+
+    The degraded-boot branch returns a finished `SearchResponse` (via
+    `_keyword_only_page`), so the helper's contract is "returns the page the
+    endpoint would have returned" — including on fallback; callers wanting
+    the raw pieces read `SearchResultOut.bm25_score`/`vector_score`.
+    """
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must not be empty")
     # BUG-08: debug=true exposes per-retriever score contributions — the
@@ -525,7 +536,7 @@ def search(
         q, top_k=top_k, offset=offset, mode=mode, bm25_weight=bm25_weight,
         vector_weight=vector_weight, fusion=fusion, candidates=candidates,
         debug=debug, sort=sort, highlight=highlight, rerank=rerank_flag,
-        diversity=diversity,
+        diversity=diversity, min_score=min_score,
     )
     cached_page = _query_cache.get(cache_key)
     if cached_page is not None:
@@ -537,6 +548,7 @@ def search(
             sort=sort, highlight=highlight, diversity=diversity,
             understanding=_understanding(),
             bm25_weight=bm25_weight, vector_weight=vector_weight,
+            min_score=min_score,
         )
         _query_cache.set(cache_key, page)
 
@@ -583,13 +595,17 @@ def search(
         _FACET_SAMPLE_CAP = 500
         facets_truncated = page.total > _FACET_SAMPLE_CAP
         full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                           offset=0, mode=search_mode, fusion=fusion,
-                                           understanding=_understanding(),  # facets follow retrieval
-                                           # the default candidate pool (50) would
-                                           # truncate counts below the sample cap
-                                           candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                           bm25_weight=bm25_weight,
-                                           vector_weight=vector_weight)
+                                            offset=0, mode=search_mode, fusion=fusion,
+                                            understanding=_understanding(),  # facets follow retrieval
+                                            # the default candidate pool (50) would
+                                            # truncate counts below the sample cap
+                                            candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
+                                            bm25_weight=bm25_weight,
+                                            vector_weight=vector_weight,
+                                            # the facet population is the SAME
+                                            # retrieval as the page: a raw cosine
+                                            # floor applies here too (WP14-1)
+                                            min_score=min_score)
         from ..core.filters import facet_counts
         docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
@@ -604,6 +620,39 @@ def search(
         results=[SearchResultOut(**r.__dict__) for r in results],
         metadata=metadata,
         facets=facet_out,
+    )
+
+
+@app.get("/search", response_model=SearchResponse, dependencies=_READ_AUTH)
+@limiter.limit(_RATE_LIMIT)
+def search(
+    request: Request,
+    response: Response,
+    q: str,
+    top_k: int = Query(default=10, ge=1),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    diversity: float = Query(default=0.0, ge=0.0, le=1.0),
+    mode: str = Query(default="hybrid", pattern="^(keyword|semantic|hybrid)$"),
+    bm25_weight: float = Query(default=1.0, ge=0),
+    vector_weight: float = Query(default=1.0, ge=0),
+    fusion: str = Query(default="rrf", pattern="^(rrf|weighted)$"),
+    candidates: int = Query(default=50, ge=1, le=1000),
+    debug: bool = Query(default=False),
+    rerank: Optional[bool] = Query(default=None),
+    session: Optional[str] = Query(default=None),
+    sort: str = Query(default="relevance", pattern="^(relevance|freshness|title)$"),
+    highlight: bool = Query(default=False),
+    facets: Optional[str] = Query(default=None),
+    cursor: Optional[str] = Query(default=None),
+    min_score: Optional[float] = Query(default=None, ge=-1.0, le=1.0),
+    api_key: Optional[str] = Security(_api_key_header),
+):
+    return _run_search(
+        q=q, top_k=top_k, offset=offset, diversity=diversity, mode=mode,
+        bm25_weight=bm25_weight, vector_weight=vector_weight, fusion=fusion,
+        candidates=candidates, debug=debug, rerank=rerank, session=session,
+        sort=sort, highlight=highlight, facets=facets, cursor=cursor,
+        min_score=min_score, api_key=api_key,
     )
 
 

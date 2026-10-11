@@ -1,0 +1,11 @@
+# Dev/test-only dependencies (WP14-6b): nothing under nexus_search/ imports
+# these at runtime (grep-verified); the Docker image installs requirements.txt
+# ONLY.
+#
+# Install for development:
+#   PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu \
+#     pip install -r requirements.txt -r requirements-dev.txt
+pytest==9.1.1
+pytest-xdist==3.8.0
+pytest-cov==7.1.0
+httpx==0.28.1   # FastAPI TestClient transport

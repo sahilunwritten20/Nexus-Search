@@ -22,11 +22,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies (pinned requirements + CPU torch wheel)
+      - name: Install dependencies (pinned requirements + CPU torch wheel + dev/test extras)
         env:
           PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
           if [ "${{ matrix.charset-normalizer }}" != "3.5.1" ]; then
             pip install "charset-normalizer==${{ matrix.charset-normalizer }}"
           fi
@@ -53,6 +53,9 @@ jobs:
 
       - name: Lint - env vars documented in .env.example
         run: python scripts/dev/check_env_docs.py
+
+      - name: Lint - checklist test files exist (WP14-5)
+        run: python scripts/dev/check_checklist_paths.py
 
       - name: Graph benchmark smoke (reduced mode)
         env:
@@ -89,3 +92,26 @@ jobs:
             sleep 2
           done
           echo "container never became healthy — logs:"; docker logs api; exit 1
+
+      # WP14-3 (H3): the MiniLM model must reach the RUNTIME image — an
+      # st: embedder boots with NO network at all (HF_HOME=/opt/hf baked in
+      # the builder, HF_HUB_OFFLINE=1 in the runtime ENV). /ready 200 =
+      # the vector subsystem loaded the local model.
+      - name: Offline ST boot (baked model, no network)
+        run: |
+          docker run -d --name st-boot --network none \
+            -e NEXUS_ENV=dev \
+            -e NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2 \
+            nexus-search:ci
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' st-boot)" != "true" ]; then
+              echo "container exited — logs:"; docker logs st-boot; exit 1
+            fi
+            if docker exec st-boot python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready').status==200 else 1)" 2>/dev/null; then
+              echo "offline ST boot: /ready 200 (baked model loaded, zero egress)"
+              docker exec st-boot python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health')))"
+              docker rm -f st-boot >/dev/null; exit 0
+            fi
+            sleep 2
+          done
+          echo "offline ST boot never became ready — logs:"; docker logs st-boot; exit 1

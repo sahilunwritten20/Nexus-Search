@@ -1,6 +1,17 @@
 services:
   api:
     build: .
+    # Optional pass-through (WP14-4): every NEXUS_* variable you put in a
+    # gitignored `.env` file next to this compose file is injected into the
+    # container — the ~25 knobs that are not listed explicitly below (weights,
+    # CORS, spell budgets, ingestion caps, ...) ride along without editing
+    # this file. The explicit `environment:` entries below still win over
+    # env_file values, and compose's own ${VAR} interpolation also reads the
+    # same .env, so the fail-closed NEXUS_API_KEY line keeps working exactly
+    # as before. The file is OPTIONAL — compose boots fine without it.
+    env_file:
+      - path: .env
+        required: false
     # Fail-closed at the compose level too: up'ing without NEXUS_API_KEY in
     # the environment errors out instead of booting an open API.
     environment:

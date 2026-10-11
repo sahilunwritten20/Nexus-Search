@@ -835,3 +835,220 @@ Phase 7 hand-off: tag `v0.6.0-phases-1-6`, branch `phase-7`.
 The blocking-encoding requirement holds in CI: the encoding tests pass
 on BOTH charset-normalizer legs of the matrix, exactly as they did
 locally (Windows/3.14 on 3.5.1 and 3.4.6).
+
+# WP14 — Pre-Phase-7 hardening: STEP 0 report (audit BEFORE fixes)
+
+Scope: install and RUN everything (the prior review was static-only), confirm
+or refute its hypotheses H1–H13, discover what reading could not, then fix
+test-first. Full command/output evidence: docs/WP14_WORKLOG.md (Step 0
+sections). Baseline re-confirmed before any change: offline **844 passed,
+7 skipped, 614 subtests** (py3.12.14 + py3.14.7 identical), model-gated
+**849/2**, load smoke 1, graph bench 15/2, both lints clean, mutations
+7/7 killed, FastAPI route matrix + boot-refusal + 50-way concurrency clean.
+
+| # | Finding | Evidence (command → real output; details in WP14_WORKLOG) | Sev | Status | Action |
+|---|---|---|---|---|---|
+| H1 | min_score exists only in VectorStore.search; unreachable via HybridSearch.search_page and /search | read: vector_store.py:384/440 vs hybrid_search.py:209-217/407 (no param); failing test written test-first in Item 1 | P1 | confirmed | FIX (Item 1) |
+| H2 | /search is one ~204-line function (api.py:404–607) | read + measured line span | P2 | confirmed | FIX (Item 2, pure refactor) |
+| H3 | Dockerfile bakes MiniLM into the BUILDER stage only; runtime image has no model, no HF_HOME, runs as appuser → st: boot would download/hang at start | Dockerfile L14-18 vs L21-41; docker boot UNVERIFIED-locally (engine down) | P1 (ops honesty: README promises "pre-baked") | confirmed | FIX (Item 3) |
+| H4 | docker-compose passes only 6 of ~31 NEXUS_* vars | docker-compose.yml environment block | P2 | confirmed | FIX (Item 4) |
+| H5 | Checklist names files that don't exist: 	ests/ranking/test_ab.py, 	est_query_parser.py, 	est_hybrid*.py; robots tests actually live in 	est_politeness.py; A/B covered indirectly in 	est_ranker.py | Test-Path matrix: MISSING×2, no glob hits | P2 | confirmed | FIX (Item 5) |
+| H6 | ersion="0.4.0" vs tag v0.6.0; empty __init__.py; no pyproject.toml; test deps in production requirements.txt | api.py:73; coverage (0 stmts); git ls-files; requirements.txt §Testing | P3 | confirmed | FIX (Item 6a/6b) |
+| H7 | evaluation/rerank_benchmark.py unreferenced, 0% coverage | coverage report 0%; BUT it RUNS (exit 0, full metrics) — "may be broken" refuted | P3 | confirmed | FIX (Item 6c: smoke test + docs) |
+| H8 | Env docs drift: README missing NEXUS_CORS_ORIGINS/MAX_ENTRY_BYTES/MAX_INGEST_BYTES/OCR/RERANK_WEIGHT_CLICK/STEMMING; NEXUS_STOPWORDS absent from .env.example; "checker checks only documented vars" | README var-grep diff vs code-grep; check_env_docs.py source DOES scan code (claim refuted); spell-budget trio covered by "etc." row | P2 (+NEW N2 below) | partial | FIX (Item 6d) |
+| H9 | CRLF + non-ASCII dash | git ls-files --eol: 5 tracked files worktree-CRLF/index-LF → renormalize NOT warranted; .gitattributes byte 151 (em dash) confirmed; AUDIT_REMEDIATION.md/smoke_check.py LF (refuted); seeds.txt untracked, 1 stray CR (refuted) | P3 | partial | FIX (Item 6e, worktree + dash only) |
+| H10 | signals.py says click logs are "Phase 7"; PHASE7_PLAN defers click-feedback learning to 8+; README Phase 5 lacks interface-only tags | signals.py:11,163,176 vs PHASE7_PLAN:191; README:382,391 | P2 (doc honesty) | confirmed | FIX (Item 6f) |
+| H11 | scripts/dev/wp12/a1_*,2_* leave wp12_a*_test.db* in repo root | artifacts present (10/6); scripts use relative DB paths | P3 | confirmed | FIX (Item 6g) |
+| H12 | .github/workflows/test.yml exists and matches the audit log (charset matrix, docker job, lints, hygiene) | file read; "absent from zip" premise stale (matches WP11 P0-2) | — | confirmed | none |
+| H13 | n8n workflow: Qdrant Upsert id: chunk.index (cross-doc collision); placeholder Qdrant URLs; SSRF hostname regex (misses 172.16/12, IPv6, numeric IPs, redirects, rebinding); robots prefix-only; RAG prompt unfenced/no injection stripping; confidence 0.4+0.15×sources not a retrieval signal | node bodies extracted programmatically (75 nodes, JSON valid, connections resolve, no embedded secrets) | P2 (reference artifact) | all confirmed | FIX (Item 9) |
+| N1 | NEW: 	est_crawl_delay_holds_with_many_workers flakes under CPU load (2 fails / 3 loaded runs incl. -n auto; 0/10 isolated; CI serial ×17 green). Politeness implementation correct (component test pins slot spacing); server-thread recording jitter is the mechanism | mutation + isolation matrix in worklog | P2-ops | NEW | ledger + owner decision (test rewrite forbidden by WP14 rules) |
+| N2 | NEW: NEXUS_STOPWORDS is promised by tokenizer.py docstring ("=1 to enable") but read NOWHERE in code; stopword removal is unimplemented | repo-wide grep: 2 hits, both doc/allowlist text | P1 (documented-but-nonexistent knob) | NEW | FIX (Item 6d: correct docstring; do NOT document the lie in .env.example) |
+| N3 | NEW: check_env_docs ALLOWLIST masks NEXUS_OCR/NEXUS_STOPWORDS rather than documenting them | check_env_docs.py:14-20 | P3 | NEW | FIX (Item 6d) |
+| N4 | NEW: files-connector symlink probe UNVERIFIED locally (Windows privilege WinError 1314); no remote path input exists (operator-scoped) | probe output | P3 | NEW | document |
+| N5 | NEW: 7 routes declare no esponse_model (POST/DELETE /documents, bulk, suggest, related, graph/*, health/ready/metrics) | route decorators | P3 | NEW | ledger |
+| C1 | Coverage gaps <85%: backup.py 41% (CLI main 0%), query_parser 84%, vector_store 84% (min_score path untested — becomes tested in Item 1), crawler/cli 60%, fetcher 83% (playwright-gated), pipeline 84%, security 84%, files.py 81%, mime.py 76%, benchmark runners (0-81%, env-gated by design) | --cov --cov-branch term-missing | P2 | NEW | FIX (Item 7: add tests for behavior-bearing gaps; document why-not for env-gated/operator surfaces) |
+| C2 | Mutations: ALL 7 spot-check targets killed (require_api_key, _rate_limit_key, _blocked_ip, dns pinning, chunk cascade, zip-bomb, size guard) | mutation harness, git clean after | — | NEW (positive) | none — guards are test-pinned |
+| C3 | FastAPI audit: boot matrix, 13-route × 3-key matrix (dev/prod/read-auth), malformed-input battery, 429+Retry-After+X-RateLimit, CORS off/on, docs 404 prod / 200 dev, OpenAPI complete, no secret leaks, no internal-state leaks, 50-way concurrency + writes zero 5xx/lock errors | probe scripts (worklog §0.4) | — | NEW (positive) | none |
+
+Fix items follow (test-first, one commit each). No RAG code is written by WP14.
+
+## WP14 — fixes: per-item log (test-first, one commit each)
+
+| Item | Status | Root cause -> fix | Before -> after | Commit | Tests |
+|---|---|---|---|---|---|
+| 1. min_score end-to-end | **done** | VectorStore.search(min_score) existed but no caller above passed it (H1). Plumbed search_page/_vector_candidates(min_score=...) (raw cosine, vector side only; None=-1.0 sentinel) + /search?min_score= (ge/le [-1,1], in the cache key, applied to the facet pass). Raw m25_score/ector_score pinned through fusion AND rerank incl. None cases. | 12 red tests pre-fix -> 14 green; golden byte-identical; OpenAPI documents the param | fc41c95 | tests/core/test_min_score.py (14) |
+| 2. _run_search extraction | **done** | /search was one ~204-line function (H2). Body moved to module-level _run_search(...); endpoint = decorators + signature + one call. Zero behavior change (validation order, errors, status codes preserved). | gate set (golden, api, pagination, dos, shared_searcher, boolean, min_score, query_cache: 145) green with NO test edits; full suite 870 | 5bf68b4 | tests/core/test_run_search.py (13) |
+| 3. Dockerfile baked model | **done (build verified by CI job only)** | Model downloaded into builder root's ~/.cache; runtime copied only /opt/venv (H3). HF_HOME=/opt/hf in builder, COPY --from=builder /opt/hf, chown appuser, HF_HOME+HF_HUB_OFFLINE=1 in runtime; bake string now the exact st:sentence-transformers/all-MiniLM-L6-v2 spec. | pre-fix: st: boot would download/hang offline; post-fix: model ships in image. Local docker UNVERIFIED (engine down all session, Docker Desktop launch attempted); CI docker job carries it | e9c15ae | (container probes in CI; compose config parse verified locally) |
+| 4. compose env pass-through | **done** | Only 6 of ~31 NEXUS_* vars carried (H4). Optional env_file: .env (required:false) added; fail-closed NEXUS_API_KEY line and explicit defaults untouched. | docker compose config proves CORS/STEM/LLM-key vars from .env reach container env; missing key still errors | a7e632c | verification live (no unit-testable surface) |
+| 5. A/B tests + checklist accuracy | **done** | No dedicated test file; checklist named 4 nonexistent files (H5). tests/ranking/test_ab.py pins assign_variant (determinism, order-flip invariance, 45-55% band, 5-way reach, empty raise), ExperimentLog recording, purge_older_than (aged-row deletion, idempotence, days>0 raise) — the PHASE7_PLAN PII-retention precedent. Checklist column rewritten to real files; scripts/dev/check_checklist_paths.py lint (full paths + bare names; negative control fails correctly) wired into CI. | 'MISSING tests/ranking/test_ab.py' -> exists+green; lint: 'checklist test files all exist: 6 full paths, 38 bare names' | ed1939c | tests/ranking/test_ab.py (9+5 subtests) |
+| 6a. __version__ | **done** | FastAPI version hard-coded 0.4.0 vs tag v0.6.0 (H6). 
+exus_search/__init__.py now owns __version__ = '0.6.0'; api imports it. | app.version 0.4.0 -> 0.6.0 | 3868bd8 | tests/core/test_version.py (2) |
+| 6b. deps split | **done** | Test deps shipped in production requirements.txt (H6). requirements-dev.txt created (pytest, pytest-xdist, pytest-cov, httpx — grep-verified zero runtime imports); CI installs both; Docker runtime installs requirements.txt only. | fresh venv installed from the split files and ran the entire gate battery | d779bd2 | (install is the test) |
+| 6c. rerank_benchmark | **done (kept, not deleted)** | H7 refuted 'may be broken' (exit 0) but confirmed 0% coverage + zero references. Kept: it is the Phase 5 A/B quick-check the framework exists for. Smoke test + README mention. | coverage 0% -> 86% | fc69003 | tests/evaluation/test_rerank_benchmark.py (1) |
+| 6d. env docs | **done (adapted)** | H8 + NEW N2: README missing 6 var rows; NEXUS_STOPWORDS promised by a tokenizer docstring but READ NOWHERE — documenting it in .env.example would document a lie, so the docstring was corrected instead (stopword removal is NOT implemented; a real mode needs its own index-affecting work package). check_env_docs ALLOWLIST trimmed to test-only gates. README spell-row expanded to name all four spell vars. | README env table 23 -> 30 rows, no duplicates; check_env_docs green (30 documented) | fc69003, 5ed7f5f | lints |
+| 6e. line endings + dash | **done** | H9 partial: 5 tracked files had CRLF worktree copies (index LF) -> re-smudged to LF via delete+checkout; no renormalize (index already LF); .gitattributes em dash (byte 151) -> ASCII. git ls-files --eol: zero w/crlf remain. AUDIT_REMEDIATION.md/smoke_check.py LF (H9 claim refuted); seeds.txt untracked (refuted). Golden + wp13 fixture blobs unchanged. | w/crlf 5 -> 0; nonascii bytes in .gitattributes 1 -> 0 | 5ed7f5f | git ls-files --eol |
+| 6f. click/LTR phase drift | **done** | H10: signals.py/ranker.py/.env.example/README/SPEC/PHASE6_PLAN said click data arrives 'Phase 7' — PHASE7_PLAN defers click-feedback learning to 8+ and plans NO click data source. All seven spots now say Phase 8+; README Phase 5 rows tagged interface-only. | 7 drifted doc spots -> one consistent story | 5ed7f5f | doc consistency (grep re-run) |
+| 6g. wp12 a1/a2 litter | **done** | H11: scratch DBs went to repo root via relative paths. Both scripts now mkdtemp. Stale wp12_a*_test.db{,-wal,-shm} litter (10/6) deleted from the worktree. | repo root: 6 litter files -> 0 | 5ed7f5f | scripts re-runnable (paths verified) |
+| 6h. packaging | **done** | scripts/package.ps1 (git archive only) run at the WP14 head: 240 entries, zero .db/.pyc/.swp/__pycache__/.git junk. | zip clean | (no repo change needed) | — |
+| 7. Step 0.3-0.5 gaps | **done** | Coverage <85% on behavior-bearing modules + uncovered function-level gaps. Tests added: backup CLI (41->95%), query_parser edges (84->98%), vector_store legacy-drop/factory (84->87%), security resolver/pinning edges all-DNS-mocked (84->97%), mime sniffing edges (76->91%), crawler CLI dispatch smoke (60->86%), seed_from_sitemap 0->covered, plus Items 1/5/6c tests. Remaining <85% documented: fetcher 83% (playwright-gated branches; WP12 fake-playwright tests cover the reachable paths), files.py 81% (tesseract-gated OCR + reader exception fallbacks; the zip/size/mime guards are mutation-killed), evaluation runners 44-83% + semantic __main__ 0% (env-gated benchmarks by design — run in CI via NEXUS_GRAPH_BENCH_SMOKE etc.). Mutations: 7/7 killed pre-fix, none needed new tests. | total coverage 87% -> 89% (branch on); suite 844 -> 944 | (per-area commits) | 63 new tests across 7 files |
+| 8. Phase 7 guard rails (docs) | **done** | PHASE7_PLAN §4/§7 now bind: /ask + /ask/stream key-gated UNCONDITIONALLY (never inherit opt-in _READ_AUTH); per-worker limiter caveat marked must-copy into Phase 7 deployment docs; LLM provider behind a small interface with a stub (CI needs no key/network; stub doubles as injection oracle). | plan updated, no code | (WP14-8 commit) | — |
+| 9. n8n workflow | **done** | H13 all confirmed. Qdrant Upsert id: chunk.index -> deterministic UUID-shaped f(content-hash, chunk-index) (collision killed); n8n.md labeled 'reference only: separate Postgres/Qdrant/OpenAI implementation, NOT the Phase 7 RAG path' with the full limits list (SSRF regex gaps incl. 172.16/12 + IPv6 + rebinding, robots prefix-only, RAG unfenced, confidence formula not a retrieval signal). JSON validated: parses, 75 nodes, all connections resolve by name, no secrets embedded. 300-350-node expansion stays a DEFERRED USER DECISION (ledger; do not act). | cross-doc chunk-N overwrites -> unique ids; sample: aaaaaaaa-aaaa-5aaa-8aaa-aaaaaaaa0000 vs bbbbbbbb-... | (WP14-9 commit) | validation script output in worklog |
+
+## WP14 final gate (executed 2026-10-11, FRESH venv %TEMP%\opencode\wp14-venv-fresh, Python 3.12.14)
+
+| Gate | Before (Step 0, same machine) | After (fresh venv, WP14 head) |
+|---|---|---|
+| Offline suite | 844 passed, 7 skipped, 614 subtests (run 2; run 1 had the N1 flake) | **944 passed, 7 skipped, 623 subtests** (6:26) — +100 tests, 0 failed, same 7 skips |
+| Model-gated suite | 849 passed, 2 skipped | **949 passed, 2 skipped, 623 subtests** (6:39) |
+| Load smoke | 1 passed | **1 passed** (6.34 s) |
+| Graph bench | 15 passed, 2 skipped | **16 passed, 2 skipped, 3 subtests** (69 s; +1 = the new rerank_benchmark smoke lives in tests/evaluation) |
+| check_duplicate_tests | no duplicates | **no duplicates** |
+| check_env_docs | 30 documented vars | **30 documented vars** (trimmed allowlist, tighter contract) |
+| check_checklist_paths | (did not exist) | **checklist test files all exist: 6 full paths, 38 bare names** |
+| rerank_benchmark | runs, exit 0 (unreferenced, 0% cov) | **exit 0, identical metrics; smoke-tested + README-referenced, 86% cov** |
+| Coverage (branch on) | 87% total, 726 missed | **89% total, 569 missed** |
+| Golden keyword baseline | byte-identical | **byte-identical** (git diff phase-7..HEAD -- tests/golden/keyword_baseline.json empty) |
+| FastAPI route matrix (3 boots) | all as documented | **all as documented** (re-run from the fresh venv; min_score in OpenAPI; 429/Retry-After/X-RateLimit intact; CORS off/on; docs 404 prod) |
+| Boot refusal + 50-way concurrency | RuntimeError refused; 0 5xx | **same** (re-run) |
+| Python 3.14 parity | 844/7 identical | not re-run at the head (CI's 3.12 legs are the parity carrier; 3.14 runs during Step 0 matched 3.12 exactly) |
+| Docker build + --network none ST boot | engine down | **UNVERIFIED-locally** (engine down the entire session; Docker Desktop launch attempted, never came up). CI docker job (build + non-root + /health) is the carrier; compose config + env_file pass-through verified locally |
+| CI on WP14 head | — | branch pushed; run number recorded in the addendum below (or UNVERIFIED if the run could not be observed) |
+
+## WP14 updated open-items ledger
+
+| Item | Sev | Decision | Reason |
+|---|---|---|---|
+| N1 crawl-delay timing flake under load | P2-ops | **owner decision required** (test rewrite forbidden by WP14 rules) | 2 fails / 3 loaded local runs (serial + xdist), 0/10 isolated, CI serial x17 green; politeness implementation correct (component test pins slot spacing); the server-thread recording jitter is environmental. Options: (a) leave (CI unaffected), (b) rewrite the test to measure dispatch-side times (changes the measurement point; needs owner sign-off), (c) raise the 0.25 s tolerance (loosening — forbidden without sign-off) |
+| N4 files-connector symlink probe | P3 | accept, documented | no symlink privilege on this host (WinError 1314); no remote path input exists (operator-scoped connector) |
+| N5 seven routes declare no response_model | P3 | ledger | current dicts fit; adding models is an additive Phase 7-era nicety |
+| fetcher.py 83% / files.py 81% remainder | P3 | accept, documented | playwright-gated / tesseract-gated optional-dep branches; all guards mutation-killed |
+| evaluation runners 44-83% | P3 | accept, documented | env-gated benchmark harnesses; CI runs graph smoke + authority bench + rerank smoke |
+| Docker ST-offline boot | P2 | **CI-carried** | engine down locally; WP13 saw the same and it later recovered |
+| n8n 300-350-node expansion | optional | **deferred user decision** (WP13 precedent) | large untestable artifact; not WP14 scope |
+
+### WP14 CI addendum (recorded after the pushes, via the Actions API)
+
+- **Run #22 on 3040c6e: GREEN — all three jobs** (both charset-normalizer
+  matrix legs with the FULL suite + all three lints incl. the new
+  checklist-paths check + graph smoke + authority benchmark; docker job
+  = image build of the WP14 Dockerfile + non-root assertion + boot +
+  /health probe). First CI run on any WP14 commit; no red run ever
+  appeared on the branch.
+- **Run #23 on a2a4c2c (README note): GREEN.**
+- **Run #24 on d1a2185 (final head): GREEN — and it closes the last
+  unverified gate.** The docker job's new step **"Offline ST boot (baked
+  model, no network)" succeeded**: the container ran with --network none
+  and NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2, and
+  /ready answered **200** — the baked /opt/hf model loaded with
+  HF_HUB_OFFLINE=1 and ZERO egress. Item 3's "UNVERIFIED-locally" is
+  therefore superseded: locally unverified (engine down all session),
+  **CI-verified end-to-end** — exactly the H3 test the mission specified.
+- Python 3.14.7 parity at the WP14 head (local .venv, after all fixes):
+  **944 passed, 7 skipped, 623 subtests** — identical outcomes to 3.12
+  (warnings-only delta, upstream slowapi, documented since WP11 P3-13).
+
+## PHASE 7 GO/NO-GO (every box earned with a command + real output)
+
+- [x] min_score reachable end-to-end (/search?min_score= + search_page),
+      raw m25_score/ector_score available to the refuse-gate (pinned
+      through fusion AND rerank, incl. None cases) — tests/core/test_min_score.py
+- [x] _run_search() exists; /search behavior unchanged (gate set green
+      with ZERO test edits) — tests/core/test_run_search.py
+- [x] ST embedder works inside the container OFFLINE — CI run #24 docker
+      step "Offline ST boot (baked model, no network)": success
+- [x] compose carries every NEXUS_* var incl. LLM-related ones
+      (env_file verified live via compose config)
+- [x] A/B retention tested (tests/ranking/test_ab.py); checklist paths all
+      exist (new CI lint green on both matrix legs)
+- [x] suite green on 3.12 (944/7/623, fresh venv) AND 3.14 (944/7/623);
+      golden byte-identical; coverage 87% -> 89% (not lower)
+- [x] no secrets in the repo (sweep clean); no tracked artifacts
+      (CI hygiene step green; package zip 240 entries, zero junk)
+- [x] CI green on the WP14 head: runs #22, #23 and #24 all GREEN
+      (run #24 = final head d1a2185)
+
+**Phase 7: GO.** Build order + per-step test gates: docs/PHASE7_KICKOFF.md.
+
+### WP14 hostile re-read of the full branch diff (recorded as required)
+
+The full git diff phase-7..HEAD (38 files, +1672/-87) was re-read
+adversarially before sign-off. Risks found and what was done:
+
+1. **The _run_search move could have silently dropped behavior** (validation
+   order, 	op_k clamping, response shape). Disposition: the gate set
+   (golden keyword, test_api, pagination, dos, shared_searcher, boolean,
+   min_score, query_cache) passed with ZERO test edits, and
+   tests/core/test_run_search.py pins the exact 18-input signature +
+   every error path — drift is now mechanically impossible.
+2. **Reload-based API tests can litter the repo root** (the WP11 NEXUS_DB
+   lesson). Disposition: re-checked the repo root after every suite run —
+   zero new files; 
+exus_search.db mtime unchanged (10/3, pre-WP14).
+   The new test classes save/restore NEXUS_DB per the WP11 hygiene pattern.
+3. **Doc-edit encoding hazards** (I mojibake'd SPEC.md/PHASE6_PLAN.md once
+   via a PowerShell roundtrip mid-session). Disposition: both reverted via
+   git checkout immediately and redone with a safe editor; final files
+   verified valid UTF-8; recorded in the worklog's honest-mistakes section.
+4. **env_file: required:false needs compose >= 2.24** — a version
+   constraint I introduced. Disposition: documented in the README section
+   and the compose file comment.
+5. **HF_HUB_OFFLINE=1 could break the DEFAULT (hash) boot** if anything
+   touched the hub at import. Disposition: the CI docker job boots the
+   default embedder (run #22 step "Boot the container and probe /health":
+   success) AND the offline ST boot (run #24 step 6: success) — both paths
+   proven on the modified image.
+6. **The dev_matrix probe shows 3 "failed" checks** — all probe-expectation
+   artifacts, not app defects (delete-order 404, cursor-clamp-then-window
+   400, 404-body-vs-DocumentOut). Documented in the worklog so nobody
+   "fixes" correct behavior later.
+7. **Add-Content writes CRLF worktree copies of the docs** (git warned
+   once). Disposition: harmless — index is normalized to LF by
+   	ext=auto eol=lf (verified git ls-files --eol shows no tracked
+   CRLF-index files), same class as the pre-existing H9 worktree artifacts.
+
+### WP14 final CI record
+
+- Run #22 (3040c6e): GREEN — first WP14 push; full suite on both charset
+  legs, all lints incl. the new checklist-paths check, docker build/boot.
+- Run #23 (a2a4c2c): GREEN.
+- Run #24 (d1a2185): GREEN — includes the new "Offline ST boot (baked
+  model, no network)" docker step: SUCCESS (H3 verified end-to-end).
+- Run #25 (55bfc01): GREEN.
+- **Run #26 (10554d4 — the final head at sign-off): GREEN.**
+- The go/no-go box "CI green on the WP14 head" is earned by run #26.
+
+### WP14 addendum 2 — remaining-work round (owner-authorized)
+
+**N1 (crawl-delay flake): FIXED** — the ledger had flagged the fix as needing
+an owner decision (any fix = a test change); the owner's go-ahead was given
+in the "do the remaining work" instruction. The test
+	est_crawl_delay_holds_with_many_workers now asserts the politeness
+CONTRACT — consecutive fetch slots for the crawled domain are >= 0.25 s of
+the 0.3 s delay, recorded by a delegating proxy around pl.politeness —
+instead of server-handler ARRIVAL gaps, whose per-connection handler-thread
+scheduling jitter under CPU load compressed recorded gaps below tolerance.
+Same assertion numbers, measured where the code controls. Evidence:
+- red-first: pipeline eserve_slot neutered -> the new test FAILS;
+  reverted -> green
+- 25/25 isolated runs green
+- **-n auto full suite: 944 passed, 7 skipped, 0 failed** — the exact load
+  condition that produced both pre-fix flakes
+- serial full suite: 944 passed, 7 skipped, 623 subtests (6:34)
+
+**Docker: VERIFIED LOCALLY** (engine recovered on the third session attempt;
+was UNVERIFIED-locally since Step 0). Real output from this machine:
+- docker compose build -> "Image nexus-search-api Built" (WP14 Dockerfile
+  with the /opt/hf bake); without NEXUS_API_KEY the fail-closed compose line
+  still refuses (re-confirmed)
+- docker run --network none -e NEXUS_ENV=dev
+  -e NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2 ->
+  **/ready 200**, /health -> embedder
+  st:sentence-transformers/all-MiniLM-L6-v2, dim 384, degraded: false,
+  no errors in logs — the H3 mission test, green on local hardware too
+- default boot via docker compose up -> /ready {"ready":true},
+  /health ok with hash:384, container runs as **appuser** (non-root)
+Both boot paths of the WP14 image are now verified locally AND by CI.
+
+Not done (out of scope by the mission's own rules): the n8n 300-350-node
+expansion (mission: "do not act on it"; WP13 user decision: "keep as-is"),
+Phase 8+ items, and any RAG/LLM code.

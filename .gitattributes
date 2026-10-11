@@ -1,6 +1,8 @@
 * text=auto eol=lf
 
-# WP12-B9: Docker build inputs must stay LF everywhere — a CRLF Dockerfile
+# WP12-B9: Docker build inputs must stay LF everywhere - a CRLF Dockerfile
 # or shell script breaks the Linux builder (shebang/Dockerfile parsing).
+# (WP14-6e: this comment used to carry a non-ASCII cp1252 em dash; pure
+# ASCII now, so the file is encoding-agnostic.)
 Dockerfile text eol=lf
 *.sh text eol=lf

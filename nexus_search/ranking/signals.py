@@ -8,7 +8,9 @@ Stage 1 query understanding, and ranking knobs.
 
 Honesty notes (per SPEC.md):
 - source_authority / popularity / click_signal have NO real data source yet
-  (link graph is Phase 6, click logs are Phase 7). They return a configured
+  (link graph landed in Phase 6; click logs have NO planned data source in
+  Phase 7 — click-feedback learning is deferred to Phase 8+ per
+  docs/PHASE7_PLAN.md, WP14-6f). They return a configured
   NEUTRAL default unless doc.metadata carries an explicit override key — the
   interface is ready for real data later without changing these signatures.
 """
@@ -160,8 +162,9 @@ def compute_source_authority(doc, query: str, context) -> float:
 
 def compute_popularity(doc, query: str, context) -> float:
     """Attention proxy: link-graph inbound-domain diversity (log-scaled).
-    No click data exists anywhere in this system (Phase 7) — we ship the
-    slot with the only real attention data available, honestly scoped."""
+    No click data exists anywhere in this system (no Phase 7 data source is
+    planned; click-feedback learning is Phase 8+ per PHASE7_PLAN) — we ship
+    the slot with the only real attention data available, honestly scoped."""
     if doc is not None and doc.metadata:
         value = doc.metadata.get("popularity")
         if isinstance(value, (int, float)):
@@ -174,8 +177,9 @@ def compute_popularity(doc, query: str, context) -> float:
 
 def compute_click_signal(doc, query: str, context) -> float:
     """PLACEHOLDER interface — no click logs exist anywhere in this codebase
-    (Phase 7 territory). doc.metadata['click_score'] override supported.
-    We ship the slot, NOT fabricated data."""
+    and none are planned in Phase 7 (click-feedback learning is Phase 8+
+    per docs/PHASE7_PLAN.md, WP14-6f). doc.metadata['click_score'] override
+    supported. We ship the slot, NOT fabricated data."""
     if doc is not None and doc.metadata:
         value = doc.metadata.get("click_score")
         if isinstance(value, (int, float)):

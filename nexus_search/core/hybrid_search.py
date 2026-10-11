@@ -208,13 +208,20 @@ class HybridSearch:
 
     def _vector_candidates(self, query: str, pool_k: int, group_chunks: bool,
                             allowed_ids: Optional[set] = None,
+                            min_score: Optional[float] = None,
                             ) -> dict[str, tuple[float, str]]:
         # Use parsed query text for embedding (no filters/phrases in embedding)
         parsed = parse_query(query)
         query_text = parsed.text
 
-        vector_results = self.vector_store.search(query_text, top_k=pool_k,
-                                                   allowed_ids=allowed_ids)
+        # WP14-1: min_score is a RAW cosine floor on the vector side ONLY
+        # (None -> the VectorStore's -1.0 sentinel = unchanged behavior). It
+        # never applies to fused (RRF/weighted) scores — those are rank/
+        # normalization artifacts (WP12-B2), not confidence signals; the
+        # Phase 7 refuse-gate reads the raw `vector_score` this floor gates.
+        vector_results = self.vector_store.search(
+            query_text, top_k=pool_k, allowed_ids=allowed_ids,
+            min_score=-1.0 if min_score is None else min_score)
 
         # WP12-B4: ONE batched fetch for every per-candidate gate below
         # (chunk parent, required phrases, boolean structure) — the old
@@ -420,6 +427,7 @@ class HybridSearch:
         diversity: float = 0.0,
         bm25_weight: Optional[float] = None,
         vector_weight: Optional[float] = None,
+        min_score: Optional[float] = None,
     ) -> HybridSearchPage:
         """`understanding` (Phase 5 QueryUnderstanding) is OPT-IN: when given,
         retrieval uses its corrected/expanded effective terms (phrases and
@@ -431,7 +439,13 @@ class HybridSearch:
         API serve per-request weights from ONE shared instance (BUG-06):
         a fresh HybridSearch per request discarded the BM25 token memo
         across requests; the shared instance keeps it (bounded, keyed by
-        (doc_id, added_at), thread-safe)."""
+        (doc_id, added_at), thread-safe).
+
+        `min_score` (WP14-1): RAW cosine floor on the vector side only
+        (None = unchanged). Never applied to fused scores; a floor that
+        empties the vector side simply takes the existing vector-side-empty
+        path (hybrid serves BM25-only results with honest metadata,
+        semantic serves an empty page)."""
         w_bm25 = self.bm25_weight if bm25_weight is None else bm25_weight
         w_vector = self.vector_weight if vector_weight is None else vector_weight
         if w_bm25 < 0 or w_vector < 0:
@@ -503,7 +517,7 @@ class HybridSearch:
                 # candidates when strict page stability matters.
                 pool_k = self._candidate_k(top_k, candidates, offset)
                 vector_results = self._vector_candidates(query, pool_k, group_chunks,
-                                                          allowed_ids)
+                                                          allowed_ids, min_score)
             except EmbedderUnavailable as exc:
                 logger.warning("Semantic search failed, falling back to BM25: %s", exc)
                 return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,
@@ -585,7 +599,7 @@ class HybridSearch:
         try:
             if w_vector > 0:
                 vector_results = self._vector_candidates(query, pool_k, group_chunks,
-                                                          allowed_ids)
+                                                          allowed_ids, min_score)
         except EmbedderUnavailable as exc:
             logger.warning("Hybrid search failed, falling back to BM25: %s", exc)
             return self._bm25_fallback(query, top_k, offset, group_chunks, original_mode,

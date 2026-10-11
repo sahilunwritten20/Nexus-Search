@@ -28,13 +28,12 @@ defusedxml==0.7.1   # safe XML parsing for remote sitemaps (no DTD/entity expans
 sentence-transformers==6.1.0   # pulls torch; set PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu for the CPU wheel
 numpy==2.5.3
 
-# Testing
-pytest==9.1.1
-pytest-xdist==3.8.0
-httpx==0.28.1   # FastAPI TestClient
-
 # Everything else (tokenizer, storage, indexer, bm25, dedup, files/code/
 # product connectors, frontier, politeness) is stdlib-only by design.
+#
+# Test/dev-only dependencies (pytest, pytest-xdist, pytest-cov, httpx for
+# FastAPI's TestClient) live in requirements-dev.txt since WP14-6b —
+# nothing under nexus_search/ imports them at runtime (grep-verified).
 
 # Optional upgrade paths, not required to run as shipped:
 # trafilatura>=1.8   # swap into ingestion/connectors/web.py for better boilerplate removal

@@ -813,7 +813,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ points: [ { id: $(\"Split Chunks\").item.json.chunk.index, vector: $json.data[0].embedding, payload: { docId: $(\"Split Chunks\").item.json.hash, url: $(\"Split Chunks\").item.json.canonical, title: $(\"Split Chunks\").item.json.title, text: $(\"Split Chunks\").item.json.chunk.text } } ] }) }}",
+        "jsonBody": "={{ (() => { const src = $(\"Split Chunks\").item.json; const h = String(src.hash || ''); const idx = String(src.chunk.index).padStart(3, '0'); const hex = (h.slice(0, 28) + idx + '000000000').slice(0, 32); const u = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-5' + hex.slice(13, 16) + '-8' + hex.slice(17, 20) + '-' + hex.slice(20, 32); return JSON.stringify({ points: [ { id: u, vector: $json.data[0].embedding, payload: { docId: src.hash, url: src.canonical, title: src.title, text: src.chunk.text } } ] }); })() }}",
         "options": {
           "timeout": 20000
         }
