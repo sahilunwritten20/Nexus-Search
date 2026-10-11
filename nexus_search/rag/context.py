@@ -1,4 +1,4 @@
-﻿"""P7-2 â€” context selection: pure, deterministic, unit-tested.
+"""P7-2 â€” context selection: pure, deterministic, unit-tested.
 
 Given the rank-ordered `RagChunk` list from retrieval, decide WHICH chunks
 enter the prompt and in what order:

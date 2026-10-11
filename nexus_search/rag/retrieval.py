@@ -1,4 +1,4 @@
-﻿"""P7-1 â€” RAG retrieval over the ONE shared HybridSearch.
+"""P7-1 â€” RAG retrieval over the ONE shared HybridSearch.
 
 There is NO second retrieval path here (PHASE7_PLAN Â§7): `RagRetriever`
 holds the shared `HybridSearch` instance the API already owns and calls the

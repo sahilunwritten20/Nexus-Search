@@ -1,4 +1,4 @@
-﻿"""P7-3 â€” data-egress controls for the RAG answer path.
+"""P7-3 â€” data-egress controls for the RAG answer path.
 
 Everything below exists to bound WHAT leaves the system on an /ask call:
 

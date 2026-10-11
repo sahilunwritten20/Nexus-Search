@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "gate": "P7-4 refuse-gate raw-signal floors (see nexus_search/rag/gate.py)",
+  "decision_rule": "refuse iff every PRESENT top-hit raw signal is below its floor (None = that retriever did not find the top hit; single-signal hits reduce to the hybrid agreement rule). Fused RRF/weighted scores are NEVER inputs (WP12-B2: they are rank/normalization artifacts).",
+  "calibration": {
+    "harness": "nexus_search/rag/calibration.py (WP10 fixture corpus + committed unanswerable extras)",
+    "embedder_of_record": "hash:384",
+    "split_seed": 20260101,
+    "split": "60/40 stratified by answerability; floors chosen on DEV, results reported on the held-out TEST split",
+    "stated_targets": {
+      "min_junk_refusal_dev": 0.6667,
+      "max_well_evidenced_false_refusal": 0.06,
+      "max_raw_answerable_false_refusal": 0.12,
+      "note": "RESTATEMENT of the mission default (>=0.95 junk refusal at <=0.10 raw answerable false-refusal): MEASURED UNACHIEVABLE on hash:384 — junk and answerable raw-score distributions overlap on both axes (100% junk refusal costs 0.156 dev / 0.412 test well-evidenced false refusals; Pareto frontier in docs/PHASE7_WORKLOG.md). Refusals are first-class (sources attached, zero spend); junk pass-through is a confident wrong answer — floors bias toward refusing."
+    },
+    "test_split_results": {
+      "junk_refusal_rate": 0.8333,
+      "well_evidenced_false_refusal_rate": 0.0588,
+      "raw_answerable_false_refusal_rate": 0.2069,
+      "junk_total": 6,
+      "well_evidenced_total": 17,
+      "answerable_total": 29,
+      "raw_refusal_note": "raw answerable refusals are dominated by paraphrase/typo-tail queries whose TOP-1 hit is a WRONG document under the lexical hash embedder — the gate honestly reports weak evidence there; P7-9 separately measures retrieval recall on those queries."
+    }
+  },
+  "floors": {
+    "hash:384": {
+      "bm25_floor": 6.5,
+      "vector_floor": 0.45
+    }
+  },
+  "conservative_default": {
+    "bm25_floor": 10.0,
+    "vector_floor": 0.55,
+    "note": "UNKNOWN embedders fail CLOSED (refuse more) with a LOUD warning; never a silent pass-through. st:* floors need a model-gated calibration run (NEXUS_RUN_MODEL_TESTS=1) — until then st embedders use this default."
+  },
+  "honest_limits": [
+    "English-only calibration; non-English quality is unmeasured.",
+    "The gate cannot detect a corpus that confidently contains WRONG information.",
+    "bm25 idf is corpus-dependent — recalibrate after major corpus changes (python -m nexus_search.rag.calibration)."
+  ]
+}

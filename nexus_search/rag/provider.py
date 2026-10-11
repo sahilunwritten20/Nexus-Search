@@ -1,4 +1,4 @@
-﻿"""P7-3 â€” the LLM provider layer.
+"""P7-3 â€” the LLM provider layer.
 
 `LLMProvider.complete(messages, *, max_tokens, timeout, stream)` is the
 ONLY thing the RAG pipeline may call. Tool-calling is DISABLED BY
