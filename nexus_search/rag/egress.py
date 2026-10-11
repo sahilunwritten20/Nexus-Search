@@ -1,23 +1,23 @@
-"""P7-3 â€” data-egress controls for the RAG answer path.
+"""P7-3 — data-egress controls for the RAG answer path.
 
 Everything below exists to bound WHAT leaves the system on an /ask call:
 
 1. `llm_allowed` (P7-2/P7-3): document/chunk metadata MAY carry
    ``llm_allowed: false``. Such a chunk's TEXT is never sent to an LLM
-   provider â€” it is excluded from the prompt (and only from the prompt:
+   provider — it is excluded from the prompt (and only from the prompt:
    it may still appear as a retrieved source in a retrieval-only
    response).
 2. `redact_pii` (P7-3): optional regex-based redaction of outbound prompt
-   text (NEXUS_RAG_REDACT_PII, default OFF) â€” a documented, honest
+   text (NEXUS_RAG_REDACT_PII, default OFF) — a documented, honest
    best-effort scrubber, not a guarantee.
 3. `query_hash` (P7-3): when NEXUS_RAG_LOG_QUERIES=1, RAG logs query
-   HASHES (sha256, first 16 hex) â€” never query text.
+   HASHES (sha256, first 16 hex) — never query text.
 4. `EGRESS_DOC` (P7-3): the canonical, test-pinned list of exactly what
    leaves the system on an /ask call; README/docs copy it verbatim.
 
-Secrets rule (PHASE7_PLAN Â§1): the provider key is read once from
+Secrets rule (PHASE7_PLAN §1): the provider key is read once from
 NEXUS_LLM_API_KEY and may never appear in a log record, /health,
-/metrics or any error body â€” enforced by the poisoned-key test.
+/metrics or any error body — enforced by the poisoned-key test.
 """
 import hashlib
 import re
@@ -58,7 +58,7 @@ _PII_PATTERNS: list[tuple[str, str]] = [
 def redact_pii(text: str) -> tuple[str, int]:
     """Best-effort regex redaction of outbound prompt text. Returns
     (redacted_text, redaction_count). DOCUMENTED LIMITS: pattern-based,
-    not semantic â€” a novel format or a deliberate obfuscation
+    not semantic — a novel format or a deliberate obfuscation
     (j a n e @ d o e . c o m) passes through. Quote verification checks
     against the text AS SENT, so redacted prompts still verify correctly."""
     if not text:

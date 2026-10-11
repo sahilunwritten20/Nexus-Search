@@ -1,4 +1,4 @@
-"""P7-3 â€” RAG configuration: every NEXUS_LLM_* / NEXUS_RAG_* knob, fail-closed.
+"""P7-3 — RAG configuration: every NEXUS_LLM_* / NEXUS_RAG_* knob, fail-closed.
 
 The key is read ONCE from NEXUS_LLM_API_KEY here and is never logged,
 serialized or exposed (the poisoned-key test enforces it). A real provider

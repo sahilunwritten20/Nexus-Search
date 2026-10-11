@@ -66,6 +66,22 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_EMBED_BATCH` | `1` | Docs per embedding flush on the API write path (P2-9). Default 1 = flush per doc; raise to batch bulk ingests — `/documents/bulk` always flushes once at the end |
 | `NEXUS_MAX_DECOMPRESSED_BYTES` | `536870912` | Zip-container readers (docx/xlsx/pptx) refuse declared decompressed payloads above this (zip-bomb guard) |
 | `NEXUS_MAX_PDF_PAGES` | `10000` | PDFs with more pages are refused before text extraction |
+| `NEXUS_LLM_PROVIDER` | `stub` | Phase 7 RAG provider: `stub` (offline, deterministic) \| `openai` (any OpenAI-compatible endpoint) \| `anthropic`. Stub outside dev requires `NEXUS_RAG_ALLOW_STUB=1`; unconfigured RAG = absent (search keeps serving) |
+| `NEXUS_LLM_API_KEY` | *(unset)* | LLM key — env/secret store only; never logged, never on `/health`//`metrics`; a real provider without it leaves RAG absent |
+| `NEXUS_LLM_BASE_URL` | *(provider default)* | Retargets the provider endpoint (covers local OpenAI-compatible servers) |
+| `NEXUS_LLM_MODEL` | *(provider default)* | Model name (recorded in answer metadata; price-table lookups key on it) |
+| `NEXUS_LLM_TEMPERATURE` / `NEXUS_LLM_MAX_TOKENS` | `0` / `1024` | Decoding params; answer token budget per call |
+| `NEXUS_LLM_TIMEOUT` | `30` | Hard per-call timeout (clamped ≤ 30 s) |
+| `NEXUS_LLM_MAX_RETRIES` | `2` | Bounded jittered retries — connect errors/429/5xx only; read timeouts fail fast |
+| `NEXUS_LLM_CONCURRENCY` / `NEXUS_LLM_QUEUE_WAIT` | `4` / `2` | Provider-call semaphore; saturation → 429 + `Retry-After` |
+| `NEXUS_LLM_PRICE_TABLE` | *(unset)* | JSON `{model: {"in": $/1M, "out": $/1M}}`; unset = cost reported as `null` |
+| `NEXUS_RAG_ENABLED` | `1` | Kill switch: `0` → `/ask*` refuse 503, `/health` `rag: disabled` |
+| `NEXUS_RAG_ALLOW_STUB` | `0` | Explicit opt-in for the stub provider outside dev |
+| `NEXUS_RAG_USE_RERANK` | `1` | RAG retrieval applies the same Phase 5 reranker / Phase 6 weights as `/search` |
+| `NEXUS_RAG_MAX_CONTEXT_TOKENS` / `NEXUS_RAG_MAX_CONTEXT_BYTES` | `6000` / `24576` | Hard context budgets (never exceeded; drops are reported with reasons) |
+| `NEXUS_RAG_CHARS_PER_TOKEN` | `4` | Token-estimate heuristic (no tokenizer dependency) |
+| `NEXUS_RAG_PER_PARENT_CAP` / `NEXUS_RAG_DEDUP_THRESHOLD` / `NEXUS_RAG_STITCH_NEIGHBORS` | `3` / `0.85` / `1` | Per-parent chunk cap, near-dup Jaccard threshold, ±1 neighbor stitching |
+| `NEXUS_RAG_LOG_QUERIES` / `NEXUS_RAG_REDACT_PII` | `0` / `0` | Query logging (hashes only, never text) / regex PII redactor for outbound prompts (best-effort) |
 
 For local development: `NEXUS_ENV=dev uvicorn nexus_search.core.api:app`
 (open write endpoints, loud warning + Swagger UI at `/docs`, which production
@@ -506,22 +522,64 @@ remediation; every bullet below matches shipped code):
 
 # Phase 7 --- AI Search / RAG
 
--   Document Embeddings
--   Chunk Embeddings
--   Retrieval Pipeline
--   Context Selection
--   RAG Pipeline
--   LLM Integration
--   Answer Generation
--   Source Citations
--   Citation → Document Mapping
--   Citation Verification
--   Hallucination Reduction
--   Answer + Sources API
--   Streaming Responses
--   Conversation Context
--   RAG Quality Evaluation
--   Answer Quality Evaluation
+Status: **in progress (Checkpoint 1 of 3)** — the foundation is shipped
+and test-pinned; the `/ask` endpoints, pipeline, benchmark and ops docs
+follow in the remaining work packages. Shipped so far (branch `phase-7`,
+worklogs in `docs/PHASE7_WORKLOG.md`):
+
+-   [x] Chunk embeddings proven end-to-end: every stored chunk row gets a
+      vector via the one `EmbeddingSync`; delete cascades and re-ingest
+      replace vectors; coverage is reported honestly
+-   [x] Document-embedding decision (recorded): retrieval is CHUNK-ONLY —
+      "document embeddings" = every stored row (parent-when-unchunked +
+      every chunk) is embedded; chunked parents have no parent row, so
+      parent context reaches RAG via chunk metadata (`parent_id`,
+      `chunk_index`, `chunk_count`)
+-   [x] RAG retrieval over the ONE shared `HybridSearch`
+      (`group_chunks=False`), same query-understanding + Phase 5 rerank +
+      Phase 6 weights + `type:`/`lang:` filter semantics as `/search`
+      (`NEXUS_RAG_USE_RERANK`, default on); raw `bm25_score`/`vector_score`
+      survive fusion AND rerank (the refuse-gate's only inputs); honest
+      degraded modes (vector down → keyword, flagged; errors → clean 503)
+-   [x] Context selection: hard token/byte budgets (never exceeded),
+      per-parent cap, near-duplicate suppression, ±1 neighbor stitching
+      (batched, budget-guarded), stable source numbering, every drop
+      reported with a reason; `llm_allowed: false` chunks never reach a
+      provider
+-   [x] LLM provider layer: one `complete()` interface with NO tools
+      parameter (tool-calling disabled by construction); deterministic
+      offline stub (including adversarial behaviors used as the defense
+      test oracle); OpenAI-compatible + Anthropic adapters over
+      `requests`; hard timeout ≤ 30 s, bounded jittered retries
+      (connect/429/5xx only), concurrency semaphore → 429 + Retry-After
+-   [x] Boot policy: key from env only (poisoned-key test: zero log
+      records, zero response bodies); real provider without key → RAG
+      ABSENT (search keeps serving, `/health` reports `rag: absent`);
+      stub outside dev requires opt-in; `NEXUS_RAG_ENABLED=0` kill switch
+-   [x] Refuse-gate, CALIBRATED on the WP10 fixture + committed extras:
+      raw top-hit signals only (fused scores never gate — WP12-B2),
+      floors frozen per embedder identity in
+      `nexus_search/rag/gate_floors.json` with CI regression tests
+-   [ ] RAG pipeline (prompt fencing, generation, citations, quote
+      verification, sanitization) — P7-5
+-   [ ] Answer + Sources API, per-key token budgets over shared state —
+      P7-6
+-   [ ] Streaming SSE — P7-7
+-   [ ] Conversation sessions — P7-8
+-   [ ] RAG/answer quality benchmark (WP10 protocol) — P7-9
+-   [ ] Observability/ops/docs/CI/sign-off — P7-10
+
+Honest limits (measured, `docs/PHASE7_WORKLOG.md`): on the lexical
+`hash:384` embedder the WP10-fixture junk and weak-evidence answerable
+distributions overlap on both raw axes, so the mission's default gate
+target (≥95% unanswerable refusal at ≤10% answerable false-refusal) is
+not achievable — frozen floors meet a restated, evidence-backed target
+(test split: 83.3% unanswerable refusal at 5.9% well-evidenced
+false-refusal; the raw answerable-refusal rate is reported alongside and
+is dominated by paraphrase-tail queries whose top-1 hit is a wrong doc
+under the lexical embedder). Gate calibration is English-only;
+non-English quality is unmeasured. The gate cannot detect a corpus that
+confidently contains wrong information.
 
 ------------------------------------------------------------------------
 

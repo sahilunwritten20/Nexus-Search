@@ -1,26 +1,26 @@
-"""P7-4 â€” the refuse-gate: decide answerability BEFORE any LLM spend.
+"""P7-4 — the refuse-gate: decide answerability BEFORE any LLM spend.
 
-CONTRACT (PHASE7_PLAN Â§6, WP12-B2):
+CONTRACT (PHASE7_PLAN §6, WP12-B2):
 - inputs are RAW retrieval signals ONLY: the un-normalized top-hit
   `bm25_score` and the raw top-hit `vector_score` (cosine). Fused RRF /
   weighted scores are rank/normalization artifacts and are NEVER read
   here (their values are identical for a 0.92-cosine and a 0.05-cosine
-  top hit â€” Phase 4 measured confident junk at BM25 top-1 5.4-9.1 on
+  top hit — Phase 4 measured confident junk at BM25 top-1 5.4-9.1 on
   unanswerable queries, which is exactly what these floors cut).
 - None handling: a signal that is None means that retriever did not find
   the row; the decision then rests on the signals that ARE present
   (the "hybrid agreement" rule: a top hit that came from only ONE
   retriever is refused when that retriever's raw score is under its
-  floor â€” a special case of "refuse iff every present signal is below
+  floor — a special case of "refuse iff every present signal is below
   its floor").
 - thresholds are CALIBRATED on the WP10 fixture (rag/calibration.py),
   frozen per EMBEDDER IDENTITY in rag/gate_floors.json (hash vs ST
   distributions differ), and enforced as CI regression floors.
-- an UNKNOWN embedder gets a conservative default (floors HIGH â†’ refuse
-  more) plus a LOUD warning â€” never a silent pass-through.
+- an UNKNOWN embedder gets a conservative default (floors HIGH → refuse
+  more) plus a LOUD warning — never a silent pass-through.
 
 HONEST LIMIT: the gate cannot detect a corpus that confidently contains
-WRONG information â€” a high-scoring lie is still a high-scoring hit.
+WRONG information — a high-scoring lie is still a high-scoring hit.
 """
 import json
 import logging
@@ -70,7 +70,7 @@ def floors_for(embedder: str, floors_doc: Optional[dict] = None) -> GateFloors:
                 _warned_unknown.add(embedder)
                 logger.warning(
                     "RAG refuse-gate: NO CALIBRATED FLOORS for embedder "
-                    "%r â€” using the conservative default (refuses more). "
+                    "%r — using the conservative default (refuses more). "
                     "Run rag/calibration.py to calibrate this embedder.",
                     embedder)
         return GateFloors(embedder=embedder or "unknown",

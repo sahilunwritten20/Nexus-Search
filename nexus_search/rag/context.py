@@ -1,21 +1,21 @@
-"""P7-2 â€” context selection: pure, deterministic, unit-tested.
+"""P7-2 — context selection: pure, deterministic, unit-tested.
 
 Given the rank-ordered `RagChunk` list from retrieval, decide WHICH chunks
 enter the prompt and in what order:
 
-1. llm_allowed:false chunks are excluded here (egress control â€” their text
+1. llm_allowed:false chunks are excluded here (egress control — their text
    never reaches a provider).
-2. Per-parent cap: at most N chunks from one parent (default 3) â€” a single
+2. Per-parent cap: at most N chunks from one parent (default 3) — a single
    long document must not eat the whole context.
 3. Near-duplicate suppression: token-Jaccard against already-selected text
-   (core/diversity.py's similarity idea), threshold configurable â€” mirrors
+   (core/diversity.py's similarity idea), threshold configurable — mirrors
    and boilerplate copies waste budget.
-4. Hard budget: `max_context_tokens` (chars-per-token heuristic estimate â€”
+4. Hard budget: `max_context_tokens` (chars-per-token heuristic estimate —
    deliberately NO tokenizer dependency) and `max_context_bytes`. The
    selection can NEVER exceed either; every drop says why.
-5. Optional neighbor stitching: the Â±1 adjacent chunks of a selected chunk
+5. Optional neighbor stitching: the ±1 adjacent chunks of a selected chunk
    (same parent only, fetched through the Storage batched path) may be
-   stitched in when the budget allows â€” the citation still points at the
+   stitched in when the budget allows — the citation still points at the
    selected chunk's own chunk_id.
 6. Stable source numbering [1..n] mapped to chunk_id/parent_id.
 
@@ -31,8 +31,8 @@ from .retrieval import RagChunk
 
 
 def estimate_tokens(text: str, chars_per_token: int = 4) -> int:
-    """chars/token heuristic (default 4 â‰ˆ one token per ~4 chars for English
-    prose on modern tokenizers). Deliberately no tokenizer dependency â€”
+    """chars/token heuristic (default 4 ≈ one token per ~4 chars for English
+    prose on modern tokenizers). Deliberately no tokenizer dependency —
     the estimate only sizes the context budget, it never gates refusal."""
     if not text:
         return 0
@@ -173,7 +173,7 @@ def select_context(
             selection.dropped.append({"chunk_id": chunk.chunk_id,
                                       "reason": "budget_bytes"})
             continue
-        # the chunk itself fits â€” commit it, then try to stitch neighbors
+        # the chunk itself fits — commit it, then try to stitch neighbors
         used_tokens += tokens
         used_bytes += nbytes
         per_parent[chunk.parent_id] = count + 1
@@ -211,10 +211,10 @@ def select_context(
 
 def make_storage_neighbor_fetcher(storage) -> Callable[[str, list[int]], dict[int, str]]:
     """The production neighbor fetcher: ONE batched Storage.get_documents
-    for `parent#chunkN` ids (never per-neighbor reads â€” the N+1 rule).
+    for `parent#chunkN` ids (never per-neighbor reads — the N+1 rule).
 
     EGRESS CONTRACT: `fetch_neighbors` callables must never return the text
-    of a chunk whose metadata says llm_allowed:false â€” this fetcher enforces
+    of a chunk whose metadata says llm_allowed:false — this fetcher enforces
     it (stitching is a prompt path, so the egress filter applies to it
     exactly as it applies to selected chunks)."""
     def fetch(parent_id: str, indexes: list[int]) -> dict[int, str]:

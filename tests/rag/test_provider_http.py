@@ -1,4 +1,4 @@
-﻿"""P7-3 â€” real adapters over `requests`, tested with MOCKED HTTP only
+"""P7-3 — real adapters over `requests`, tested with MOCKED HTTP only
 (CI never needs a key or network; NEXUS_RUN_LLM_TESTS gates real calls,
 which are NOT part of this file)."""
 import json

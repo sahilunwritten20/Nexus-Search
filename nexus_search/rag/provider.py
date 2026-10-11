@@ -1,9 +1,9 @@
-"""P7-3 â€” the LLM provider layer.
+"""P7-3  the LLM provider layer.
 
 `LLMProvider.complete(messages, *, max_tokens, timeout, stream)` is the
 ONLY thing the RAG pipeline may call. Tool-calling is DISABLED BY
 CONSTRUCTION: the interface has no `tools`/`functions` parameter, the
-adapters never send one, and there is no agent loop (PHASE7_PLAN Â§2).
+adapters never send one, and there is no agent loop (PHASE7_PLAN 2).
 
 Implementations:
 - StubProvider      deterministic, offline, with selectable ADVERSARIAL
@@ -14,12 +14,12 @@ Implementations:
                     defenses work, not to imitate a good model.
 - OpenAIProvider    any OpenAI-compatible chat-completions endpoint
                     (NEXUS_LLM_BASE_URL covers local servers), `requests`
-                    only â€” no SDK, no new dependency.
+                    only  no SDK, no new dependency.
 - AnthropicProvider the Anthropic Messages API, same rules.
 
 Discipline:
 - hard timeout (<= 30s, config-clamped) on every call;
-- bounded retry with jitter (<= 2, connect errors / 429 / 5xx ONLY â€”
+- bounded retry with jitter (<= 2, connect errors / 429 / 5xx ONLY 
   read timeouts are NOT retried: the call may already have landed);
 - concurrency semaphore (default 4); saturation raises ProviderBusy
   (the API maps it to 429 + Retry-After);
@@ -100,7 +100,7 @@ class LLMStream:
         return self
 
     def __next__(self) -> str:
-        # iteration is a cursor over the accumulated parts — consuming the
+        # iteration is a cursor over the accumulated parts  consuming the
         # iterator must NOT destroy the final text (result() reads it after)
         with self._lock:
             if self._cursor < len(self._parts):
@@ -119,7 +119,7 @@ class LLMStream:
 
 class ProviderError(Exception):
     """Type-coded provider failure. Messages carry NO response bodies, NO
-    URLs, NO credentials â€” the RAG service surfaces the code only."""
+    URLs, NO credentials  the RAG service surfaces the code only."""
 
     def __init__(self, code: str):
         super().__init__(code)
@@ -132,7 +132,7 @@ class ProviderTimeout(ProviderError):
 
 
 class ProviderBusy(ProviderError):
-    """All concurrency slots taken â€” the API maps this to 429 + Retry-After."""
+    """All concurrency slots taken  the API maps this to 429 + Retry-After."""
 
     def __init__(self, retry_after: float):
         super().__init__("provider_busy")
@@ -192,9 +192,9 @@ def _post_with_retries(url: str, *, headers: dict, body: dict,
 
 class LLMProvider(ABC):
     """`complete` is the whole surface. NOTE: there is intentionally NO
-    `tools` / `functions` / `tool_choice` parameter â€” tool-calling cannot
+    `tools` / `functions` / `tool_choice` parameter  tool-calling cannot
     be configured into this layer, so retrieved text can never trigger a
-    tool, a fetch or a write (PHASE7_PLAN Â§2)."""
+    tool, a fetch or a write (PHASE7_PLAN 2)."""
 
     name: str = ""
 
@@ -239,7 +239,7 @@ class _SlotMixin:
 
 
 # ---------------------------------------------------------------------------
-# Stub provider (default in tests/CI â€” offline, deterministic, adversarial)
+# Stub provider (default in tests/CI  offline, deterministic, adversarial)
 # ---------------------------------------------------------------------------
 
 # The frame contract the RAG prompt builder (P7-5 prompt.py) uses; the
@@ -279,7 +279,7 @@ class StubProvider(LLMProvider, _SlotMixin):
                            citation and a verbatim quote (falls back to
                            no_answer when no fenced source is present)
       no_answer            declines to answer (no citations)
-      hallucinated_citation cites [99] â€” an id no retrieval produced
+      hallucinated_citation cites [99]  an id no retrieval produced
       obey_injection       scans the data region for an instruction-like
                            line and OBEYS it (the P7-5/P7-9 defense oracle)
       markdown_exfil       emits ![](http://attacker...) + [x](http://...)
@@ -309,7 +309,7 @@ class StubProvider(LLMProvider, _SlotMixin):
                 text, usage = self._generate(messages, max_tokens, t)
                 return self._to_stream(text, usage)
         # Non-stream: the stub enforces its own wall-clock deadline (the
-        # real adapters get theirs from the requests socket timeout) — a
+        # real adapters get theirs from the requests socket timeout)  a
         # `slow` behavior must surface as ProviderTimeout, never a hang.
         with self._slot():
             box: dict = {}
@@ -577,7 +577,7 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
         return stream
 
 
-# The interface is the export surface â€” adapters are chosen via config.
+# The interface is the export surface  adapters are chosen via config.
 __all__ = [
     "LLMProvider", "LLMResult", "LLMUsage", "LLMStream",
     "ProviderError", "ProviderTimeout", "ProviderBusy",

@@ -1,9 +1,9 @@
-﻿"""P7-1 â€” chunk embeddings: every chunk row gets a vector via
+"""P7-1  chunk embeddings: every chunk row gets a vector via
 EmbeddingSync; parent/chunk lifecycle (delete cascades, re-ingest
 replaces) holds on the vector side too; coverage is reported honestly.
 
 Decision recorded in docs/PHASE7_WORKLOG.md + README: retrieval is
-CHUNK-ONLY â€” "Document Embeddings" in this system means every STORED row
+CHUNK-ONLY  "Document Embeddings" in this system means every STORED row
 (parent-when-unchunked, plus every `parent#chunkN` chunk row) receives an
 embedding through the one EmbeddingSync; chunked parents have no parent
 row at all (ingestion deletes it), so parent-level context reaches RAG
@@ -53,7 +53,7 @@ class TestChunkEmbeddingCoverage(unittest.TestCase):
             chunk_ids = storage.chunk_ids("doc-1")
             self.assertGreaterEqual(len(chunk_ids), 2)
             # the PARENT row is absent for chunked docs (ingestion removes
-            # the previously-unchunked row) â€” chunks are the stored rows
+            # the previously-unchunked row)  chunks are the stored rows
             self.assertIsNone(storage.get_document("doc-1"))
             for cid in chunk_ids:
                 self.assertIsNotNone(
@@ -137,7 +137,7 @@ class TestChunkVectorLifecycle(unittest.TestCase):
             sync.flush()
             new_ids = set(storage.chunk_ids("doc-1"))
             # re-ingest REPLACED the old chunks: no stale rows, no stale
-            # vectors — the stored set is exactly the new set
+            # vectors  the stored set is exactly the new set
             self.assertTrue(new_ids)
             self.assertNotEqual(new_ids, set())  # (replaced, not deleted)
             for cid in old_ids - new_ids:

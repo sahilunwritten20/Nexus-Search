@@ -1,8 +1,8 @@
-"""P7-1 â€” RAG retrieval over the ONE shared HybridSearch.
+"""P7-1 — RAG retrieval over the ONE shared HybridSearch.
 
-There is NO second retrieval path here (PHASE7_PLAN Â§7): `RagRetriever`
+There is NO second retrieval path here (PHASE7_PLAN §7): `RagRetriever`
 holds the shared `HybridSearch` instance the API already owns and calls the
-same `search_page(...)` `/search` calls â€” with `group_chunks=False` so the
+same `search_page(...)` `/search` calls — with `group_chunks=False` so the
 answer path cites exact stored chunk rows (`parent#chunkN`), plus the same
 query-understanding (spell correction / synonym expansion), the same
 Phase 5 reranker and the same filter semantics (`type:` / `lang:` via the
@@ -12,12 +12,12 @@ Raw-signal contract (WP12-B2): fused scores are rank/normalization
 artifacts and never gate anything. `RagChunk.bm25_score` /
 `RagChunk.vector_score` carry the RAW per-retriever scores through fusion
 AND rerank, including the `None` cases where only one retriever found the
-row â€” these are the only valid inputs to the P7-4 refuse-gate.
+row — these are the only valid inputs to the P7-4 refuse-gate.
 
 Honesty contract: when the vector subsystem is down the retriever degrades
 to keyword retrieval with `degraded_reason` set (never a silent swap); when
 retrieval itself fails, `retrieval_error` carries the exception TYPE name
-only (the service maps it to a clean 503 â€” internals never reach clients).
+only (the service maps it to a clean 503 — internals never reach clients).
 """
 import logging
 import os
@@ -35,7 +35,7 @@ MAX_TOP_K = 100
 
 # The request-model filters dict supports exactly the two filter families
 # the query parser understands (filters.py); anything else would invent a
-# second filter semantics â€” refused loudly instead.
+# second filter semantics — refused loudly instead.
 _ALLOWED_FILTER_KEYS = {"doc_type", "language"}
 
 
@@ -55,7 +55,7 @@ class RagChunk:
     """One retrieved stored row, with the raw gate signals attached.
 
     `chunk_id` is the exact stored row id (`parent#chunkN` for chunk rows,
-    the plain doc id otherwise) â€” citations resolve through
+    the plain doc id otherwise) — citations resolve through
     Storage.get_document on this id. `parent_id` is the metadata parent
     when the row is a chunk, else the row id itself."""
     chunk_id: str
@@ -66,7 +66,7 @@ class RagChunk:
     doc_type: str = ""
     url: Optional[str] = None
     # RAW per-retriever scores (None = that retriever did not find this
-    # row). Never normalized, never fused â€” the refuse-gate's only inputs.
+    # row). Never normalized, never fused — the refuse-gate's only inputs.
     bm25_score: Optional[float] = None
     vector_score: Optional[float] = None
     fused_score: float = 0.0
@@ -102,7 +102,7 @@ class RagRetriever:
                  weights_fn: Optional[Callable] = None,
                  link_intel=None):
         # `hybrid` may be None: the vector subsystem never came up at boot
-        # (api.py's degraded-boot path) â€” keyword-only retrieval with a
+        # (api.py's degraded-boot path) — keyword-only retrieval with a
         # LOUD degraded_reason. `bm25_search` is then required.
         self.hybrid = hybrid
         self.storage = storage
@@ -126,7 +126,7 @@ class RagRetriever:
 
     @property
     def embedder_name(self) -> Optional[str]:
-        """Identity of the shared embedder (e.g. 'hash:384') â€” gates the
+        """Identity of the shared embedder (e.g. 'hash:384') — gates the
         per-embedder calibrated floors. None when the vector subsystem is
         absent (keyword-only degraded mode)."""
         if self.hybrid is None:
@@ -151,7 +151,7 @@ class RagRetriever:
         """Retrieve up to `k` stored rows for `query`.
 
         `filters` maps {'doc_type': ..., 'language': ...} onto the exact
-        `type:` / `lang:` query syntax /search uses â€” rendered INTO the
+        `type:` / `lang:` query syntax /search uses — rendered INTO the
         query string so the parser + matches_filters + the vector pushdown
         all behave identically (no second filter code path)."""
         self.validate_query(query)
@@ -169,13 +169,13 @@ class RagRetriever:
             results, total, degraded_reason, reranked = self._retrieve_rows(
                 rendered, k, mode)
         except Exception:
-            # Type name only â€” the API maps this to a clean 503; stack
+            # Type name only — the API maps this to a clean 503; stack
             # traces / messages never reach a response body.
             logger.exception("rag retrieval failed")
             return RagRetrieval(query=query, language=language, mode=mode,
                                 retrieval_error="retrieval_error")
 
-        # ONE batched fetch for every full row text (no N+1 â€” the WP12-B4
+        # ONE batched fetch for every full row text (no N+1 — the WP12-B4
         # discipline holds on the RAG path too).
         docs_by_id = self.storage.get_documents([r.doc_id for r in results])
         chunks = []
@@ -223,7 +223,7 @@ class RagRetriever:
         """Returns (rows, total, degraded_reason, reranked)."""
         if self.hybrid is None:
             # Degraded boot: vector subsystem never came up. Keyword-only,
-            # flagged â€” never a silent swap.
+            # flagged — never a silent swap.
             if self.bm25_search is None:
                 raise RuntimeError("no retriever available")
             page = self.bm25_search.search_page(query, top_k=k, offset=0,
@@ -252,14 +252,14 @@ class RagRetriever:
         meta = page.metadata or {}
         if meta.get("fallback"):
             # The vector side died mid-request and HybridSearch fell back
-            # to BM25 â€” surface it (its own metadata reason, type-only).
+            # to BM25 — surface it (its own metadata reason, type-only).
             degraded_reason = str(meta.get("fallback_reason") or "vector_fallback")
 
         rows = list(page.results)
         reranked = False
         if self.use_rerank and rows:
             # The same Phase 5 reranker (and Phase 6 weights, all default
-            # 0.0 = inert) /search applies â€” behind NEXUS_RAG_USE_RERANK,
+            # 0.0 = inert) /search applies — behind NEXUS_RAG_USE_RERANK,
             # default ON. Raw bm25/vector scores ride along on the result
             # objects, so they survive the rerank by construction.
             ranked = self._rerank_fn(
@@ -274,7 +274,7 @@ class RagRetriever:
 def _row_from_bm25(r):
     """Adapt a keyword-only (degraded) SearchResult to the HybridSearchResult
     shape the mapping below reads (bm25 raw score; vector None by
-    construction â€” the vector side is absent)."""
+    construction — the vector side is absent)."""
     from ..core.hybrid_search import HybridSearchResult
     return HybridSearchResult(
         doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
