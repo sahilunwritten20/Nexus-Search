@@ -200,6 +200,26 @@ if _link_graph is not None and _authority_interval() > 0:
 # Query cache: TTL-bounded, and cleared on every write (see query_cache.py)
 _query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5")))
 
+# Phase 7 RAG boot policy (P7-3): config + status only — the service and
+# endpoints come with P7-5/P7-6. Fail-closed: a real provider without a
+# key leaves RAG ABSENT (search keeps serving), NEXUS_RAG_ENABLED=0 is the
+# kill switch, the stub outside dev needs NEXUS_RAG_ALLOW_STUB=1. The
+# status block below carries ONLY {status, provider, reason} — never the
+# key, never a base URL (credentials could hide in one).
+from ..rag.config import RagConfig
+_rag_config = RagConfig.from_env()
+_rag_status, _rag_status_reason = _rag_config.status()
+if _rag_status != "ok":
+    logger.warning("RAG subsystem %s (reason=%s) — /search keeps serving",
+                   _rag_status, _rag_status_reason)
+else:
+    logger.info("RAG subsystem ok (provider=%s)", _rag_config.provider)
+
+
+def _rag_health_block() -> dict:
+    return {"status": _rag_status, "provider": _rag_config.provider,
+            "reason": _rag_status_reason}
+
 
 def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
                        reason: str, facets: Optional[str] = None) -> SearchResponse:
@@ -758,6 +778,7 @@ def health():
             "coverage": 0.0,
             "embedder": {"name": "unavailable", "dim": None, "degraded": True,
                          "error": _vector_error},
+            "rag": _rag_health_block(),
         }
     vector_stats = _vector_store.get_stats()
     vector_count = vector_stats.get("count", 0)
@@ -774,6 +795,7 @@ def health():
             "dim": _vector_store.embedder.dim,
             "degraded": isinstance(_vector_store.embedder, HashEmbedder),
         },
+        "rag": _rag_health_block(),
     }
 
 
