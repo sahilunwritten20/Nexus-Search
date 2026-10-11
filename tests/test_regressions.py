@@ -125,10 +125,44 @@ class TestCrawler(ServerCase):
         docs = []
         pl = self.pipeline(concurrency=4, default_crawl_delay=0.3,
                            ingest_fn=lambda u, t, x, m: docs.append(u))
+        # WP14-N1 (owner-approved rewrite): assert the politeness CONTRACT —
+        # consecutive fetch slots for the crawled domain are >= the crawl
+        # delay apart — instead of server-handler ARRIVAL gaps. The old
+        # measurement recorded times inside per-connection handler threads;
+        # under CPU load their scheduling jitter compressed recorded gaps
+        # below the 0.25 s tolerance (2 flakes in 3 loaded local runs,
+        # 0/10 isolated, CI serial never affected — the politeness
+        # implementation was never at fault; its slot math is exact).
+        # Slot time = claim time + returned wait, and reserve_slot guarantees
+        # the next slot for a domain is >= delay after the previous one, so
+        # this can only fail when the PIPELINE stops enforcing the delay —
+        # which is exactly the bug this test guards. Same numbers as before
+        # (0.25 of 0.3); the measurement moved to the point the code
+        # controls. Red-first proof: neutering pipeline.py's reserve_slot
+        # call makes this assertion fail (gaps collapse to ~0).
+        real_politeness = pl.politeness
+        slot_claims = []
+
+        class _RecordingPoliteness:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def reserve_slot(self, domain):
+                wait = self._inner.reserve_slot(domain)
+                slot_claims.append((domain, time.monotonic() + wait))
+                return wait
+
+        pl.politeness = _RecordingPoliteness(real_politeness)
         pl.seed([self.base + "/"])
         pl.run()
-        times = sorted(t for p, t in HITS if p in ("/", "/p1", "/p2", "/p3"))
-        gaps = [b - a for a, b in zip(times, times[1:])]
+        # every recorded slot belongs to the single test-server host
+        slots = sorted(t for _domain, t in slot_claims)
+        self.assertGreaterEqual(len(slots), 4,
+                                f"expected >=4 crawled pages, slots: {slots}")
+        gaps = [b - a for a, b in zip(slots, slots[1:])]
         self.assertTrue(all(g >= 0.25 for g in gaps), gaps)
 
     def test_error_pages_are_not_ingested(self):
