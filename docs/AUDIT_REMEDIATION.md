@@ -1016,3 +1016,39 @@ exus_search.db mtime unchanged (10/3, pre-WP14).
 - Run #25 (55bfc01): GREEN.
 - **Run #26 (10554d4 — the final head at sign-off): GREEN.**
 - The go/no-go box "CI green on the WP14 head" is earned by run #26.
+
+### WP14 addendum 2 — remaining-work round (owner-authorized)
+
+**N1 (crawl-delay flake): FIXED** — the ledger had flagged the fix as needing
+an owner decision (any fix = a test change); the owner's go-ahead was given
+in the "do the remaining work" instruction. The test
+	est_crawl_delay_holds_with_many_workers now asserts the politeness
+CONTRACT — consecutive fetch slots for the crawled domain are >= 0.25 s of
+the 0.3 s delay, recorded by a delegating proxy around pl.politeness —
+instead of server-handler ARRIVAL gaps, whose per-connection handler-thread
+scheduling jitter under CPU load compressed recorded gaps below tolerance.
+Same assertion numbers, measured where the code controls. Evidence:
+- red-first: pipeline eserve_slot neutered -> the new test FAILS;
+  reverted -> green
+- 25/25 isolated runs green
+- **-n auto full suite: 944 passed, 7 skipped, 0 failed** — the exact load
+  condition that produced both pre-fix flakes
+- serial full suite: 944 passed, 7 skipped, 623 subtests (6:34)
+
+**Docker: VERIFIED LOCALLY** (engine recovered on the third session attempt;
+was UNVERIFIED-locally since Step 0). Real output from this machine:
+- docker compose build -> "Image nexus-search-api Built" (WP14 Dockerfile
+  with the /opt/hf bake); without NEXUS_API_KEY the fail-closed compose line
+  still refuses (re-confirmed)
+- docker run --network none -e NEXUS_ENV=dev
+  -e NEXUS_EMBEDDER=st:sentence-transformers/all-MiniLM-L6-v2 ->
+  **/ready 200**, /health -> embedder
+  st:sentence-transformers/all-MiniLM-L6-v2, dim 384, degraded: false,
+  no errors in logs — the H3 mission test, green on local hardware too
+- default boot via docker compose up -> /ready {"ready":true},
+  /health ok with hash:384, container runs as **appuser** (non-root)
+Both boot paths of the WP14 image are now verified locally AND by CI.
+
+Not done (out of scope by the mission's own rules): the n8n 300-350-node
+expansion (mission: "do not act on it"; WP13 user decision: "keep as-is"),
+Phase 8+ items, and any RAG/LLM code.

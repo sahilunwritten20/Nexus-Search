@@ -214,3 +214,14 @@ Full per-item root-cause/before-after/commit table: WP14 section in
 - Post-merge run on 55bfc01 (this docs commit) will follow the same green path.
 - 3.14 parity at the head: 944 passed, 7 skipped, 623 subtests (warnings-only
   delta vs 3.12).
+
+## Remaining-work round (owner-authorized)
+
+- N1 fixed: politeness-contract measurement; red-first + 25/25 isolated +
+  -n auto 944/7 GREEN (the old flake condition) + serial 944/7. Commit on
+  branch wp14.
+- Docker engine recovered on the 3rd attempt: compose build OK; offline ST
+  boot --network none -> /ready 200, st: embedder healthy, zero egress;
+  default hash boot -> /ready {"ready":true}; runs as appuser. All
+  previously-UNVERIFIED-locally docker rows are now VERIFIED locally (CI
+  had already verified them: runs #24/#26/#27).
