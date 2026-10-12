@@ -254,6 +254,23 @@ _INJECTION_RE = re.compile(
     r"|^\s*system\s*:",)
 
 
+def _normalized_lines(text: str):
+    """Line-by-line view with the SAME normalization the prompt builder's
+    stripper uses (homoglyphs folded, zero-width stripped, NFKC). The
+    stub oracle must still OBEY a homoglyph-dodged injection so the
+    defense tests measure the STRIPPER, not the oracle's regex."""
+    from .prompt import _normalize_for_matching
+    for line in text.splitlines():
+        yield line, _normalize_for_matching(line)
+
+
+def _find_injection(text: str) -> Optional[str]:
+    for raw, probe in _normalized_lines(text):
+        if _INJECTION_RE.search(probe):
+            return raw
+    return None
+
+
 def parse_fenced_sources(messages: list[dict]) -> dict[int, str]:
     """Sources from the last user message, by number -> text."""
     user_texts = [m.get("content") or "" for m in messages
@@ -347,9 +364,9 @@ class StubProvider(LLMProvider, _SlotMixin):
         elif b == "obey_injection":
             data = "\n".join(m.get("content") or "" for m in messages
                              if m.get("role") != "system")
-            m_ = _INJECTION_RE.search(data)
+            m_ = _find_injection(data)
             if m_:
-                text = f"OBEYED: {m_.group(0).strip()}"
+                text = f"OBEYED: {m_.strip()}"
             else:
                 text, usage_in = self._extractive(messages, usage_in)
         elif b == "no_answer":
