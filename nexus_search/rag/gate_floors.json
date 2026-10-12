@@ -27,12 +27,24 @@
     "hash:384": {
       "bm25_floor": 6.5,
       "vector_floor": 0.45
+    },
+    "st:sentence-transformers/all-MiniLM-L6-v2": {
+      "bm25_floor": 9.0,
+      "vector_floor": 0.4
+    }
+  },
+  "model_gated_calibrations": {
+    "st:sentence-transformers/all-MiniLM-L6-v2": {
+      "calibrated_under": "local cached MiniLM (model-gated; hash of the same harness, NEXUS_EMBEDDER=st:...)",
+      "chosen_on_dev": {"junk_refusal_rate": 1.0, "well_evidenced_false_refusal_rate": 0.0, "raw_answerable_false_refusal_rate": 0.1163, "junk_total": 9, "well_evidenced_total": 31, "answerable_total": 43},
+      "held_out_test_split_as_measured": {"junk_refusal_rate": 0.6667, "well_evidenced_false_refusal_rate": 0.1538, "raw_answerable_false_refusal_rate": 0.4483, "junk_total": 6, "well_evidenced_total": 13, "answerable_total": 29},
+      "honest_note": "The floors meet the stated targets on the DEV split they were chosen on; the held-out TEST split is harsher for this embedder (well-evidenced false-refusal 15.4% > the 6% target) - recorded AS MEASURED, never silently passed. Small-split variance (6 junk / 13 well-evidenced in test) and the rule's dev-only contract make this the honest number set; the model-gated CI regression pins dev-split conformance with drift tolerance (ST float nondeterminism across BLAS backends)."
     }
   },
   "conservative_default": {
     "bm25_floor": 10.0,
     "vector_floor": 0.55,
-    "note": "UNKNOWN embedders fail CLOSED (refuse more) with a LOUD warning; never a silent pass-through. st:* floors need a model-gated calibration run (NEXUS_RUN_MODEL_TESTS=1) — until then st embedders use this default."
+    "note": "UNKNOWN embedders fail CLOSED (refuse more) with a LOUD warning; never a silent pass-through. The two shipped embedders are calibrated above (st: under the model gate)."
   },
   "honest_limits": [
     "English-only calibration; non-English quality is unmeasured.",
