@@ -62,7 +62,18 @@ class Storage:
              # v2 (WP6): freshness sorting reads added_at for the whole
              # candidate pool; the index makes the batch read cheap.
              (2, "CREATE INDEX IF NOT EXISTS idx_documents_added_at "
-                 "ON documents (added_at);")],
+                 "ON documents (added_at);"),
+             # v3 (P7-6): per-bucket DAILY token usage for the RAG answer
+             # path — SHARED state so caps hold across workers/replicas
+             # (the slowapi limiter is in-process and cannot). Downgrade
+             # path: the table is additive; rollback = DROP TABLE
+             # rag_token_usage (schema_version row 'storage' -> 2).
+             # Pruning: rag_usage_prune(keep_days) deletes old days.
+             (3, "CREATE TABLE IF NOT EXISTS rag_token_usage ("
+                 "bucket TEXT NOT NULL, "
+                 "day TEXT NOT NULL, "
+                 "tokens INTEGER NOT NULL DEFAULT 0, "
+                 "PRIMARY KEY (bucket, day))")],
         )
 
     def upsert_document(
@@ -312,6 +323,51 @@ class Storage:
         return [
             d for d in self.doc_ids_with_prefix(parent_id + "#chunk") if pattern.fullmatch(d)
         ]
+
+    # ------------------------------------------------- RAG token budgets
+    # P7-6: shared-state per-bucket DAILY token accounting, on THIS
+    # connection (the one connection set per store per process — the
+    # data_version/WAL contract stays intact).
+
+    @staticmethod
+    def _day_key(ts: float | None = None) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime(ts or time.time()))
+
+    def rag_usage_add(self, bucket: str, tokens: int, day: str | None = None) -> int:
+        """Add `tokens` to `bucket`'s daily counter; returns the new total."""
+        day = day or self._day_key()
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO rag_token_usage (bucket, day, tokens) VALUES (?, ?, ?) "
+                "ON CONFLICT(bucket, day) DO UPDATE SET "
+                "tokens = tokens + excluded.tokens",
+                (bucket, day, int(tokens)))
+            self.conn.commit()
+            row = self.conn.execute(
+                "SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?",
+                (bucket, day)).fetchone()
+        return int(row[0]) if row else 0
+
+    def rag_usage_get(self, bucket: str, day: str | None = None) -> int:
+        day = day or self._day_key()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?",
+                (bucket, day)).fetchone()
+        return int(row[0]) if row else 0
+
+    def rag_usage_prune(self, keep_days: int = 14) -> int:
+        """Delete usage rows older than `keep_days` days. Returns rows gone.
+        Operators schedule this (see README) — old rows are only cost
+        accounting, never functional."""
+        if keep_days <= 0:
+            raise ValueError("keep_days must be positive")
+        cutoff = self._day_key(time.time() - keep_days * 86400.0)
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM rag_token_usage WHERE day < ?", (cutoff,))
+            self.conn.commit()
+        return cur.rowcount
 
     def close(self):
         with self.lock:

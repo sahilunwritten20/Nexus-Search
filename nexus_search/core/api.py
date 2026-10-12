@@ -21,13 +21,23 @@ from .bm25 import BM25Search
 from .embedders import HashEmbedder, EmbedderUnavailable
 from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search, max_candidates
 from .query_cache import QueryCache
+from ..rag.budget import BudgetExceeded, bucket_key, daily_budget_from_env, precheck, settle
+from ..rag.config import RagConfig, build_provider
+from ..rag.context import make_storage_neighbor_fetcher
+from ..rag.metrics import global_metrics
+from ..rag.pipeline import RagService, RagServiceUnavailable
+from ..rag.provider import ProviderBusy, ProviderError
+from ..rag.retrieval import RagRetriever, use_rerank_from_env
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
 from .query_parser import parse_query
 from ..ranking.ranker import RankingWeights, WeightedSumModel, rerank as rerank_results
 from .embedding_sync import EmbeddingSync
 from .indexer import Indexer
-from .models import BulkDocumentIn, DocumentIn, DocumentOut, ExplainRequest, ExplainResponse, ExplainResult, SearchMetadata, SearchResponse, SearchResultOut
+from .models import (AskRequest, AskResponse, AskCitation, AskMetadata,
+                     AskSource, BulkDocumentIn, DocumentIn, DocumentOut,
+                     ExplainRequest, ExplainResponse, ExplainResult,
+                     SearchMetadata, SearchResponse, SearchResultOut)
 from .storage import Storage
 from .vector_store import VectorStoreManager
 
@@ -219,6 +229,33 @@ else:
 def _rag_health_block() -> dict:
     return {"status": _rag_status, "provider": _rag_config.provider,
             "reason": _rag_status_reason}
+
+
+# The RAG service (P7-6): constructed when the boot policy says ok. It
+# wires the SHARED HybridSearch/Storage (never a second instance) and the
+# configured provider. The neighbor fetcher shares the one Storage.
+_rag_service: Optional[RagService] = None
+if _rag_status == "ok":
+    _rag_provider, _rag_status, _rag_status_reason = build_provider(_rag_config)
+    if _rag_provider is not None:
+        _retriever = RagRetriever(
+            _hybrid_searcher, _storage,
+            bm25_search=_bm25_searcher,
+            use_rerank=use_rerank_from_env(),
+            link_intel=_link_graph)
+        _rag_service = RagService(
+            _rag_config, _retriever, _rag_provider, _storage,
+            metrics=global_metrics(),
+            neighbor_fetcher=make_storage_neighbor_fetcher(_storage))
+        logger.info("RAG service ready (provider=%s, model=%s)",
+                    _rag_provider.name, _rag_provider.model)
+
+
+def _rag_bucket(api_key: Optional[str], request: Request) -> str:
+    """Budget bucket: a VERIFIED key hashes to its own; everything else
+    falls through to the client IP (mirrors _rate_limit_key)."""
+    client_ip = request.client.host if request.client else None
+    return bucket_key(api_key, _API_KEY or None, client_ip)
 
 
 def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
@@ -851,6 +888,84 @@ def graph_neighbors(request: Request, response: Response,
         ],
         "count": len(edges),
     }
+
+
+@app.post("/ask", response_model=AskResponse,
+          dependencies=[Depends(require_api_key)])   # NEVER _READ_AUTH (WP14-8)
+@limiter.limit(_RATE_LIMIT)
+def ask(request: Request, body: AskRequest, response: Response,
+        api_key: Optional[str] = Security(_api_key_header)):
+    """Answer + sources (P7-6). Key-gated UNCONDITIONALLY (LLM answers are
+    spend-generating outputs, not free reads — a misconfigured
+    NEXUS_REQUIRE_AUTH_FOR_READS=0 must never open this endpoint). The
+    shared limiter above is the first gate; the per-bucket DAILY TOKEN
+    BUDGET (shared SQLite state, holds across workers) is checked BEFORE
+    any provider spend and settled with actual usage after. Errors carry
+    no internals: type-coded reasons only."""
+    if _rag_service is None or _rag_status != "ok":
+        # kill switch, absent provider, or stub-without-opt-in: search
+        # keeps serving; /ask is explicitly not available.
+        global_metrics().record_request()
+        raise HTTPException(status_code=503,
+                            detail=f"rag subsystem {_rag_status}")
+    import uuid
+    request_id = uuid.uuid4().hex[:12]
+    _rag_metrics = global_metrics()
+
+    bucket = _rag_bucket(api_key, request)
+
+    # Bounds are enforced BEFORE any LLM spend, each with a clear 4xx.
+    try:
+        _rag_service.retriever.validate_query(body.query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Token-budget pre-check: the honest worst case (context budget +
+    # answer budget + framing slack) is refused up front on 429 — the
+    # fail-closed direction (over-estimating refuses more, never less).
+    try:
+        precheck(_storage, bucket,
+                 _rag_config.max_tokens + _rag_config.max_context_tokens
+                 + 256)
+    except BudgetExceeded as exc:
+        _rag_metrics.record_budget_rejection()
+        raise HTTPException(
+            status_code=429,
+            detail="daily rag token budget exceeded for this key/ip",
+            headers={"Retry-After": "3600"})  # next UTC day at worst
+
+    try:
+        result = _rag_service.ask(
+            body.query, filters=body.filters, top_k=body.top_k,
+            mode=body.mode, request_id=request_id)
+    except RagServiceUnavailable:
+        raise HTTPException(status_code=503,
+                            detail="rag temporarily unavailable")
+    except ProviderBusy as exc:
+        raise HTTPException(status_code=429,
+                            detail="llm provider busy, retry later",
+                            headers={"Retry-After":
+                                     str(max(int(exc.retry_after), 1))})
+    except ProviderError:
+        raise HTTPException(status_code=503,
+                            detail="llm provider error")
+
+    # settle with the ACTUAL provider spend (refusals/degraded settle 0)
+    spend = (result.metadata.get("tokens_in", 0)
+             + result.metadata.get("tokens_out", 0)) \
+        if result.degraded_reason is None else 0
+    settle(_storage, bucket, spend)
+
+    return AskResponse(
+        request_id=request_id,
+        answer=result.answer,
+        answerable=result.answerable,
+        refusal_reason=result.refusal_reason,
+        degraded_reason=result.degraded_reason,
+        citations=[AskCitation(**vars(c)) for c in result.citations],
+        sources=[AskSource(**s) for s in result.sources],
+        metadata=AskMetadata(**result.metadata),
+    )
 
 
 @app.get("/graph/report", dependencies=[Depends(require_api_key)])

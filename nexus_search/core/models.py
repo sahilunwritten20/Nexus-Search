@@ -115,3 +115,135 @@ class ExplainResponse(BaseModel):
     mode: str
     metadata: SearchMetadata
     results: list[ExplainResult]
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — RAG /ask (P7-6). Bounded fields everywhere: attacker input
+# is capped BEFORE any LLM spend, each with a clear 4xx.
+# ---------------------------------------------------------------------------
+
+MAX_ASK_QUERY_CHARS = 2000    # same as /search (attacker cost parity)
+MAX_ASK_QUERY_WORDS = 128     # same as /search
+MAX_ASK_FILTER_KEYS = 8       # a filter dict has exactly 2 legal keys; 8 is the hard bound
+MAX_SESSION_ID_CHARS = 64
+SESSION_ID_CHARSET = r"^[A-Za-z0-9._:-]{1,64}$"
+
+
+class AskRequest(BaseModel):
+    """POST /ask body. `session_id` is client-supplied (untrusted, bounded);
+    its conversation semantics land with P7-8 — the field is validated
+    now so the contract is stable."""
+    query: str = Field(min_length=1, max_length=MAX_ASK_QUERY_CHARS)
+    filters: Optional[dict] = Field(default=None)
+    top_k: int = Field(default=10, ge=1, le=100)
+    mode: str = Field(default="hybrid", pattern="^(keyword|semantic|hybrid)$")
+    session_id: Optional[str] = Field(default=None,
+                                      pattern=SESSION_ID_CHARSET)
+
+    @field_validator("filters")
+    @classmethod
+    def _filters_bounded(cls, v: Optional[dict]) -> Optional[dict]:
+        if v is None:
+            return v
+        if len(v) > MAX_ASK_FILTER_KEYS:
+            raise ValueError(f"filters accepts at most {MAX_ASK_FILTER_KEYS} keys")
+        return v
+
+    @field_validator("query")
+    @classmethod
+    def _query_words_bounded(cls, v: str) -> str:
+        if len(v.split()) > MAX_ASK_QUERY_WORDS:
+            raise ValueError(f"query has more than {MAX_ASK_QUERY_WORDS} words")
+        return v
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"query": "how does bm25 rank documents",
+                 "top_k": 5, "mode": "hybrid"},
+                {"query": "what powers the crawler politeness",
+                 "filters": {"doc_type": "web"}, "top_k": 3},
+            ]
+        }
+    }
+
+
+class AskSource(BaseModel):
+    n: int
+    doc_id: str
+    parent_id: str
+    chunk_id: str
+    chunk_index: Optional[int] = None
+    title: str = ""
+    url: Optional[str] = None
+    snippet: str = ""
+
+
+class AskCitation(AskSource):
+    status: str = "verified"
+
+
+class AskMetadata(BaseModel):
+    """Numbers and codes only — prompts, nonces and keys are structurally
+    excluded (the service builds it from typed fields)."""
+    model_config = {"extra": "allow"}
+
+    latency_ms: int = 0
+    prompt_version: str = ""
+    retrieval: dict = Field(default_factory=dict)
+    tokens_in: int = 0
+    tokens_out: int = 0
+    estimated_cost: Optional[float] = None
+    provider: str = ""
+    model: str = ""
+    citations_verified: Optional[bool] = None
+    citation_drop_reasons: list = Field(default_factory=list)
+    unsupported_claims: list = Field(default_factory=list)
+    quote_checks: list = Field(default_factory=list)
+    uncited_sentences: Optional[int] = None
+    redactions: list = Field(default_factory=list)
+    sanitizer_removals: Optional[int] = None
+
+
+class AskResponse(BaseModel):
+    request_id: str
+    answer: Optional[str] = None
+    answerable: bool
+    refusal_reason: Optional[str] = None
+    degraded_reason: Optional[str] = None
+    citations: list[AskCitation] = Field(default_factory=list)
+    sources: list[AskSource] = Field(default_factory=list)
+    metadata: AskMetadata = Field(default_factory=AskMetadata)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"request_id": "a1b2c3d4",
+                 "answer": "BM25 scores lexical matches over an inverted "
+                           "index [1].",
+                 "answerable": True,
+                 "citations": [{"n": 1, "doc_id": "bm25-doc",
+                                "parent_id": "bm25-doc",
+                                "chunk_id": "bm25-doc",
+                                "chunk_index": 0, "title": "BM25",
+                                "url": None,
+                                "snippet": "BM25 scores lexical matches...",
+                                "status": "verified"}],
+                 "sources": [{"n": 1, "doc_id": "bm25-doc",
+                              "parent_id": "bm25-doc",
+                              "chunk_id": "bm25-doc",
+                              "chunk_index": 0, "title": "BM25",
+                              "url": None,
+                              "snippet": "BM25 scores lexical matches..."}],
+                 "metadata": {"latency_ms": 12, "prompt_version": "rag-prompt-v1",
+                              "tokens_in": 210, "tokens_out": 18,
+                              "estimated_cost": None, "provider": "stub",
+                              "model": "stub-deterministic-1",
+                              "citations_verified": True}},
+                {"request_id": "e5f6a7b8",
+                 "answer": None, "answerable": False,
+                 "refusal_reason": "no_evidence",
+                 "citations": [], "sources": []},
+            ]
+        }
+    }
