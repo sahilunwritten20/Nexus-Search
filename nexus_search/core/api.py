@@ -254,7 +254,9 @@ if _rag_status == "ok":
 def _rag_bucket(api_key: Optional[str], request: Request) -> str:
     """Budget bucket: a VERIFIED key hashes to its own; everything else
     falls through to the client IP (mirrors _rate_limit_key)."""
-    client_ip = request.client.host if request.client else None
+    client_ip = None
+    if request is not None and request.client:
+        client_ip = request.client.host
     return bucket_key(api_key, _API_KEY or None, client_ip)
 
 
@@ -966,6 +968,116 @@ def ask(request: Request, body: AskRequest, response: Response,
         sources=[AskSource(**s) for s in result.sources],
         metadata=AskMetadata(**result.metadata),
     )
+
+
+# ---------------------------------------------------------------------------
+# P7-7 — POST /ask/stream (SSE). Same unconditional auth + shared limiter
+# + shared token budget as /ask. Open streams are capped per bucket
+# (in-process; the count is also exported for /metrics). Client
+# disconnect cancels the generator (GeneratorExit) — nothing settles on
+# disconnect (the pre-check reserves no spend). Proxies MUST NOT buffer:
+# X-Accel-Buffering: no (nginx) + no response buffering elsewhere.
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_rag_open_streams: dict[str, int] = {}
+_rag_open_streams_lock = _threading.Lock()
+
+
+def _rag_open_stream_count() -> int:
+    with _rag_open_streams_lock:
+        return sum(_rag_open_streams.values())
+
+
+def _max_open_streams_from_env() -> int:
+    raw = (os.environ.get("NEXUS_RAG_MAX_OPEN_STREAMS") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 16
+    return max(1, value)
+
+
+def _sse_event(payload: dict) -> str:
+    import json as _json
+    return f"event: {payload['event']}\ndata: " \
+           f"{_json.dumps(payload['data'])}\n\n"
+
+
+@app.post("/ask/stream", dependencies=[Depends(require_api_key)])
+@limiter.limit(_RATE_LIMIT)
+def ask_stream(request: Request, body: AskRequest,
+               api_key: Optional[str] = Security(_api_key_header)):
+    """Server-sent events: meta (before any token; a refusal streams no
+    tokens) -> token* -> citations (authoritative) -> done; truncated /
+    error events instead of silent hangs. Streamed text is PROVISIONAL
+    until done (sanitization runs per-chunk; verification runs at end)."""
+    if _rag_service is None or _rag_status != "ok":
+        raise HTTPException(status_code=503,
+                            detail=f"rag subsystem {_rag_status}")
+    try:
+        _rag_service.retriever.validate_query(body.query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    bucket = _rag_bucket(api_key, request)
+    try:
+        precheck(_storage, bucket,
+                 _rag_config.max_tokens + _rag_config.max_context_tokens
+                 + 256)
+    except BudgetExceeded:
+        global_metrics().record_budget_rejection()
+        raise HTTPException(status_code=429,
+                            detail="daily rag token budget exceeded for this key/ip",
+                            headers={"Retry-After": "3600"})
+
+    cap = _max_open_streams_from_env()
+    with _rag_open_streams_lock:
+        open_now = _rag_open_streams.get(bucket, 0)
+        if open_now >= cap:
+            raise HTTPException(status_code=429,
+                                detail="too many open rag streams",
+                                headers={"Retry-After": "2"})
+        _rag_open_streams[bucket] = open_now + 1
+
+    import uuid
+    request_id = uuid.uuid4().hex[:12]
+
+    def _events():
+        settled = False
+        try:
+            for event in _rag_service.ask_streaming(
+                    body.query, filters=body.filters, top_k=body.top_k,
+                    mode=body.mode, request_id=request_id):
+                yield _sse_event(event)
+                if event["event"] == "done" and not settled:
+                    settled = True
+                    spend = (event["data"].get("spend") or {})
+                    # refusal/degraded/stream-truncated carry zero spend —
+                    # settle() no-ops on <=0, so a plain settle is safe
+                    settle(_storage, bucket,
+                           spend.get("tokens_in", 0) + spend.get("tokens_out", 0))
+        except RagServiceUnavailable:
+            yield _sse_event({"event": "error", "data":
+                              {"reason": "retrieval_unavailable"}})
+        finally:
+            with _rag_open_streams_lock:
+                remaining = _rag_open_streams.get(bucket, 1) - 1
+                if remaining <= 0:
+                    _rag_open_streams.pop(bucket, None)
+                else:
+                    _rag_open_streams[bucket] = remaining
+            # disconnect (GeneratorExit) lands here: the provider call
+            # result is abandoned, no budget settle happened, the bucket
+            # slot is released.
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        _events(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache",
+                 "X-Accel-Buffering": "no",   # nginx: do not buffer SSE
+                 "Connection": "keep-alive"})
 
 
 @app.get("/graph/report", dependencies=[Depends(require_api_key)])
