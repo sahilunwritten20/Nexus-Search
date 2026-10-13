@@ -128,6 +128,9 @@ class BuiltPrompt:
     # counts only -- never the redacted content itself
     redactions: list[dict] = field(default_factory=list)
     source_numbers: dict[str, int] = field(default_factory=dict)
+    # the text of each source AS SENT (post stripping/redaction) — the
+    # verification layers check membership against THIS, not the original
+    as_sent: dict[str, str] = field(default_factory=dict)
 
     def redaction_total(self) -> int:
         return sum(r.get("instruction_lines", 0) + r.get("pii", 0)
@@ -153,12 +156,14 @@ def build_prompt(query: str, selection, *, history: str = None,
     nonce = secrets.token_hex(8)
     redactions: list[dict] = []
     parts: list[str] = []
+    as_sent: dict[str, str] = {}
 
     for source in selection.sources:
         text = source.text
         text, n_stripped = strip_injections(text)
         text = neutralize_delimiter_lookalikes(text)
         text, n_pii = _redact_outbound(text, redact_pii_enabled)
+        as_sent[source.chunk_id] = text
         if n_stripped or n_pii:
             redactions.append({"source": source.number,
                                "chunk_id": source.chunk_id,
@@ -197,5 +202,5 @@ def build_prompt(query: str, selection, *, history: str = None,
     ]
     return BuiltPrompt(
         messages=messages, nonce=nonce, prompt_version=PROMPT_VERSION,
-        redactions=redactions,
+        redactions=redactions, as_sent=as_sent,
         source_numbers={s.chunk_id: s.number for s in selection.sources})

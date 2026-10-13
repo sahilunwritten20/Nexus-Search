@@ -273,8 +273,10 @@ class RagService:
                            "redactions": prompt.redactions,
                            "prompt_version": prompt.prompt_version}))
 
-        # 7. support + quote checks (deterministic, no extra LLM call)
-        support = check_support(raw_answer, selection)
+        # 7. support + quote checks (deterministic, no extra LLM call) —
+        #    against the text AS SENT (what the model actually saw)
+        support = check_support(raw_answer, selection,
+                                as_sent=prompt.as_sent)
         if support.unsupported_claims:
             self.metrics.record_unsupported_claim(len(support.unsupported_claims))
         if any(not qc.verified for qc in support.quote_checks):
@@ -511,7 +513,7 @@ class RagService:
         answer, removed = sanitize_text(raw_text)
         answer, leaked = scrub_leaks(answer, SYSTEM_PROMPT, prompt.nonce)
         verification = verify_citations(answer, selection, self.storage)
-        support = check_support(answer, selection)
+        support = check_support(answer, selection, as_sent=prompt.as_sent)
         if support.unsupported_claims:
             self.metrics.record_unsupported_claim(len(support.unsupported_claims))
         if final is not None:

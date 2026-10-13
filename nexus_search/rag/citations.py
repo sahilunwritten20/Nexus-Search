@@ -165,12 +165,21 @@ def _normalize_ws(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def check_quotes(answer_text: str, selection) -> list[QuoteCheck]:
+def check_quotes(answer_text: str, selection,
+                 as_sent: dict[str, str] | None = None) -> list[QuoteCheck]:
     """Every quoted span must appear (whitespace-normalized) in the cited
-    source(s) of the sentence it sits in; verified quotes carry char
-    offsets into the answer text."""
+    source(s) of the sentence it sits in — checked against the text AS
+    SENT (post-redaction contract); verified quotes carry char offsets
+    into the answer text."""
     checks: list[QuoteCheck] = []
     source_by_number = {s.number: s for s in selection.sources}
+
+    def _text_of(n: int) -> str:
+        source = source_by_number[n]
+        if as_sent is not None and source.chunk_id in as_sent:
+            return as_sent[source.chunk_id]
+        return source.text
+
     for match in _QUOTE_RE.finditer(answer_text or ""):
         quote = match.group(1)
         cited = parse_citations(match.group(0))
@@ -180,7 +189,7 @@ def check_quotes(answer_text: str, selection) -> list[QuoteCheck]:
             end = answer_text.find(".", match.end())
             window = answer_text[max(start, 0): end + 1 if end != -1 else None]
             cited = parse_citations(window)
-        texts = [source_by_number[n].text for n in cited if n in source_by_number]
+        texts = [_text_of(n) for n in cited if n in source_by_number]
         normalized_quote = _normalize_ws(quote)
         verified = any(normalized_quote in _normalize_ws(t) for t in texts)
         checks.append(QuoteCheck(
@@ -191,10 +200,20 @@ def check_quotes(answer_text: str, selection) -> list[QuoteCheck]:
 
 def check_support(answer_text: str, selection,
                   support_threshold: float = SUPPORT_THRESHOLD,
-                  check_quotes_too: bool = True) -> SupportReport:
-    """Per-cited-sentence lexical support + quote verification."""
+                  check_quotes_too: bool = True,
+                  as_sent: dict[str, str] | None = None) -> SupportReport:
+    """Per-cited-sentence lexical support + quote verification, against
+    the cited sources' text AS SENT (post-redaction — what the model
+    actually saw)."""
     report = SupportReport()
     by_number = {s.number: s for s in selection.sources}
+
+    def _text_of(n: int) -> str:
+        source = by_number[n]
+        if as_sent is not None and source.chunk_id in as_sent:
+            return as_sent[source.chunk_id]
+        return source.text
+
     for sentence in _split_sentences(answer_text or ""):
         if not _sentence_tokens(sentence):
             continue  # bare markers/punctuation carry nothing to assess
@@ -202,7 +221,7 @@ def check_support(answer_text: str, selection,
         if not cited:
             report.uncited_sentences += 1
             continue
-        texts = [by_number[n].text for n in cited if n in by_number]
+        texts = [_text_of(n) for n in cited if n in by_number]
         score = sentence_support(sentence, texts)
         report.scored_sentences += 1
         if score < support_threshold:
@@ -213,7 +232,7 @@ def check_support(answer_text: str, selection,
                 "reason": "low_lexical_support",
             })
     if check_quotes_too:
-        for qc in check_quotes(answer_text, selection):
+        for qc in check_quotes(answer_text, selection, as_sent=as_sent):
             report.quote_checks.append(qc)
             if not qc.verified:
                 report.unsupported_claims.append({
