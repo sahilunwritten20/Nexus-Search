@@ -115,9 +115,15 @@ class MemorySessionStore:
                 if key in self._expired:
                     self._expired.discard(key)
                     raise SessionExpired(session_id)
-                session = Session(last_used=now)
+            elif now - session.last_used > self.ttl:
+                # idle past the TTL: same verdict get() would give
+                self._sessions.pop(key, None)
+                self._expired.add(key)
+                raise SessionExpired(session_id)
             else:
                 session.last_used = now
+            if session is None:
+                session = Session(last_used=now)
             # context-token cap over the WHOLE session, BEFORE anything runs
             candidate = Session(turns=session.turns + [SessionTurn(role, text[:self.max_turn_bytes], now)],
                                  last_used=now)

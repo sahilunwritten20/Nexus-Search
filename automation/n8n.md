@@ -7,6 +7,20 @@
 > shared `HybridSearch` instance in the FastAPI core, not against this
 > canvas. The workflow stays as automation reference material.
 
+> **DO NOT USE FOR PRODUCTION RAG (P7-10, Phase 7 shipped):** this
+> workflow's RAG block PREDATES the Phase 7 design and does NOT follow
+> it. Specifically it has NONE of the Phase 7 protections: no per-request
+> nonce prompt fencing, no injection-line stripping, no raw-signal
+> refuse-gate (its `0.4 + 0.15 × sources` "confidence" formula is a rank
+> artifact, not a retrieval signal — WP12-B2), no citation verification
+> against the request's retrieved set, no quote/support checks, no
+> output sanitization (exfil/XSS channel), no token budgets in shared
+> state, no session scoping, and its LLM prompt is unfenced. Production
+> RAG runs exclusively through `POST /ask` / `POST /ask/stream` in
+> `nexus_search/core/api.py` (wired to `nexus_search/rag/`). This
+> workflow is deliberately NOT rebuilt (owner decision, WP13/WP14
+> ledger); it remains a stage-orchestration reference.
+
 An n8n workflow that orchestrates the Nexus Search pipeline end-to-end: search API with caching, hybrid BM25 + vector retrieval, RAG answer generation, document ingestion, a full web crawler (robots.txt, SSRF guard, incremental recrawl), link-graph PageRank, and health/alerting.
 
 

@@ -883,14 +883,28 @@ def ready():
 @app.get("/metrics", dependencies=[Depends(require_api_key)])
 def metrics():
     """Ops endpoint: corpus size/embedder identity/queue depth — internal
-    information, so it follows the same key gate as the write endpoints."""
+    information, so it follows the same key gate as the write endpoints.
+    The P7-10 rag block carries NUMBERS ONLY (tokens, costs, refusal and
+    defense counters, open streams) — a test proves no prompt text or
+    key can appear in it."""
     sync_stats = _embedding_sync.get_stats() if _embedding_sync is not None else None
     vector_stats = _vector_store.get_stats() if _vector_store is not None else None
-    return {
+    out = {
         "embedding_sync": sync_stats,
         "vector_store": vector_stats,
         "query_cache": _query_cache.stats(),
     }
+    # RAG counters (P7-3/P7-10): requests/refusals/degraded/usage/cost/
+    # provider errors/redactions/citation failures/unsupported claims/
+    # budget rejections + open SSE streams — day-keyed + totals.
+    from ..rag.metrics import global_metrics
+    out["rag"] = {
+        "status": _rag_status,
+        "provider": _rag_config.provider,
+        "open_sse_streams": _rag_open_stream_count(),
+        "counters": global_metrics().snapshot(),
+    }
+    return out
 
 
 @app.get("/graph/neighbors", dependencies=[Depends(require_api_key)])

@@ -169,6 +169,26 @@ class TestAskBehavior(_AskApiTest):
         resp_schema = spec["components"]["schemas"]["AskResponse"]
         self.assertIn("examples", resp_schema)
 
+    def test_metrics_rag_block_is_numbers_only(self):
+        api, client = self._boot()
+        ok = {"X-API-Key": "secret"}
+        poison_query = "my query about the launch code sk-POISON-98765"
+        client.post("/ask", json={"query": "bm25 lexical inverted index"},
+                    headers=ok)
+        client.post("/ask", json={"query": poison_query}, headers=ok)
+        r = client.get("/metrics", headers=ok)
+        self.assertEqual(r.status_code, 200)
+        rag = r.json()["rag"]
+        self.assertIn(rag["status"], ("ok", "disabled", "absent"))
+        self.assertEqual(rag["provider"], "stub")
+        self.assertGreaterEqual(rag["counters"]["totals"]["requests"], 2)
+        # NUMBERS ONLY: neither the query text nor any secret ships
+        blob = r.text
+        self.assertNotIn("poison_query", blob)
+        self.assertNotIn("launch code", blob)
+        self.assertNotIn("bm25 lexical", blob)
+        self.assertNotIn("secret", blob.replace('"secret"', ""))
+
     def test_no_internals_in_error_bodies(self):
         _, client = self._boot()
         r = client.post("/ask", json={"query": "bm25"},

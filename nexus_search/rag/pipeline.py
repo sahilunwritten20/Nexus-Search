@@ -439,18 +439,9 @@ class RagService:
         worker = threading.Thread(target=_call, daemon=True)
         worker.start()
         worker.join(max(self.config.timeout, 0.0))
-        if "stream" not in box:
-            self.metrics.record_provider_error("provider_timeout")
-            yield {"event": "meta", "data": {**base_meta, "answerable": True}}
-            yield {"event": "truncated", "data": {"reason": "provider_timeout"}}
-            yield {"event": "done", "data": {
-                "spend": {"tokens_in": 0, "tokens_out": 0,
-                          "estimated_cost": None},
-                "latency_ms": int((time.perf_counter() - started) * 1000),
-                "degraded_reason": DEGRADED_PROVIDER_TIMEOUT,
-                "sources": [_source_out(s) for s in selection.sources]}}
-            return
         if "error" in box:
+            # provider RAISED (auth/connect/response error): error event,
+            # sources still attached — never a truncated-marker lie
             exc = box["error"]
             self.metrics.record_provider_error(
                 getattr(exc, "code", "provider_error"))
@@ -463,6 +454,17 @@ class RagService:
                           "estimated_cost": None},
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "degraded_reason": DEGRADED_PROVIDER_ERROR,
+                "sources": [_source_out(s) for s in selection.sources]}}
+            return
+        if "stream" not in box:
+            self.metrics.record_provider_error("provider_timeout")
+            yield {"event": "meta", "data": {**base_meta, "answerable": True}}
+            yield {"event": "truncated", "data": {"reason": "provider_timeout"}}
+            yield {"event": "done", "data": {
+                "spend": {"tokens_in": 0, "tokens_out": 0,
+                          "estimated_cost": None},
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "degraded_reason": DEGRADED_PROVIDER_TIMEOUT,
                 "sources": [_source_out(s) for s in selection.sources]}}
             return
 

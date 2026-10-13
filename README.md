@@ -522,64 +522,86 @@ remediation; every bullet below matches shipped code):
 
 # Phase 7 --- AI Search / RAG
 
-Status: **in progress (Checkpoint 1 of 3)** — the foundation is shipped
-and test-pinned; the `/ask` endpoints, pipeline, benchmark and ops docs
-follow in the remaining work packages. Shipped so far (branch `phase-7`,
-worklogs in `docs/PHASE7_WORKLOG.md`):
+Status: **COMPLETE (P7-0 through P7-10)** — every item shipped and
+test-pinned on branch `phase-7`; decisions, commands and outputs in
+`docs/PHASE7_WORKLOG.md`, one line per work package in
+`docs/PHASE7_CHECKLIST.md`.
 
--   [x] Chunk embeddings proven end-to-end: every stored chunk row gets a
-      vector via the one `EmbeddingSync`; delete cascades and re-ingest
-      replace vectors; coverage is reported honestly
--   [x] Document-embedding decision (recorded): retrieval is CHUNK-ONLY —
-      "document embeddings" = every stored row (parent-when-unchunked +
-      every chunk) is embedded; chunked parents have no parent row, so
-      parent context reaches RAG via chunk metadata (`parent_id`,
-      `chunk_index`, `chunk_count`)
+-   [x] Chunk embeddings proven end-to-end (every stored chunk row
+      vectorized via the one `EmbeddingSync`; delete cascades; re-ingest
+      replaces; coverage honest) and a recorded decision: retrieval is
+      CHUNK-ONLY — "document embeddings" = every stored row
+      (parent-when-unchunked + every chunk); chunked parents have no
+      parent row, parent context arrives via chunk metadata
 -   [x] RAG retrieval over the ONE shared `HybridSearch`
-      (`group_chunks=False`), same query-understanding + Phase 5 rerank +
-      Phase 6 weights + `type:`/`lang:` filter semantics as `/search`
-      (`NEXUS_RAG_USE_RERANK`, default on); raw `bm25_score`/`vector_score`
-      survive fusion AND rerank (the refuse-gate's only inputs); honest
-      degraded modes (vector down → keyword, flagged; errors → clean 503)
--   [x] Context selection: hard token/byte budgets (never exceeded),
-      per-parent cap, near-duplicate suppression, ±1 neighbor stitching
-      (batched, budget-guarded), stable source numbering, every drop
-      reported with a reason; `llm_allowed: false` chunks never reach a
-      provider
--   [x] LLM provider layer: one `complete()` interface with NO tools
-      parameter (tool-calling disabled by construction); deterministic
-      offline stub (including adversarial behaviors used as the defense
-      test oracle); OpenAI-compatible + Anthropic adapters over
-      `requests`; hard timeout ≤ 30 s, bounded jittered retries
-      (connect/429/5xx only), concurrency semaphore → 429 + Retry-After
--   [x] Boot policy: key from env only (poisoned-key test: zero log
-      records, zero response bodies); real provider without key → RAG
-      ABSENT (search keeps serving, `/health` reports `rag: absent`);
-      stub outside dev requires opt-in; `NEXUS_RAG_ENABLED=0` kill switch
--   [x] Refuse-gate, CALIBRATED on the WP10 fixture + committed extras:
-      raw top-hit signals only (fused scores never gate — WP12-B2),
-      floors frozen per embedder identity in
-      `nexus_search/rag/gate_floors.json` with CI regression tests
--   [ ] RAG pipeline (prompt fencing, generation, citations, quote
-      verification, sanitization) — P7-5
--   [ ] Answer + Sources API, per-key token budgets over shared state —
-      P7-6
--   [ ] Streaming SSE — P7-7
--   [ ] Conversation sessions — P7-8
--   [ ] RAG/answer quality benchmark (WP10 protocol) — P7-9
--   [ ] Observability/ops/docs/CI/sign-off — P7-10
+      (`group_chunks=False`), same understanding/rerank/filter semantics
+      as `/search` (`NEXUS_RAG_USE_RERANK`, default on); raw
+      `bm25_score`/`vector_score` survive fusion AND rerank (the gate's
+      only inputs); honest degraded modes
+-   [x] Context selection: hard budgets (never exceeded), per-parent cap,
+      near-dup suppression, ±1 neighbor stitching, stable numbering,
+      drop reasons; `llm_allowed: false` never reaches a provider
+-   [x] LLM provider layer — `complete()` with NO tools parameter by
+      construction; deterministic offline stub with adversarial defense
+      oracles; OpenAI-compatible + Anthropic adapters over `requests`;
+      ≤30 s hard timeout, bounded jittered retries (connect/429/5xx),
+      concurrency semaphore → 429 + Retry-After; key env-only
+      (poisoned-key test: zero logs, zero bodies); boot policy absent/
+      disabled/ok; `NEXUS_RAG_ENABLED` kill switch; price table → honest
+      null cost
+-   [x] Refuse-gate, CALIBRATED + frozen per embedder (hash:384 6.5/0.45;
+      st: model-gated 9.0/0.4) with CI re-derivation; unknown embedders
+      fail closed with a loud warning. Held-out split (reported): 83.3%
+      unanswerable refusal at 5.9% well-evidenced false-refusal — the
+      mission default (95%/10%) is measured-unachievable on the lexical
+      hash embedder (Pareto frontier in the worklog); the gate is
+      English-only and cannot detect a confidently-wrong corpus
+-   [x] RAG pipeline: nonce-fenced prompts (forged frames impossible),
+      injection stripping that provably supersedes the obedience oracle
+      (homoglyph/zero-width tricks included), citation verification via
+      the existing Storage path (unverifiable dropped + flagged;
+      all-failed refused outright), lexical support + quote checks vs
+      as-sent text, plain-text sanitization incl. markdown-image/link
+      exfil removal, prompt-leak scrubbing, streaming-safe sanitization
+-   [x] `POST /ask` + `POST /ask/stream` (SSE: meta→tokens→citations→
+      done, truncated markers on timeout, per-key open-stream caps,
+      disconnect release): unconditionally key-gated (never `_READ_AUTH`)
+      behind the shared limiter; bounded request models with OpenAPI
+      examples; per-bucket DAILY token budgets in SHARED SQLite state
+      (caps hold across workers — tested with two app instances);
+      clear-4xx bounds before any spend; errors never leak internals
+-   [x] Conversation sessions: RAM per-worker default (sticky routing
+      documented; honest `session_expired`) + opt-in shared SQLite store
+      (migration v4, TTL pruning, the only persistence path — off by
+      default); sessions SCOPED per verified key (cross-key isolation
+      mutation-killed); caps as clear 4xx pre-spend; deterministic
+      follow-up condensing (LLM mode budget-counted, heuristic fallback)
+      with retrieval always on the standalone query
+-   [x] RAG quality benchmark (WP10 protocol): labeled fixture in 5
+      categories with construction ground truth, committed 60/40 split,
+      100% coverage gate, held-out test-split reporting, frozen CI
+      floors (invented citations 0, injection obeyed 0, exfil 0, prompt
+      leak 0 — met), model-gated ST arm, gated real-LLM run +
+      20-question human-review CSV. Stub results prove the PLUMBING and
+      DEFENSES, not real answer quality
+-   [x] Observability/ops: `/metrics` rag block (numbers-only test);
+      `/health` rag status; `python -m nexus_search.rag ask|calibrate`
+      debug CLI; load smoke extended to `/ask` + `/ask/stream` (0 5xx,
+      bounded p95/memory); n8n workflow marked DO-NOT-USE for production
+      RAG; `.env.example` documents all 61 knobs (lint-enforced)
 
-Honest limits (measured, `docs/PHASE7_WORKLOG.md`): on the lexical
-`hash:384` embedder the WP10-fixture junk and weak-evidence answerable
-distributions overlap on both raw axes, so the mission's default gate
-target (≥95% unanswerable refusal at ≤10% answerable false-refusal) is
-not achievable — frozen floors meet a restated, evidence-backed target
-(test split: 83.3% unanswerable refusal at 5.9% well-evidenced
-false-refusal; the raw answerable-refusal rate is reported alongside and
-is dominated by paraphrase-tail queries whose top-1 hit is a wrong doc
-under the lexical embedder). Gate calibration is English-only;
-non-English quality is unmeasured. The gate cannot detect a corpus that
-confidently contains wrong information.
+Operations notes for RAG: multi-worker deployments share the token
+budget (SQLite) but NOT the default RAM sessions — sticky routing is
+required for sessions, or switch `NEXUS_RAG_SESSION_STORE=sqlite`; SSE
+requires proxy buffering disabled (`X-Accel-Buffering: no` is sent; do
+not buffer `text/event-stream`); a future UI must render answer text as
+PLAIN TEXT (never auto-render markdown images/links from model output —
+the API's plain-text default enforces this). What leaves the system on
+an `/ask` call with a real provider: the numbered fenced chunks
+(llm_allowed-filtered, optionally PII-redacted), the query (+ condensed
+history in the data region), the fixed system prompt, and the model name
+— never the key beyond the provider's auth header; with the stub
+(default dev/CI) nothing leaves the process at all.
 
 ------------------------------------------------------------------------
 

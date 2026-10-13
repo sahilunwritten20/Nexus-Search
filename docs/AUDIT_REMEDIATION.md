@@ -1052,3 +1052,67 @@ Both boot paths of the WP14 image are now verified locally AND by CI.
 Not done (out of scope by the mission's own rules): the n8n 300-350-node
 expansion (mission: "do not act on it"; WP13 user decision: "keep as-is"),
 Phase 8+ items, and any RAG/LLM code.
+
+# Phase 7 - AI Search / RAG (P7-0 through P7-10, branch `phase-7`)
+
+The binding contract (docs/PHASE7_PLAN.md, WP12-2/WP14-8 guard rails)
+was implemented work-package by work-package, tests first, one commit
+each, full suite green before every commit. Decisions, commands and
+outputs: docs/PHASE7_WORKLOG.md; per-WP one-liners + evidence:
+docs/PHASE7_CHECKLIST.md.
+
+## What shipped (all verified in the final suite: 1152 passed / 12
+skipped / 641 subtests; baseline 944/7/623)
+
+- Chunk-granular RAG retrieval over the ONE shared HybridSearch; raw
+  bm25/vector signals (the only gate inputs) survive fusion AND rerank.
+- Calibrated refuse-gate: frozen per-embedder floors (hash:384 6.5/0.45;
+  st: 9.0/0.4 model-gated), committed deterministic choice rule, CI
+  re-derivation, conservative default + loud warning for unknown
+  embedders. HELD-OUT SPLIT (reported): 83.3% junk refusal at 5.9%
+  well-evidenced false-refusal; raw answerable false-refusal 20.7%
+  (weak-evidence tail with wrong top-1 hits under the lexical embedder -
+  honest weak-evidence reporting, measured and documented).
+- Nonce-fenced prompts with frame-forging neutralization; injection
+  stripping that provably SUPERSEDES the StubProvider obedience oracle
+  (homoglyph/zero-width/fullwidth normalization); query/history/chunk
+  regions all stripped with counted redactions.
+- Citation verification through the existing Storage path: unknown
+  numbers and mid-request-deleted rows dropped + flagged; ALL-failed
+  answers refused outright; lexical support + quote verification against
+  the text AS SENT.
+- Plain-text output sanitization: script/style blocks, HTML tags,
+  markdown image/link exfil, paren-URLs, echoed system prompt, frame
+  markers and nonce scrubbed; streaming-safe across token boundaries.
+- POST /ask + /ask/stream (SSE, truncated markers, per-key stream caps,
+  disconnect release), unconditionally key-gated, bounded models, OpenAPI
+  examples, per-bucket DAILY token budgets in SHARED SQLite state
+  (migration v3; two-instance proof), sessions (migration v4 opt-in
+  shared store; cross-key scoping mutation-killed; heuristic/llm
+  follow-up condensing).
+- WP10-protocol answer benchmark with frozen CI floors - hard floors
+  (invented citations 0, injection obeyed 0, exfil 0, prompt leak 0) met
+  on the held-out split; stub proves plumbing + defenses, not real answer
+  quality (gated real-LLM run + 20-question human-review CSV).
+- /metrics rag block (numbers only), /health rag status, debug CLI
+  (python -m nexus_search.rag ask|calibrate), load smoke extended to
+  /ask (0 5xx, 0 lock errors, bounded p95/memory), n8n.md production-RAG
+  warning, env-docs lint green (61 vars).
+
+## Retractions / honest limits recorded during Phase 7
+
+- WP12-B2 stands and is now enforced by tests: fused scores never gate.
+- The mission-default gate calibration target (>=95% junk refusal at
+  <=10% answerable false-refusal) is MEASURED-UNACHIEVABLE on the hash
+  embedder (Pareto frontier committed); the restated target and its
+  evidence are frozen in gate_floors.json. If the owner wants 95%
+  anyway, the measured price is 15.6%/41.2% well-evidenced false
+  refusals (dev/test).
+- The gate cannot detect a confidently-wrong corpus; calibration is
+  English-only; bm25 idf is corpus-dependent (recalibrate after major
+  corpus growth: python -m nexus_search.rag calibrate).
+- Process incidents (recorded in the worklog): PowerShell
+  Get/Set-Content corrupted files twice more (BOM + cp1252 double
+  encoding) before the edit-tool-only rule was enforced; an early
+  /metrics-less rag block, an env-docs gap and a BOM in a test file were
+  all caught by the repo lints and fixed in-tree.

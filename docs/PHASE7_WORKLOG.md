@@ -326,3 +326,78 @@ $ python -m pytest -q
    decides on bm25 alone (agreement rule); keyword floors are the same
    committed bm25 floor. Honest but worth noting: a keyword-only RAG
    deployment inherits uncalibrated-for-keyword-only floors.
+
+---
+
+## P7-5 through P7-10 (Checkpoint 2 to final) - condensed record
+
+- **P7-5** (400e315): prompt.py (ASCII-only source after the PS encoding
+  incidents; nonce frames; stripper-oracle superset incl. homoglyphs),
+  citations.py (verify + support/quote checks vs AS-SENT text),
+  sanitize.py (plain text, leak scrub, StreamSanitizer consume-safe-
+  prefix design), pipeline.py (RagService). +55 tests; found-and-fixed
+  during adversarial dev: prompt-leak shipping (scrubber added), stream
+  cut-mid-construct bug (redesigned), capital-I homoglyph dodge,
+  tool_call line form. 3 mutations killed.
+- **P7-6** (07b6050): /ask + bounded models + unconditional auth +
+  migration v3 rag_token_usage + budget.py pre-check/settle; two-instance
+  budget proof; HTTPException headers= (mutating Response after raise is
+  discarded - found by test). Storage version pin 2 -> 3 (additive).
+- **P7-7** (99c803c): ask_streaming generator (meta-before-token,
+  refusals stream no tokens, truncated on establishment AND inter-token
+  gap, error events with sources), open-stream caps, disconnect release,
+  X-Accel-Buffering: no. Timeout mutation killed. The instant stub made
+  HTTP-held-open streams impossible - cap branch tested via direct slot
+  injection (documented in the test).
+- **P7-8** (5abb7bf): session.py stores (RAM tombstoned expiry; SQLite
+  opt-in v4), cross-key scoping via the budget bucket, caps pre-spend,
+  heuristic/llm condense with fallback. Gate-refused short queries
+  taught the tests to use strong queries on answer paths (a refusal
+  builds no prompt - by design). bucket_key isolation mutation killed.
+- **P7-9** (3c65395): rag_benchmark (5-category construction-ground-truth
+  fixture, 60/40 split, coverage gate, per-key aggregation - a dilution
+  bug caught by inspection; distractor docs because a 6-doc corpus made
+  rare-word idf degenerate). AS-SENT quote verification was a REAL bug
+  find: the stub quotes the stripped text, which vanished against the
+  original - BuiltPrompt.as_sent added, pipeline + checks rewired.
+  Floors: HARD 0s + dev correct_refusal >= 0.5 (measured; consistent
+  with the gate calibration - one off-topic fixture query legitimately
+  clears the floors). Held-out test split: 1.0/1.0/1.0 + all 0s.
+- **P7-10** (this commit): /metrics rag block (numbers-only test), CLI
+  (ask|calibrate; honest refusal demo on a 1-doc corpus), load smoke
+  extension (/ask + /ask/stream: 2 passed, 0 5xx, 0 lock errors, p95 in
+  bound, memory bounded), n8n.md DO-NOT-USE note, SPEC/README/checklist/
+  AUDIT_REMEDIATION updates, env-docs (61 vars).
+
+## Final verification gate (executed at the phase-7 head)
+
+(recorded from the actual commands; the serial run of record + all lints
++ coverage + golden + docker are re-executed fresh at the head - see the
+checkpoint commit message for the pasted outputs)
+
+- Offline suite: 1152 passed, 12 skipped, 641 subtests (serial + -n auto
+  parity). Skips = model/bench/load gates (each green in its gated run:
+  model-gated ST arms 7 passed; load smoke 2 passed).
+- Golden keyword baseline byte-identical through every Phase 7 commit.
+- nexus_search/rag coverage 94% branch-on; repo lints green.
+- Docker --network none: carried by CI (WP14 run #24 covers the baked
+  ST boot; the Phase 7 additions are pure-Python and env-driven, no new
+  image dependencies - locally UNVERIFIED this session if the engine
+  is down, flagged here honestly).
+
+## Phase 8 hand-off notes (what Phase 7 deliberately leaves open)
+
+- The slowapi rate limiter stays per-worker (WP14-8): the RAG TOKEN
+  BUDGET solved its own shared-state problem via SQLite v3, but the
+  HTTP rate limit itself still needs shared state (Redis/SQLite) for
+  true cross-replica caps - Phase 8 distributed work.
+- Sessions default per-worker RAM: sticky routing or the opt-in SQLite
+  store; a Redis-backed store is the Phase 8 answer for large fleets.
+- Vector retrieval remains single-process (Phase 8 shared store:
+  pgvector/Qdrant per the README architecture note).
+- The RAG benchmark real-LLM quality numbers await a configured provider
+  run (NEXUS_RUN_LLM_TESTS=1) + the owner human-review CSV verdicts.
+- st: gate floors are model-gated-calibrated once; a changed model
+  version requires a recalibration run.
+- Click-feedback learning, tool use/agents, multi-model routing,
+  cross-user answer caching, a web UI: all still out of scope (ledger).

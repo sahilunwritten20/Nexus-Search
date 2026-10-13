@@ -24,6 +24,32 @@ except ImportError:
     TestClient = None
 
 
+def _process_rss_mb() -> float:
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    except ImportError:  # Windows
+        import ctypes
+        import ctypes.wintypes
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [("cb", ctypes.wintypes.DWORD),
+                        ("PageFaultCount", ctypes.wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+        psapi = ctypes.windll.psapi
+        counters = PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+        psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(),
+                                   ctypes.byref(counters), counters.cb)
+        return counters.WorkingSetSize / (1024.0 * 1024.0)
+
+
 @unittest.skipIf(httpx is None or TestClient is None, "httpx/fastapi missing")
 @unittest.skipIf((os.environ.get("NEXUS_RUN_LOAD_SMOKE") or "").strip()
                  not in ("1", "true", "yes"),
@@ -77,6 +103,80 @@ class TestLoadSmoke(unittest.TestCase):
                 break
             except PermissionError:
                 time.sleep(0.1)
+
+    def test_ask_and_stream_under_load_stub(self):
+        """P7-10 gated load smoke extension: /ask + /ask/stream under
+        concurrent load with the STUB provider. Asserts zero 5xx, zero
+        SQLite lock errors, bounded p95, bounded memory growth."""
+        import gc
+        base = f"http://127.0.0.1:{self.port}"
+        total = 120
+        workers = 12
+
+        def run_round(method, path, payload):
+            errors, latencies = [], []
+            lock = threading.Lock()
+            index = [0]
+
+            def worker():
+                with httpx.Client(base_url=base, timeout=30) as c:
+                    while True:
+                        with lock:
+                            if index[0] >= total:
+                                return
+                            index[0] += 1
+                        t0 = time.perf_counter()
+                        try:
+                            if method == "post":
+                                r = c.post(path, json=payload)
+                                status, body_text = r.status_code, r.text
+                            else:
+                                with c.stream("POST", path,
+                                              json=payload) as r:
+                                    status = r.status_code
+                                    body_text = b"".join(
+                                        r.iter_raw()).decode("utf-8",
+                                                             "ignore")
+                            if status >= 500 or "locked" in body_text.lower():
+                                with lock:
+                                    errors.append((status, body_text[:200]))
+                        except Exception as exc:  # noqa: BLE001
+                            with lock:
+                                errors.append(repr(exc))
+                            continue
+                        with lock:
+                            latencies.append(time.perf_counter() - t0)
+
+            threads = [threading.Thread(target=worker) for _ in range(workers)]
+            t0 = time.perf_counter()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=120)
+            wall = time.perf_counter() - t0
+            return errors, latencies, wall
+
+        gc.collect()
+        mem0 = _process_rss_mb()
+        payload = {"query": "load smoke corpus document python search",
+                   "top_k": 5}
+        errors_a, lat_a, wall_a = run_round("post", "/ask", payload)
+        errors_s, lat_s, wall_s = run_round("stream", "/ask/stream", payload)
+        gc.collect()
+        mem1 = _process_rss_mb()
+
+        self.assertEqual(errors_a, [], f"5xx/lock errors on /ask: {errors_a[:3]}")
+        self.assertEqual(errors_s, [],
+                         f"5xx/lock errors on /ask/stream: {errors_s[:3]}")
+        for label, lat in (("ask", lat_a), ("stream", lat_s)):
+            lat.sort()
+            p95 = lat[int(len(lat) * 0.95)]
+            print(f"rag load smoke {label}: {len(lat)} reqs in "
+                  f"({lat[len(lat)//2]*1000:.0f}ms p50, "
+                  f"{p95*1000:.0f}ms p95)")
+            self.assertLessEqual(p95, 2.0, f"/ask p95 {p95:.2f}s too slow")
+        self.assertLess(mem1 - mem0, 150.0,
+                        f"memory grew {mem1 - mem0:.0f}MB under RAG load")
 
     def test_mixed_load_no_5xx_p95_bounded(self):
         base = f"http://127.0.0.1:{self.port}"
