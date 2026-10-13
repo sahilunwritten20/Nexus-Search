@@ -102,3 +102,57 @@ Finding candidates so far (each needs RED test before any fix):
   the 100k serialized bound, so likely fine — verify).
 
 None of these are FIXED yet — RED tests first (Phase B/E flow).
+
+### S1.3 A1 complete: full source sweep + ARCHITECTURE.md
+
+[E] Every module under nexus_search/ read in full this session (core 19 files,
+ingestion 12, crawler 11, ranking 6, links 3, rag 16, evaluation 10 — fixture
+files for semantic/rag benchmarks skimmed for structure, to be re-read in
+their per-phase audits). docs/ARCHITECTURE.md written from code.
+
+Additional finding candidates from the sweep (RED tests pending):
+- [F?] SSRF-PIN-1 (P1): `pin_dns_for_url` returns nullcontext() when its
+  own re-validation fails (security.py:166-176) — under adversarial
+  round-robin DNS (one public A + one private A) the subsequent
+  session.get performs a REAL unpinned lookup and can connect to the
+  private IP. Redirect hops multiply retries. The fix direction: pin
+  failure must BLOCK the fetch (FetchBlocked), never fall back to live
+  DNS. Also mixed-record sets: resolve_validated_addresses returns None
+  if ANY record is private (good) — but the *pinned* path only runs when
+  validation passes; the failure mode is the hole.
+- [F?] UTC-1 (P2): storage.py `_day_key` uses time.localtime while
+  budget.py:23/52-53 and api.py:979 claim per-UTC-day budgets. Doc/code
+  contradiction; multi-TZ fleets also disagree on "today".
+- [F?] STREAM-1 (P2): ask_streaming enforces a per-token-GAP timeout but
+  no TOTAL stream duration/size cap — a hostile OpenAI-compatible
+  endpoint can trickle tokens forever, growing final_text_parts unboundedly.
+- [F?] SESSION-DEAD-CHECK (P3): session.py:205-208 TTL check compares
+  against `now - session.last_used` where last_used was JUST set to now
+  (line 201) — dead code; the real check is line 209 (max(updated_at)).
+- [F?] ASK-VS-STREAM (P3): pipeline.ask builds the prompt with the RAW
+  query (line 224) but ask_streaming uses the CONDENSED standalone query
+  (line 419) — /ask and /ask/stream show the model different question
+  text on follow-ups. One of the two is wrong; ask() looks intended.
+- [F?] NDCG-EMPTY (P3): evaluation/metrics.py ndcg_at_k returns 1.0 when
+  a query has NO relevant docs (ideal_dcg==0) — a "perfect" score for an
+  unanswerable query; will fail the differential test vs ranx.
+- [F?] ROBOTS-GAP (P2): stdlib robotparser — no * / $ wildcards
+  (documented); REDIRECT TARGETS are never robots-checked (fetcher follows
+  hops; politeness only gates the original URL).
+- [F?] METRICS-NOLIMIT (P3): /metrics is the only key-gated route without
+  @limiter.limit.
+- [F?] SUGGEST-LOCK (P3): Suggester._from_log reads log.conn directly,
+  bypassing ExperimentLog.lock (thread-safety).
+- [F?] ZIP-TXT (P3): a ZIP renamed .txt sniffs as application/zip ->
+  _CONTENT_READERS miss -> falls to extension reader -> indexed as
+  replacement-char garbage instead of refused (files.py:846-851).
+- [F?] README env table NEXUS_MAX_DECOMPRESSED_BYTES=536870912 vs code
+  67108864 (.env.example agrees with code) — stale doc row.
+- [F?] POLITENESS-MONO (P3): reserve_slot/time_until_allowed use
+  time.time() (wall clock) — clock skew can violate crawl-delay pacing;
+  monotonic is the right clock.
+
+Model-gated run (claim R-2): NEXUS_RUN_MODEL_TESTS=1 ->
+1176 passed, 5 skipped, 641 subtests in 504s [E] — ST path green with
+cached MiniLM; README's "849 passed, 2 skipped" stale (R-2 = FALSE,
+numbers grew).
