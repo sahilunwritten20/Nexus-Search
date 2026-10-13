@@ -124,6 +124,58 @@ class TestQueryWordGuard(unittest.TestCase):
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+class TestNonFiniteWeights(unittest.TestCase):
+    """Review INF-WEIGHT: `bm25_weight=inf` passes pydantic's ge=0 check
+    and silently degenerates ranking (every fused score becomes inf; the
+    response then reports scores as null). Non-finite weights must be a
+    clear 400 on both /search and /search/explain."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self._saved = {k: os.environ.get(k) for k in
+                       ("NEXUS_ENV", "NEXUS_API_KEY", "NEXUS_DB")}
+        self.api = _boot_dev_api(self.tmpdir)
+        self.client = TestClient(self.api.app)
+        self.client.post("/documents", json={
+            "doc_id": "d1", "content": "alpha beta gamma", "title": "ABG"})
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        from nexus_search.core import api
+        importlib.reload(api)
+        for _ in range(10):
+            try:
+                shutil.rmtree(self.tmpdir)
+                break
+            except PermissionError:
+                time.sleep(0.05)
+
+    def test_inf_weight_on_search_is_400(self):
+        r = self.client.get("/search", params={"q": "alpha",
+                                               "bm25_weight": "inf"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("finite", r.json()["detail"])
+
+    def test_inf_weight_on_explain_is_400(self):
+        # httpx won't serialize inf itself, but a raw JSON body of 1e999
+        # parses to inf server-side — the realistic attacker path.
+        r = self.client.post("/search/explain",
+                             data='{"query": "alpha", "bm25_weight": 1e999}',
+                             headers={"Content-Type": "application/json"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("finite", r.json()["detail"])
+
+    def test_finite_weights_still_serve(self):
+        r = self.client.get("/search", params={"q": "alpha",
+                                               "bm25_weight": "2.5"})
+        self.assertEqual(r.status_code, 200)
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
 class TestJunkFloodDoesNotStarve(unittest.TestCase):
     """50 concurrent adversarial junk queries + a normal request that must
     answer in < 1 s. On the pre-fix code each junk query burned ~5-40 s CPU

@@ -265,3 +265,25 @@ Two halves:
 [E] Regression after both: full rag+storage packages 239 passed/2 skipped;
   the background RANDOMIZED full-suite run with fix batch 1: 1171 passed,
   13 skipped (order-independence now by design, not by leaked env).
+
+### S1.6 ROBOTS-GAP (P2) FIXED — redirect hops skipped robots/blocklist
+
+[E] RED: tests/crawler/test_redirect_robots.py (new, 4 tests) — local
+  Host-routing server plays a.test/b.test over fake DNS in public-crawl
+  mode; 3 failed pre-fix:
+  - redirect into a robots-disallowed path WAS fetched
+  - redirect to a blocklisted host WAS fetched
+  - redirect outside allowed_domains WAS fetched
+  (the allowed-path control passed pre-fix — behavior preserved).
+[D] Fix: CrawlPipeline wires Fetcher.url_validator to _hop_gate
+  (blocklist -> validate_url -> allowed-domains -> robots for the HOP's
+  domain). Robots fetches themselves follow redirects on SSRF-only
+  (RFC 9309: the robots fetch cannot consult robots; the thread-local
+  _robots_fetching marker also bounds redirect-driven recursion).
+  NOTE: the JS-render path's subrequest validation now flows through the
+  same gate (robots lookups per new subrequest domain) — render_js stays
+  opt-in/trusted-crawls-only. Domain-slot quotas still key on the ENTRY
+  domain (redirect targets are part of one entry's fetch) — documented
+  approximation.
+[E] Mutation: wiring validate_url back instead of _hop_gate -> the 3
+  tests fail; restored -> 135 crawler tests pass (incl. e2e suite).

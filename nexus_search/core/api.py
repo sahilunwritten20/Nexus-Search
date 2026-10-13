@@ -5,6 +5,7 @@ DB path: env NEXUS_DB (default nexus_search.db)
 """
 import hashlib
 import logging
+import math
 import os
 import sqlite3
 from contextlib import asynccontextmanager
@@ -581,6 +582,11 @@ def _run_search(
     # Validate weights
     if bm25_weight == 0 and vector_weight == 0:
         raise HTTPException(status_code=400, detail="At least one weight must be > 0")
+    # INF-WEIGHT (review): pydantic's ge=0 admits +inf, which degenerates
+    # every fused score to inf (reported as null in the response). Reject
+    # non-finite weights with a clear 400.
+    if not (math.isfinite(bm25_weight) and math.isfinite(vector_weight)):
+        raise HTTPException(status_code=400, detail="weights must be finite")
 
     # Query understanding participates by default: spell-correction (in-
     # vocabulary only) and synonym expansion widen the retrieval pool. One
@@ -761,6 +767,8 @@ def explain_search(request: Request, req: ExplainRequest, response: Response):
         raise HTTPException(status_code=400, detail="fusion must be rrf or weighted")
     if req.bm25_weight == 0 and req.vector_weight == 0:
         raise HTTPException(status_code=400, detail="At least one weight must be > 0")
+    if not (math.isfinite(req.bm25_weight) and math.isfinite(req.vector_weight)):
+        raise HTTPException(status_code=400, detail="weights must be finite")
 
     if _hybrid_searcher is None:
         kw = _keyword_only_page(req.query, req.top_k, 0, req.mode, _vector_error)

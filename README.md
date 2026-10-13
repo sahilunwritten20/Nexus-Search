@@ -64,7 +64,7 @@ Configuration is via environment variables (see `.env.example`):
 | `NEXUS_EMBEDDER` | `hash:384`  | offline-safe default; set `st:sentence-transformers/all-MiniLM-L6-v2` for real semantics (model pre-baked in the image) |
 | `NEXUS_RENDER_JS` | `0` | Crawler opt-in for headless-browser (Playwright) rendering of JS pages. Every subrequest + the final URL are SSRF-validated; residual DNS-rebinding risk documented in `crawler/fetcher.py` — trusted crawls only |
 | `NEXUS_EMBED_BATCH` | `1` | Docs per embedding flush on the API write path (P2-9). Default 1 = flush per doc; raise to batch bulk ingests — `/documents/bulk` always flushes once at the end |
-| `NEXUS_MAX_DECOMPRESSED_BYTES` | `536870912` | Zip-container readers (docx/xlsx/pptx) refuse declared decompressed payloads above this (zip-bomb guard) |
+| `NEXUS_MAX_DECOMPRESSED_BYTES` | `67108864` | Zip-container readers (docx/xlsx/pptx) refuse declared decompressed payloads above this (64 MiB — zip-bomb guard; matches the code default in `ingestion/connectors/files.py`) |
 | `NEXUS_MAX_PDF_PAGES` | `10000` | PDFs with more pages are refused before text extraction |
 | `NEXUS_LLM_PROVIDER` | `stub` | Phase 7 RAG provider: `stub` (offline, deterministic) \| `openai` (any OpenAI-compatible endpoint) \| `anthropic`. Stub outside dev requires `NEXUS_RAG_ALLOW_STUB=1`; unconfigured RAG = absent (search keeps serving) |
 | `NEXUS_LLM_API_KEY` | *(unset)* | LLM key — env/secret store only; never logged, never on `/health`//`metrics`; a real provider without it leaves RAG absent |
