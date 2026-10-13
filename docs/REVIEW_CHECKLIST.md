@@ -7,28 +7,49 @@ Severity: P0/P1/P2/P3. Evidence = test name, command, or file:line.
 
 | ID | Area | Item | Severity | Status | Evidence/Test | Commit |
 |----|------|------|----------|--------|---------------|--------|
-| A1-1 | map | Full tree + line counts + module graph | P2 | INPROG | worklog S1.0 | - |
-| A1-2 | map | docs/ARCHITECTURE.md written from code | P2 | TODO | - | - |
-| A1-3 | map | Architecture diffed vs doc claims; discrepancies logged | P2 | TODO | - | - |
-| A2-1 | baseline | Full suite x3 normal, record counts/runtime | P1 | INPROG | worklog | - |
-| A2-2 | baseline | Suite x3 random order; flakiness found+fixed | P1 | TODO | - | - |
-| A2-3 | baseline | Suite x1 xdist parallel | P1 | TODO | - | - |
-| A2-4 | baseline | Clean-venv install from lockfile | P1 | TODO | - | - |
-| A3-1 | counts | True test counts per phase 1-7 + file; fix ROADMAP | P2 | TODO | - | - |
-| A4-1 | coverage | Per-module line+branch coverage; list <85% modules | P2 | TODO | - | - |
-| A4-2 | coverage | Untested public functions, dead except blocks, pragmas, env-gated tests | P2 | TODO | - | - |
-| A5-1 | static | ruff/flake8 strict baseline | P2 | TODO | - | - |
-| A5-2 | static | format check (black/ruff-format) | P2 | TODO | - | - |
-| A5-3 | static | mypy/pyright strict-ish baseline | P2 | TODO | - | - |
-| A5-4 | static | vulture dead code, radon complexity | P2 | TODO | - | - |
-| A5-5 | static | pip-audit/safety CVEs, bandit, secret scan (incl. history) | P1 | TODO | - | - |
+| A1-1 | map | Full tree + line counts + module graph | P2 | DONE | worklog S1.0/S1.3 | d7755cd |
+| A1-2 | map | docs/ARCHITECTURE.md written from code | P2 | DONE | file committed | 21e09a7 |
+| A1-3 | map | Architecture diffed vs doc claims; discrepancies logged | P2 | INPROG | claims ledger; README env row fixed | b01f623 |
+| A2-1 | baseline | Full suite x3 normal, record counts/runtime | P1 | DONE | worklog S1.1 (3 normal runs identical) | ff1f7b1 |
+| A2-2 | baseline | Suite x3 random order; flakiness found+fixed | P1 | DONE | 3 random runs green; ORDER-1 root-caused+fixed (conftest baseline) | 7c08c77 |
+| A2-3 | baseline | Suite x1 xdist parallel | P1 | DONE | run7 1168 passed | ff1f7b1 |
+| A2-4 | baseline | Clean-venv install from lockfile | P1 | TODO | pip freeze matches pins (spot-check); full fresh install pending | - |
+| A3-1 | counts | True test counts per phase 1-7 + file; fix ROADMAP | P2 | DONE | README truth pass; per-dir counts | b01f623 |
+| A4-1 | coverage | Per-module line+branch coverage; list <85% modules | P2 | INPROG | coverage run launched | - |
+| A4-2 | coverage | Untested public functions, dead except blocks, pragmas, env-gated tests | P2 | INPROG | 13 env-gated skips inventoried (S1.1); coverage analysis next | - |
+| A5-1 | static | ruff strict baseline | P2 | DONE (baseline) | ~800 findings, no config yet; curated config = Phase C | - |
+| A5-2 | static | format check | P2 | DONE (baseline) | 1 file (BOM in __init__.py) | - |
+| A5-3 | static | mypy strict-ish baseline | P2 | PARTIAL | 155 errors w/o config; config+triage pending | - |
+| A5-4 | static | vulture dead code, radon complexity | P2 | DONE (baseline) | vulture: unused response params/imports | - |
+| A5-5 | static | pip-audit/safety CVEs, bandit, secret scan | P1 | PARTIAL | pip-audit CLEAN; bandit 21 triaged-in-worklog; git-history secret scan PENDING | - |
 | A5-6 | static | pip-licenses conflicts | P3 | TODO | - | - |
-| A5-7 | static | Justify or remove every suppression comment | P2 | TODO | - | - |
-| A6-1 | live | Boot service; probe /health /ready /metrics /openapi.json | P1 | TODO | - | - |
-| A6-2 | live | Curl every route: valid/invalid/oversized/empty/unicode/unauth | P1 | TODO | - | - |
-| A6-3 | live | OpenAPI matches behavior | P2 | TODO | - | - |
-| A7-1 | testquality | Weak/duplicate/mock-only/stateful/sleepy tests identified | P2 | TODO | - | - |
-| A7-2 | mutation | Mutation testing on high-risk modules, score recorded | P2 | TODO | - | - |
+| A5-7 | static | Justify or remove every suppression comment | P2 | TODO | 94 RUF100 unused-noqa found; audit pending | - |
+| A6-1 | live | Boot service; probe /health /ready /metrics /openapi.json | P1 | DONE | worklog S1.7 (full probe table) | - |
+| A6-2 | live | Curl every route: valid/invalid/oversized/empty/unicode/unauth | P1 | DONE | 60+ probes, all per contract; INF-WEIGHT found+fixed | 6bc2e08 |
+| A6-3 | live | OpenAPI matches behavior | P2 | PARTIAL | /openapi.json disabled in production (live 404); schema-conformance fuzzing (schemathesis) pending | - |
+| A7-1 | testquality | Weak/duplicate/mock-only/stateful/sleepy tests identified | P2 | INPROG | ORDER-1 class fixed; full audit pending | 7c08c77 |
+| A7-2 | mutation | Mutation testing on high-risk modules, score recorded | P2 | TODO | manual mutation checks done per-fix; mutmut run pending | - |
+
+## Findings register (this branch)
+
+| ID | Severity | Description | Status | Fix commit | Regression test |
+|----|----------|-------------|--------|------------|-----------------|
+| SSRF-PIN-1 | P1 | pin_dns_for_url nullcontext fallback let mixed-record rebinding DNS connect to private IPs (robots fetch path too) | FIXED | 7c08c77 | test_dns_pinning::test_pin_validation_failure_never_falls_back_to_live_dns + test_security_edges::test_unvalidatable_host_blocks_entry |
+| STORAGE-1 | P2 | rag_session_prune deleted by bare session_id across scopes + oldest-turn staleness | FIXED | 7c08c77 | test_sessions::test_prune_never_deletes_another_scopes_fresh_session + test_prune_uses_session_last_activity_not_oldest_turn |
+| ORDER-1 | P2 | Suite order-dependence via leaked env; teardown reloads opened repo-root nexus_search.db | FIXED | 7c08c77 | isolated single-file runs (conftest.py baseline + tests/_api_reset.py) |
+| UTC-1 | P2 | Budget/metrics day keys localtime vs documented UTC-day contract | FIXED | f893ef9 | test_storage::test_day_key_is_utc_not_local |
+| STREAM-1 | P2 | Unbounded SSE accumulation (pipeline gap-watchdog + adapter buffering) | FIXED | f893ef9 | test_pipeline::TestStreamIsBounded + test_provider_http::test_streaming_far_beyond_budget_is_cut_not_buffered |
+| ROBOTS-GAP | P2 | Redirect hops never robots/blocklist/allowed-domain checked | FIXED | 40741cf | tests/crawler/test_redirect_robots.py (4 tests) |
+| INF-WEIGHT | P3 | bm25_weight=inf accepted; scores degenerate to null | FIXED | 6bc2e08 | test_search_dos::TestNonFiniteWeights (3 tests) |
+| R-1/R-2/R-30/R-34 | P3 | Stale README counts + wrong env default row | FIXED | b01f623 | README truth pass |
+| METRICS-NOLIMIT | P3 | /metrics has no rate limiter | OPEN | - | - |
+| ZIP-TXT | P3 | zip renamed .txt indexed as garbage (bypasses binary refusal) | OPEN | - | - |
+| SUGGEST-LOCK | P3 | Suggester._from_log bypasses ExperimentLog.lock | OPEN | - | - |
+| POLITENESS-MONO | P3 | Politeness pacing uses wall clock not monotonic | OPEN | - | - |
+| ASK-VS-STREAM | P3 | ask() prompts raw query, ask_streaming() prompts condensed | OPEN | - | - |
+| NDCG-EMPTY | P3 | ndcg_at_k returns 1.0 for zero-relevant queries | OPEN | - | - |
+| ROBOTS-WILDCARD | P2 | stdlib robotparser lacks RFC 9309 * / $ wildcards (documented) | OPEN (documented limit; B3 decision: implement or accept) | - | - |
+| SESSION-DEADCHECK | P3 | SqliteSessionStore.get dead first TTL check (last_used just set) | OPEN (cosmetic; second check correct) | - | - |
 
 ## Phase B — Per-Phase Adversarial Audit
 
