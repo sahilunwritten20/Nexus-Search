@@ -97,9 +97,18 @@ class CrawlPipeline:
             default_delay=default_crawl_delay,
         )
         self.allow_private_hosts = allow_private_hosts
+        # Review ROBOTS-GAP: redirect hops must clear the TARGET domain's
+        # robots.txt/blocklist/allow-list too — pre-fix the fetcher's
+        # per-hop validation covered SSRF only, so a page could redirect
+        # the crawl into a path the target's robots.txt disallows.
+        # _robots_fetching marks the thread-local "currently fetching a
+        # robots.txt" state: robots fetches follow redirects on SSRF
+        # validation alone (RFC 9309 — you cannot consult robots for the
+        # robots fetch itself), which also bounds redirect recursion.
+        self._robots_fetching = threading.local()
         self.fetcher = Fetcher(
             user_agent=user_agent,
-            url_validator=None if allow_private_hosts else validate_url,  # checks redirect hops too
+            url_validator=None if allow_private_hosts else self._hop_gate,
             dns_pin=None if allow_private_hosts else pin_dns_for_url,  # closes DNS-rebinding window
             render_js=render_js,
             # WP12-B7: on the private-hosts path the Fetcher gets NO
@@ -145,6 +154,28 @@ class CrawlPipeline:
             return True
         return any(domain == a or domain.endswith("." + a) for a in self.allowed_domains)
 
+    def _hop_gate(self, url: str) -> bool:
+        """The fetcher's per-redirect-hop gate (review ROBOTS-GAP).
+
+        The entry URL already cleared the full gate chain in _crawl; a
+        redirect target must clear the SAME politeness rules of ITS OWN
+        domain: blocklist, SSRF validation, allowed-domains, robots.txt.
+        Inside a robots.txt fetch (thread-local marker), hops are checked
+        for SSRF only — RFC 9309: the robots fetch itself cannot consult
+        robots, and the marker keeps a redirect chain from recursing
+        through robots lookups."""
+        if self.blocklist.is_blocked(url):
+            return False
+        if not validate_url(url):
+            return False
+        if getattr(self._robots_fetching, "active", False):
+            return True
+        domain = get_domain(url)
+        if not self._domain_allowed(domain):
+            return False
+        self._ensure_robots(url, domain)
+        return self.politeness.is_allowed(domain, url)
+
     def _reserve_domain_slot(self, domain: str) -> bool:
         if self.max_pages_per_domain <= 0:
             return True
@@ -159,7 +190,12 @@ class CrawlPipeline:
         if self.politeness.has_robots(domain):
             return
         parts = urlsplit(url)
-        content = self.fetcher.fetch_robots(f"{parts.scheme}://{parts.netloc}/robots.txt")
+        was = getattr(self._robots_fetching, "active", False)
+        self._robots_fetching.active = True
+        try:
+            content = self.fetcher.fetch_robots(f"{parts.scheme}://{parts.netloc}/robots.txt")
+        finally:
+            self._robots_fetching.active = was
         if content is None:
             logger.warning("robots.txt unreachable for %s - treating as disallowed this run", domain)
             content = _ROBOTS_UNREACHABLE
