@@ -17,6 +17,8 @@ from urllib.parse import urljoin
 
 import requests
 
+from .security import PinnedResolutionBlocked
+
 logger = logging.getLogger("nexus_search.crawler.fetcher")
 
 
@@ -267,7 +269,8 @@ class Fetcher:
             if resp.status_code == 200:
                 return self._read_bytes(resp)
             resp.close()
-        except (FetchBlocked, TooLarge, requests.RequestException):
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked,
+                requests.RequestException):
             pass
         return b""
 
@@ -344,7 +347,7 @@ class Fetcher:
                     etag=resp_etag, last_modified=resp_lm, final_url=final_url,
                 )
 
-            except (FetchBlocked, TooLarge) as exc:  # deliberate refusals: don't retry
+            except (FetchBlocked, TooLarge, PinnedResolutionBlocked) as exc:  # deliberate refusals: don't retry
                 return FetchResult(url=url, status_code=None, html=None, error=str(exc),
                                    elapsed=time.monotonic() - start)
             except requests.RequestException as exc:
@@ -364,7 +367,8 @@ class Fetcher:
                 return self._read_text(resp)[:512_000]
             resp.close()
             return "" if 400 <= resp.status_code < 500 else None
-        except (FetchBlocked, TooLarge, requests.RequestException):
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked,
+                requests.RequestException):
             return None
 
     def fetch_text(self, url: str) -> str:
@@ -374,7 +378,8 @@ class Fetcher:
             if resp.status_code == 200:
                 return self._read_text(resp)
             resp.close()
-        except (FetchBlocked, TooLarge, requests.RequestException):
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked,
+                requests.RequestException):
             pass
         return ""
 

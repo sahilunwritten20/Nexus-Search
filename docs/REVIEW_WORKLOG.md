@@ -156,3 +156,77 @@ Model-gated run (claim R-2): NEXUS_RUN_MODEL_TESTS=1 ->
 1176 passed, 5 skipped, 641 subtests in 504s [E] — ST path green with
 cached MiniLM; README's "849 passed, 2 skipped" stale (R-2 = FALSE,
 numbers grew).
+
+### S1.4 Convergence round 1 — first fixes (RED -> GREEN -> mutation)
+
+#### SSRF-PIN-1 (P1) FIXED — pin fallback connected to private IPs
+[E] RED: tests/crawler/test_dns_pinning.py::
+    test_pin_validation_failure_never_falls_back_to_live_dns
+  pre-fix output: "AssertionError: 200 is not None : fetch must be
+  refused, not 200" — a REAL HTTP round-trip to a 127.0.0.1 listener
+  succeeded through the nullcontext fallback (rebind DNS: validate_url
+  lookup public, pin lookup private, connect lookup private).
+[F] The old test tests/crawler/test_security_edges.py::
+    test_unvalidatable_host_is_nullcontext asserted the fail-open
+  behavior; corrected to test_unvalidatable_host_blocks_entry (asserts
+  PinnedResolutionBlocked on entry).
+[D] Fix: security.pin_dns_for_url returns _BlockedPin (raises
+  PinnedResolutionBlocked on __enter__) when pin-time validation fails;
+  fetcher catches it alongside FetchBlocked at all 4 refusal sites
+  (fetch/fetch_bytes/fetch_robots/fetch_text). allow_private_hosts
+  (dns_pin=None) unaffected; robots-fetch pin failure now fails CLOSED
+  (unreachable -> domain disallowed for the run).
+[E] Mutation: reverting the fix branch to nullcontext -> the new test
+  fails (200 != None); restored -> 6/6 pass.
+[E] Crawler suite: 131 passed post-fix.
+
+#### STORAGE-1 (P2) FIXED — rag_session_prune cross-scope deletion
+[E] RED: tests/rag/test_sessions.py::
+    test_prune_never_deletes_another_scopes_fresh_session —
+  pre-fix removed=3 (both scopes' rows deleted by bare session_id);
+    test_prune_uses_session_last_activity_not_oldest_turn —
+  pre-fix pruned a live session because ONE OLD TURN existed.
+[D] Fix (storage.py:rag_session_prune): deletion keyed on
+  (scope, session_id) PAIRS, staleness = MAX(updated_at) per pair
+  (same rule the RAM store uses).
+
+#### ORDER-1 (P2) FIXED — suite order-dependence via leaked env
+[E] RED (reproduced on PRISTINE tree via git stash):
+  `pytest tests/rag/test_sessions.py` alone -> 10 failed / 9 errors —
+  tearDown's `importlib.reload(api)` raises RuntimeError when the
+  restored env has no NEXUS_API_KEY, and _boot's first import executes
+  the boot check under ambient env. Root cause: the whole suite passes
+  only because tests/core/test_api.py:12 leaks `NEXUS_ENV=dev` into the
+  process at module import; RAG/WP6 test teardowns also reload api with
+  NEXUS_DB unset -> opens/creates ./nexus_search.db in the REPO ROOT
+  (observed: cross-process DB races when two suite runs share the CWD;
+  the worktree's nexus_search.db/smoke.db artifacts).
+[D] Fix: tests/conftest.py sets an explicit session baseline
+  (NEXUS_ENV=dev, NEXUS_EMBEDDER=hash:384, throwaway session NEXUS_DB)
+  — setdefault so operator-provided values win; tests/_api_reset.py
+  reset_api() reloads api under a boot-safe dev env + throwaway DB then
+  restores env exactly; the 5 duplicated teardowns now call it.
+[E] Post-fix isolated runs (fresh process, single files):
+  test_sessions.py 14 passed; ask_api+ask_stream+egress 36 passed;
+  test_wp6_hygiene.py 23 passed; test_api.py 56 passed.
+
+#### A5 static-analysis baseline (first pass) [E]
+- pip-audit: "No known vulnerabilities found" (pinned set, today's DB)
+- bandit: 21 findings — B608x11 (f-string placeholder SQL: all
+  parameterized VALUES; placeholders are '?'-join construction — safe,
+  to be documented in SECURITY.md), B405 (sitemap.py imports the
+  Element TYPE from stdlib but parses via defusedxml — false positive,
+  needs a # nosec with justification), B311x6 (benchmarks, seeded
+  Random — fine), B101/B110 (benchmark assert / CLI close cleanup).
+- vulture: unused `response` params in api.py (slowapi decoration
+  artifact), unused `statistics`/`io` imports, 1 redundant if.
+- ruff (no config): ~800 findings, top: UP045(205) I001(115)
+  RUF100-unused-noqa(94!) ISC004(60) F401(57) BLE001(26) F841(24)
+  S110(9). A curated ruff config + triage is a Phase C task; RUF100
+  interacts with the suppression-justification rule (A5-7).
+- ruff format --check: nexus_search/__init__.py has a UTF-8 BOM
+  (the P7 "mojibake hygiene" left one behind).
+- mypy (no config): 155 errors. Strict config + real-error triage
+  pending (A5-3).
+- Full ruff/bandit/mypy/vulture outputs preserved in the opencode
+  temp review_runs dir; key counts recorded here.

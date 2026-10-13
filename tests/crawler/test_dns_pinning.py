@@ -115,6 +115,43 @@ class TestDnsPinning(unittest.TestCase):
         self.assertEqual((stats["crawled"], stats["errors"]), (1, 0))
         self.assertEqual(titles, ["ok"])
 
+    def test_pin_validation_failure_never_falls_back_to_live_dns(self):
+        """Regression (review SSRF-PIN-1): a rebinding server can answer the
+        pipeline's validate_url lookup with a PUBLIC record and the pin-time
+        lookup with a PRIVATE one. pin_dns_for_url must then BLOCK the fetch
+        — falling back to a live, unpinned lookup (nullcontext) lets the
+        connection land on the private address, which is the exact rebind
+        window the pin exists to close."""
+        hits = []
+
+        class _Recording(_Handler):
+            def do_GET(self):
+                hits.append(self.path)
+                super().do_GET()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Recording)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_port
+        try:
+            url = f"http://pinme.test:{port}/"
+            # lookup #1 (validate_url, as the pipeline runs it) -> public;
+            # every later lookup (pin creation + real connect) -> private.
+            blocked = lambda ip: str(ip) == "127.0.0.1"
+            with mock.patch.object(security, "_real_getaddrinfo",
+                                   self._fake_dns(["93.184.216.34", "127.0.0.1"])), \
+                 mock.patch.object(security, "_blocked_ip", blocked):
+                self.assertTrue(security.validate_url(url),
+                                "precondition: the pipeline's gate passes")
+                fetcher = Fetcher(dns_pin=security.pin_dns_for_url, max_retries=0)
+                result = fetcher.fetch(url)
+            self.assertIsNone(result.status_code, "fetch must be refused, not 200")
+            self.assertIsNotNone(result.error)
+            self.assertEqual(hits, [],
+                             "the private server must never be reached")
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

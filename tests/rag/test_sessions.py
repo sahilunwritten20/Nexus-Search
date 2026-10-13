@@ -65,8 +65,8 @@ class _SessionApiTest(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        from nexus_search.core import api
-        importlib.reload(api)
+        from tests._api_reset import reset_api
+        reset_api()  # boot-safe reset (review ORDER-1)
 
 
 class TestSessionIsolation(_SessionApiTest):
@@ -280,10 +280,10 @@ class TestSessionStores(unittest.TestCase):
             s2 = Storage(db)
             try:
                 store2 = SqliteSessionStore(s2, max_turns=10,
-                                            max_context_tokens=10**6,
-                                            chars_per_token=4,
-                                            max_turn_bytes=100, ttl=0.5,
-                                            global_cap=100)
+                                           max_context_tokens=10**6,
+                                           chars_per_token=4,
+                                           max_turn_bytes=100, ttl=0.5,
+                                           global_cap=100)
                 self.assertIsNotNone(store2.get("scopeA", "s"))
                 # cross-SCOPE isolation at the table level
                 self.assertIsNone(store2.get("scopeB", "s"))
@@ -296,6 +296,54 @@ class TestSessionStores(unittest.TestCase):
             self.assertEqual(s1.rag_session_count(), 0)
         finally:
             s1.close()
+
+    def test_prune_never_deletes_another_scopes_fresh_session(self):
+        """Review STORAGE-1: session ids are CLIENT-SUPPLIED, so two keys
+        can legitimately use the same id. The prune query must scope its
+        deletion to (scope, session_id) PAIRS — deleting by bare session_id
+        removes a FRESH same-named session belonging to a different key
+        (cross-tenant deletion via scheduled pruning)."""
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "prune.db")
+        storage = Storage(db)
+        try:
+            now = time.time()
+            # scope A: a STALE session (idle far past a 1h TTL)
+            storage.rag_session_append("key:aaa", "shared-id", 0, "user",
+                                       "stale turn", now - 7200)
+            # scope B: a FRESH session with the SAME client-supplied id
+            storage.rag_session_append("key:bbb", "shared-id", 0, "user",
+                                       "fresh turn", now)
+            removed = storage.rag_session_prune(3600.0)
+            # exactly A's one stale row goes; B's row must survive
+            self.assertEqual(removed, 1, "prune must delete only the stale "
+                                        "scope's rows")
+            self.assertEqual(storage.rag_session_turns("key:aaa", "shared-id"),
+                             [])
+            turns_b = storage.rag_session_turns("key:bbb", "shared-id")
+            self.assertEqual(len(turns_b), 1,
+                             "another scope's fresh session must survive prune")
+        finally:
+            storage.close()
+
+    def test_prune_uses_session_last_activity_not_oldest_turn(self):
+        """Review STORAGE-1 (semantics): a session whose LATEST turn is
+        fresh must not be pruned because an OLD turn exists — staleness is
+        MAX(updated_at) per (scope, session_id), the same rule the RAM
+        store uses."""
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "prune2.db")
+        storage = Storage(db)
+        try:
+            now = time.time()
+            storage.rag_session_append("k", "s", 0, "user", "old", now - 7200)
+            storage.rag_session_append("k", "s", 1, "assistant", "new",
+                                       now)
+            removed = storage.rag_session_prune(3600.0)
+            self.assertEqual(removed, 0, "an active session must not be pruned")
+            self.assertEqual(len(storage.rag_session_turns("k", "s")), 2)
+        finally:
+            storage.close()
 
 
 if __name__ == "__main__":

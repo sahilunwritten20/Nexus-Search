@@ -94,11 +94,16 @@ class TestPinDnsForUrlPaths(unittest.TestCase):
         with cm:
             pass  # no crash, nothing pinned
 
-    def test_unvalidatable_host_is_nullcontext(self):
+    def test_unvalidatable_host_blocks_entry(self):
+        """Review SSRF-PIN-1: pin-time validation failure must BLOCK the
+        fetch (fail closed). The old nullcontext fallback let the HTTP
+        client do a fresh unpinned lookup — the rebind window the pin
+        exists to close (proven reachable by the dns_pinning suite)."""
         with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror):
             cm = security.pin_dns_for_url("http://gone.example/x")
-            with cm:
-                pass
+            with self.assertRaises(security.PinnedResolutionBlocked):
+                with cm:
+                    pass  # pragma: no cover - entry raises before this
 
 
 if __name__ == "__main__":

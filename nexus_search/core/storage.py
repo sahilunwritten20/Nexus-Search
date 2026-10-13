@@ -419,15 +419,22 @@ class Storage:
 
     def rag_session_prune(self, ttl_seconds: float) -> int:
         """TTL pruning: delete sessions idle longer than `ttl_seconds`.
-        THE retention control for the opt-in shared store — schedule it."""
+        THE retention control for the opt-in shared store — schedule it.
+
+        Scopes are isolated: session ids are client-supplied and can
+        collide across keys, so deletion keys on the (scope, session_id)
+        PAIR. A session is stale iff its LAST activity (MAX(updated_at))
+        is past the cutoff — the same rule the RAM store's last_used
+        uses; a live session with an old first turn must survive."""
         if ttl_seconds <= 0:
             raise ValueError("ttl must be positive")
         cutoff = time.time() - ttl_seconds
         with self.lock:
             cur = self.conn.execute(
-                "DELETE FROM rag_sessions WHERE session_id IN ("
-                "SELECT session_id FROM rag_sessions WHERE updated_at < ? "
-                "GROUP BY scope, session_id)", (cutoff,))
+                "DELETE FROM rag_sessions WHERE (scope, session_id) IN ("
+                "SELECT scope, session_id FROM rag_sessions "
+                "GROUP BY scope, session_id "
+                "HAVING MAX(updated_at) < ?)", (cutoff,))
             self.conn.commit()
         return cur.rowcount
 

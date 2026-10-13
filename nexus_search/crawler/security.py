@@ -163,14 +163,39 @@ def pinned_resolution(hostname: str, addresses):
             pins[key] = previous
 
 
+class PinnedResolutionBlocked(Exception):
+    """Pinning could not produce a validated address set for this host.
+
+    Raised at pin-context entry instead of failing OPEN: a null-context
+    fallback would make the HTTP client do a fresh, unpinned DNS lookup —
+    the exact rebind window the pin exists to close (a rebinding server
+    can answer validate_url's lookup publicly and the pin-time lookup
+    privately; the pin-time answer is the one that must win)."""
+
+
+class _BlockedPin:
+    """Context manager substitute that refuses entry: the fetch must not
+    proceed with a live, unpinned lookup."""
+
+    __slots__ = ()
+
+    def __enter__(self):
+        raise PinnedResolutionBlocked("host failed pin-time validation")
+
+    def __exit__(self, *exc):
+        return False
+
+
 def pin_dns_for_url(url: str):
     """Context manager: pins DNS for url's host to the addresses just
-    validated as public. No-op if the host can't be validated (that's
-    validate_url's job to block, not this function's)."""
+    validated as public. When the host cannot be validated, the context
+    BLOCKS the fetch (PinnedResolutionBlocked) — it never falls back to a
+    live lookup. validate_url's job is the pipeline gate; this is the
+    connect-time gate."""
     hostname = urlsplit(url).hostname
     if not hostname:
         return contextlib.nullcontext()
     addresses = resolve_validated_addresses(hostname)
     if addresses is None:
-        return contextlib.nullcontext()
+        return _BlockedPin()
     return pinned_resolution(hostname, addresses)

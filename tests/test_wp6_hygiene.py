@@ -285,8 +285,8 @@ class TestDebugGating(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        from nexus_search.core import api
-        importlib.reload(api)
+        from tests._api_reset import reset_api
+        reset_api()  # boot-safe reset (review ORDER-1)
         for _ in range(10):
             try:
                 shutil.rmtree(self.tmpdir)

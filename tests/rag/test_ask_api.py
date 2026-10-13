@@ -57,8 +57,8 @@ class _AskApiTest(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        from nexus_search.core import api
-        importlib.reload(api)  # restore a booting state for other tests
+        from tests._api_reset import reset_api
+        reset_api()  # boot-safe reset (review ORDER-1)
 
 
 class TestAskAuth(_AskApiTest):

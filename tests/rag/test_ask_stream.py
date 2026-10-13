@@ -73,8 +73,8 @@ class AskStreamApiTest(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        from nexus_search.core import api
-        importlib.reload(api)
+        from tests._api_reset import reset_api
+        reset_api()  # boot-safe reset (review ORDER-1)
 
     def _post_stream(self, client, query, **kw):
         with client.stream("POST", "/ask/stream",

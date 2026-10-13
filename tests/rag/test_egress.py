@@ -92,8 +92,8 @@ class TestHealthRagStatus(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        from nexus_search.core import api
-        importlib.reload(api)  # back to a booting state for other tests
+        from tests._api_reset import reset_api
+        reset_api()  # boot-safe reset (review ORDER-1)
 
     def _reload(self):
         from nexus_search.core import api
