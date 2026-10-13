@@ -474,11 +474,29 @@ class RagService:
         sanitizer = StreamSanitizer()
         final_text_parts: list[str] = []
         last_token_at = time.monotonic()
+        # STREAM-1: the per-gap watchdog above does not bound a stream
+        # that keeps trickling — a hostile endpoint can ignore max_tokens
+        # and stream forever. Bound the TOTAL streamed chars by the
+        # configured answer budget (2x slack over the chars/token
+        # estimate) and the total stream duration by a multiple of the
+        # per-call timeout; past either bound the answer is truncated.
+        stream_started_at = last_token_at
+        char_cap = 2 * self.config.max_tokens * max(self.config.chars_per_token, 1)
+        duration_cap = 10.0 * max(self.config.timeout, 1.0)
+        total_chars = 0
+        over_limit = False
         try:
             for delta in stream:
                 now = time.monotonic()
                 if now - last_token_at > self.config.timeout:
                     raise TimeoutError()
+                if now - stream_started_at > duration_cap:
+                    over_limit = True
+                    break
+                if total_chars + len(delta) > char_cap:
+                    over_limit = True
+                    break
+                total_chars += len(delta)
                 last_token_at = now
                 clean = sanitizer.push(delta)
                 if clean:
@@ -506,6 +524,16 @@ class RagService:
                           "estimated_cost": None},
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "degraded_reason": DEGRADED_PROVIDER_ERROR,
+                "sources": [_source_out(s) for s in selection.sources]}}
+            return
+        if over_limit:
+            self.metrics.record_provider_error("stream_limit")
+            yield {"event": "truncated", "data": {"reason": "stream_limit"}}
+            yield {"event": "done", "data": {
+                "spend": {"tokens_in": 0, "tokens_out": 0,
+                          "estimated_cost": None},
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "degraded_reason": DEGRADED_PROVIDER_TIMEOUT,
                 "sources": [_source_out(s) for s in selection.sources]}}
             return
 

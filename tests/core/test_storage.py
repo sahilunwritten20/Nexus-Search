@@ -1,6 +1,9 @@
+import calendar
 import os
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from nexus_search.core.storage import Storage
 
@@ -14,6 +17,25 @@ class TestStorage(unittest.TestCase):
     def tearDown(self):
         self.storage.close()
         os.remove(self.path)
+
+    def test_day_key_is_utc_not_local(self):
+        """Review UTC-1: the token-budget day key is documented as a UTC
+        day (rag/budget.py 'per UTC-day'; the 429 Retry-After says 'next
+        UTC day at worst'). A LOCAL-time day key makes worker fleets in
+        different timezones disagree on 'today', silently splitting one
+        budget across two day keys. The key must be derived from gmtime."""
+        # a fixed instant: 2026-01-01 23:00 UTC
+        ts = calendar.timegm((2026, 1, 1, 23, 0, 0, 0, 0, 0))
+        expected_utc_day = "2026-01-01"
+        # a UTC+14-style LOCAL view of the same instant (Kiritimati):
+        # calendar day 2026-01-02 — pre-fix code would key on THIS
+        with mock.patch("time.localtime",
+                        return_value=time.gmtime(ts + 14 * 3600)):
+            self.assertEqual(Storage._day_key(ts), expected_utc_day)
+        # and the symmetric UTC-10 view (2026-01-01 09:00 local) agrees
+        with mock.patch("time.localtime",
+                        return_value=time.gmtime(ts - 10 * 3600)):
+            self.assertEqual(Storage._day_key(ts), expected_utc_day)
 
     def test_upsert_and_get_document(self):
         self.storage.upsert_document("d1", "Title", "Content here", "text", 2, {"k": "v"})

@@ -261,7 +261,7 @@ class TestRagServiceEgress(unittest.TestCase):
                 def complete(self, messages, *, max_tokens, timeout=None,
                              stream=False):
                     captured.append("\n".join(m.get("content") or ""
-                                             for m in messages))
+                                              for m in messages))
                     return super().complete(messages, max_tokens=max_tokens,
                                             timeout=timeout, stream=stream)
 
@@ -274,6 +274,57 @@ class TestRagServiceEgress(unittest.TestCase):
                              "llm_allowed:false text reached the provider")
         finally:
             sync.close(); hybrid.close(); vs.close(); storage.close()
+
+
+class TestStreamIsBounded(unittest.TestCase):
+    """Review STREAM-1: a hostile or buggy endpoint can ignore max_tokens
+    and stream without end (each delta inside the per-gap timeout keeps
+    the old gap-watchdog happy). ask_streaming must cap the TOTAL streamed
+    text at the configured answer budget and terminate with a truncated
+    marker — never stream unbounded content into memory and the client."""
+
+    @classmethod
+    def setUpClass(cls):
+        (cls.storage, cls.hybrid, cls.vs, cls.sync,
+         cls.retriever, cls.service) = _build("stream_cap.db")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.sync.close(); cls.hybrid.close(); cls.vs.close()
+        cls.storage.close()
+
+    def _firehose(self, deltas=50_000):
+        class _Firehose(StubProvider):
+            def complete(self, messages, *, max_tokens, timeout=None,
+                          stream=False):
+                s = LLMStream(self.model, self.name)
+                for _ in range(deltas):
+                    s.add("word ")
+                s.set_usage(LLMUsage(1, deltas))
+                s.finish()
+                return s
+        return _Firehose()
+
+    def test_over_streaming_endpoint_is_capped_not_infinite(self):
+        config = RagConfig(env="dev", max_tokens=64, chars_per_token=4)
+        service = RagService(config, self.retriever, self._firehose(),
+                             self.storage, metrics=RagMetrics(),
+                             neighbor_fetcher=make_storage_neighbor_fetcher(self.storage))
+        events = list(service.ask_streaming("bm25 lexical inverted index ranking",
+                                             top_k=3))
+        kinds = [e["event"] for e in events]
+        self.assertIn("truncated", kinds,
+                      "an over-streaming provider must be cut off")
+        truncated = next(e for e in events if e["event"] == "truncated")
+        self.assertEqual(truncated["data"]["reason"], "stream_limit")
+        token_chars = sum(len(e["data"].get("text", ""))
+                          for e in events if e["event"] == "token")
+        cap = 2 * config.max_tokens * config.chars_per_token
+        self.assertLessEqual(
+            token_chars, cap + 64,
+            f"streamed {token_chars} chars, cap is ~{cap}: unbounded")
+        self.assertEqual(kinds[-1], "done",
+                         "the done event must still terminate the stream")
 
 
 if __name__ == "__main__":

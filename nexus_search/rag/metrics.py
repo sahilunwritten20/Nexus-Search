@@ -9,7 +9,9 @@ import time
 
 
 def _day_key(ts: float) -> str:
-    return time.strftime("%Y-%m-%d", time.localtime(ts))
+    # UTC day: /metrics daily counters must agree across worker timezones
+    # and match the budget's documented UTC-day contract (review UTC-1).
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
 
 class RagMetrics:

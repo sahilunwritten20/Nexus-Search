@@ -132,10 +132,24 @@ class TestOpenAIAdapter(_MockHTTP):
             'data: [DONE]',
         ])])
         s = p.complete([{"role": "user", "content": "hi"}],
-                       max_tokens=50, stream=True)
+                        max_tokens=50, stream=True)
         list(s)
         result = s.result()
         self.assertEqual(result.usage.tokens_out, 3)  # 9 chars -> ceil(9/4)
+
+    def test_streaming_far_beyond_budget_is_cut_not_buffered(self):
+        """Review STREAM-1 (provider half): a hostile or buggy endpoint
+        can ignore max_tokens and blast SSE far beyond the requested
+        answer budget. The adapter must abort the read with a typed
+        ProviderError, never buffer the whole body."""
+        p, _ = self._provider()
+        flood = 'data: ' + json.dumps(
+            {"choices": [{"delta": {"content": "word " * 20}}]})
+        self._install([FakeResponse(sse_lines=[flood] * 500)])
+        with self.assertRaises(ProviderError) as ctx:
+            p.complete([{"role": "user", "content": "hi"}],
+                       max_tokens=32, stream=True)
+        self.assertEqual(ctx.exception.code, "provider_stream_too_large")
 
     def test_retry_on_429_then_success(self):
         p, _ = self._provider()

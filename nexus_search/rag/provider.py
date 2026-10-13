@@ -450,7 +450,7 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
                                       timeout=t,
                                       max_retries=self.config.max_retries)
             if stream:
-                return self._parse_stream(data)
+                return self._parse_stream(data, max_tokens)
             try:
                 data = data.json()
                 text = data["choices"][0]["message"].get("content") or ""
@@ -463,11 +463,17 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
             except (KeyError, TypeError, ValueError):
                 raise ProviderError("provider_bad_response") from None
 
-    def _parse_stream(self, resp) -> LLMStream:
+    def _parse_stream(self, resp, max_tokens: int) -> LLMStream:
         """Consume the SSE body into an LLMStream. Usage: estimated from
-        text length when the endpoint does not include it (documented)."""
+        text length when the endpoint does not include it (documented).
+
+        STREAM-1 bound: a hostile endpoint can ignore max_tokens and
+        stream far past the requested answer budget; the read is aborted
+        with provider_stream_too_large instead of buffering the body."""
         stream = LLMStream(self._model, self.name)
         text_parts: list[str] = []
+        text_cap = max(max_tokens * 8, 1024)  # ~2x the chars/token estimate
+        total = 0
         try:
             for raw_line in resp.iter_lines(decode_unicode=True):
                 if not raw_line or not raw_line.startswith("data:"):
@@ -482,6 +488,9 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
                 delta = (chunk.get("choices") or [{}])[0].get("delta", {})
                 piece = delta.get("content")
                 if piece:
+                    total += len(piece)
+                    if total > text_cap:
+                        raise ProviderError("provider_stream_too_large")
                     text_parts.append(piece)
                     stream.add(piece)
                 usage = chunk.get("usage")
@@ -543,7 +552,7 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
                                       timeout=t,
                                       max_retries=self.config.max_retries)
             if stream:
-                return self._parse_stream(data)
+                return self._parse_stream(data, max_tokens)
             try:
                 data = data.json()
                 text = "".join(
@@ -560,9 +569,11 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
             except (KeyError, TypeError, ValueError):
                 raise ProviderError("provider_bad_response") from None
 
-    def _parse_stream(self, data) -> LLMStream:
+    def _parse_stream(self, data, max_tokens: int) -> LLMStream:
         stream = LLMStream(self._model, self.name)
         text_parts: list[str] = []
+        text_cap = max(max_tokens * 8, 1024)  # STREAM-1 bound (see OpenAI)
+        total = 0
         try:
             for raw_line in data.iter_lines(decode_unicode=True):
                 if not raw_line or not raw_line.startswith("data:"):
@@ -575,6 +586,9 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
                 if etype == "content_block_delta":
                     piece = (event.get("delta") or {}).get("text")
                     if piece:
+                        total += len(piece)
+                        if total > text_cap:
+                            raise ProviderError("provider_stream_too_large")
                         text_parts.append(piece)
                         stream.add(piece)
                 elif etype == "message_delta":

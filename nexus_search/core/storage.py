@@ -345,7 +345,10 @@ class Storage:
 
     @staticmethod
     def _day_key(ts: float | None = None) -> str:
-        return time.strftime("%Y-%m-%d", time.localtime(ts or time.time()))
+        # UTC day, matching the documented per-UTC-day budget contract
+        # (rag/budget.py, the 429 Retry-After): local-time keys made worker
+        # fleets in different timezones disagree on "today" (review UTC-1).
+        return time.strftime("%Y-%m-%d", time.gmtime(ts or time.time()))
 
     def rag_usage_add(self, bucket: str, tokens: int, day: str | None = None) -> int:
         """Add `tokens` to `bucket`'s daily counter; returns the new total."""
