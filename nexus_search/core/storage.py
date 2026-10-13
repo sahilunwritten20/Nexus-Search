@@ -73,7 +73,21 @@ class Storage:
                  "bucket TEXT NOT NULL, "
                  "day TEXT NOT NULL, "
                  "tokens INTEGER NOT NULL DEFAULT 0, "
-                 "PRIMARY KEY (bucket, day))")],
+                 "PRIMARY KEY (bucket, day))"),
+             # v4 (P7-8): opt-in SHARED session store
+             # (NEXUS_RAG_SESSION_STORE=sqlite). RETENTION NOTE: this is
+             # the ONLY persistence path for RAG transcripts and it is
+             # OFF by default; while on, transcripts persist until TTL
+             # pruning (rag_session_prune) — schedule it like the A/B
+             # log purge. Rollback: DROP TABLE rag_sessions (version -> 3).
+             (4, "CREATE TABLE IF NOT EXISTS rag_sessions ("
+                 "scope TEXT NOT NULL, "
+                 "session_id TEXT NOT NULL, "
+                 "turn_idx INTEGER NOT NULL, "
+                 "role TEXT NOT NULL, "
+                 "text TEXT NOT NULL, "
+                 "updated_at REAL NOT NULL, "
+                 "PRIMARY KEY (scope, session_id, turn_idx))")],
         )
 
     def upsert_document(
@@ -368,6 +382,60 @@ class Storage:
                 "DELETE FROM rag_token_usage WHERE day < ?", (cutoff,))
             self.conn.commit()
         return cur.rowcount
+
+    # -------------------------------------------------- RAG sessions (v4)
+    # P7-8: the OPT-IN shared session store. Scope = the caller's budget
+    # bucket (verified-key hash or IP) so one key can never read another
+    # key's sessions. On THIS connection only.
+
+    def rag_session_append(self, scope: str, session_id: str, idx: int,
+                           role: str, text: str, updated_at: float) -> None:
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO rag_sessions (scope, session_id, turn_idx, role, "
+                "text, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(scope, session_id, turn_idx) DO UPDATE SET "
+                "role=excluded.role, text=excluded.text, "
+                "updated_at=excluded.updated_at",
+                (scope, session_id, int(idx), role, text, float(updated_at)))
+            self.conn.commit()
+
+    def rag_session_turns(self, scope: str, session_id: str) -> list[tuple]:
+        """[(idx, role, text, updated_at)] ordered by idx."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT turn_idx, role, text, updated_at FROM rag_sessions "
+                "WHERE scope = ? AND session_id = ? ORDER BY turn_idx",
+                (scope, session_id)).fetchall()
+        return rows
+
+    def rag_session_delete(self, scope: str, session_id: str) -> int:
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM rag_sessions WHERE scope = ? AND session_id = ?",
+                (scope, session_id))
+            self.conn.commit()
+        return cur.rowcount
+
+    def rag_session_prune(self, ttl_seconds: float) -> int:
+        """TTL pruning: delete sessions idle longer than `ttl_seconds`.
+        THE retention control for the opt-in shared store — schedule it."""
+        if ttl_seconds <= 0:
+            raise ValueError("ttl must be positive")
+        cutoff = time.time() - ttl_seconds
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM rag_sessions WHERE session_id IN ("
+                "SELECT session_id FROM rag_sessions WHERE updated_at < ? "
+                "GROUP BY scope, session_id)", (cutoff,))
+            self.conn.commit()
+        return cur.rowcount
+
+    def rag_session_count(self) -> int:
+        with self.lock:
+            return self.conn.execute(
+                "SELECT COUNT(DISTINCT scope || session_id) FROM "
+                "rag_sessions").fetchone()[0]
 
     def close(self):
         with self.lock:

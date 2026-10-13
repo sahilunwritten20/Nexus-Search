@@ -30,6 +30,7 @@ from .prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt
 from .provider import LLMProvider, LLMResult, ProviderError, ProviderTimeout
 from .retrieval import RagRetriever
 from .sanitize import NoopModerator, sanitize_text, scrub_leaks
+from .session import SessionCapExceeded, heuristic_condense
 
 logger = logging.getLogger("nexus_search.rag.pipeline")
 
@@ -87,7 +88,8 @@ class RagService:
                  provider: LLMProvider, storage, *,
                  metrics: RagMetrics = None,
                  moderator=None,
-                 neighbor_fetcher=None):
+                 neighbor_fetcher=None,
+                 session_store=None):
         self.config = config
         self.retriever = retriever
         self.provider = provider
@@ -95,12 +97,62 @@ class RagService:
         self.metrics = metrics or global_metrics()
         self.moderator = moderator or NoopModerator()
         self._neighbor_fetcher = neighbor_fetcher
+        self.sessions = session_store
+
+    # ------------------------------------------------------------ sessions
+
+    def _prepare_session(self, query: str, session_id, scope):
+        """Load session history + condense the follow-up. Returns
+        (standalone_query, history_text, session_or_None, extra_spend).
+        Raises SessionExpired (clear 4xx upstream)."""
+        extra = {"tokens_in": 0, "tokens_out": 0}
+        if not session_id or self.sessions is None:
+            return query, None, None, extra
+        history = self.sessions.get(scope, session_id)
+        history_text = (history.history_text(self.config.session_max_turns)
+                        if history else None)
+        if not history_text:
+            return query, None, history, extra
+        mode = self.config.followup_condense
+        if mode == "off":
+            return query, history_text, history, extra
+        if mode == "llm":
+            try:
+                result = self.provider.complete(
+                    _condense_messages(history_text, query),
+                    max_tokens=min(self.config.max_tokens, 256),
+                    timeout=self.config.timeout)
+                rewritten = (result.text or "").strip()
+                extra["tokens_in"] += result.usage.tokens_in
+                extra["tokens_out"] += result.usage.tokens_out
+                if rewritten and len(rewritten) < 1000:
+                    return rewritten, history_text, history, extra
+            except ProviderError:
+                pass  # deterministic fallback — never fail over condensing
+        return (heuristic_condense(query, history_text), history_text,
+                history, extra)
+
+    def _session_append(self, session_id, scope, role: str, text: str,
+                        pre_llm: bool) -> None:
+        """Record a turn. Pre-LLM appends enforce the caps (clear 4xx);
+        post-LLM appends only log (a cap hit after spend is logged, never
+        surfaced as an error the user already paid for)."""
+        if not session_id or self.sessions is None:
+            return
+        try:
+            self.sessions.append(scope, session_id, role, text)
+        except SessionCapExceeded as exc:
+            if pre_llm:
+                raise
+            logger.warning("session %s post-answer turn not stored (%s)",
+                           session_id, exc)
 
     # ---------------------------------------------------------------- ask
 
     def ask(self, query: str, *, filters: dict | None = None,
             top_k: int = 10, mode: str = "hybrid",
             history: str | None = None,
+            session_id: str | None = None, scope: str | None = None,
             request_id: str | None = None) -> RagResponse:
         started = time.perf_counter()
         self.metrics.record_request()
@@ -108,8 +160,19 @@ class RagService:
             logger.info("rag request %s query_hash=%s",
                         request_id or "-", query_hash(query))
 
+        # 0. sessions (P7-8): condense the follow-up, enforce caps BEFORE
+        # any spend, then run retrieval on the standalone query
+        standalone, history_text, session_obj, condense_spend = \
+            self._prepare_session(query, session_id, scope)
+        if session_id and self.sessions is not None:
+            turns = len(session_obj.turns) if session_obj else 0
+            if turns + 2 > self.config.session_max_turns:
+                raise SessionCapExceeded(f"turns:{turns + 2}")
+            self._session_append(session_id, scope, "user", query,
+                                 pre_llm=True)
+
         # 1. retrieval (shared HybridSearch; error -> clean 503 upstream)
-        retrieval = self.retriever.retrieve(query, filters=filters,
+        retrieval = self.retriever.retrieve(standalone, filters=filters,
                                              k=top_k, mode=mode)
         if retrieval.retrieval_error is not None:
             self.metrics.record_degraded()
@@ -132,13 +195,17 @@ class RagService:
 
         if not gate.answerable:
             self.metrics.record_refusal(gate.refusal_reason)
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {gate.refusal_reason})",
+                                 pre_llm=False)
             return RagResponse(
                 answer=None, answerable=False,
                 refusal_reason=gate.refusal_reason,
                 sources=[_source_out(s) for s in
                          _sources_for_refusal(retrieval.results)],
                 metadata=self._meta(started, retrieval_meta,
-                                    spend={"tokens_in": 0, "tokens_out": 0,
+                                    spend={"tokens_in": condense_spend["tokens_in"],
+                                           "tokens_out": condense_spend["tokens_out"],
                                            "estimated_cost": None}))
 
         # 3. context selection (budgets; llm_allowed egress filter)
@@ -154,7 +221,7 @@ class RagService:
         )
 
         # 4. prompt (fencing + injection stripping + optional redaction)
-        prompt = build_prompt(query, selection, history=history,
+        prompt = build_prompt(query, selection, history=history_text,
                               redact_pii_enabled=self.config.redact_pii)
         redaction_total = prompt.redaction_total()
         if redaction_total:
@@ -166,12 +233,20 @@ class RagService:
                 prompt.messages, max_tokens=self.config.max_tokens)
         except ProviderTimeout:
             self.metrics.record_provider_error("provider_timeout")
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {DEGRADED_PROVIDER_TIMEOUT})",
+                                 pre_llm=False)
             return self._degraded(DEGRADED_PROVIDER_TIMEOUT, retrieval,
-                                  selection, retrieval_meta, started)
+                                  selection, retrieval_meta, started,
+                                  condense_spend=condense_spend)
         except ProviderError as exc:
             self.metrics.record_provider_error(exc.code)
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {DEGRADED_PROVIDER_ERROR})",
+                                 pre_llm=False)
             return self._degraded(DEGRADED_PROVIDER_ERROR, retrieval,
-                                  selection, retrieval_meta, started)
+                                  selection, retrieval_meta, started,
+                                  condense_spend=condense_spend)
 
         # 6. parse + verify citations (existing Storage path)
         raw_answer = result.text or ""
@@ -181,13 +256,18 @@ class RagService:
             self.metrics.record_refusal(REFUSAL_UNVERIFIABLE_CITATIONS)
             self.metrics.record_citation_failure(
                 len(verification.dropped))
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {REFUSAL_UNVERIFIABLE_CITATIONS})",
+                                 pre_llm=False)
             return RagResponse(
                 answer=None, answerable=False,
                 refusal_reason=REFUSAL_UNVERIFIABLE_CITATIONS,
                 sources=[_source_out(s) for s in selection.sources],
                 metadata=self._meta(
                     started, retrieval_meta,
-                    spend=self._spend(result),
+                    spend={**self._spend(result, condense_spend),
+                           "condense_tokens_in": condense_spend["tokens_in"],
+                           "condense_tokens_out": condense_spend["tokens_out"]},
                     extra={"citations_verified": False,
                            "citation_drop_reasons": verification.dropped,
                            "redactions": prompt.redactions,
@@ -217,7 +297,10 @@ class RagService:
         # moderation hook may rewrite; citations were verified against the
         # pre-sanitized text and [n] markers survive sanitization untouched
         metadata = self._meta(
-            started, retrieval_meta, spend=self._spend(result),
+            started, retrieval_meta,
+            spend={**self._spend(result, condense_spend),
+                   "condense_tokens_in": condense_spend["tokens_in"],
+                   "condense_tokens_out": condense_spend["tokens_out"]},
             extra={
                 "citations_verified": verification.citations_verified,
                 "citation_drop_reasons": verification.dropped,
@@ -234,6 +317,8 @@ class RagService:
                 "prompt_version": prompt.prompt_version,
             })
 
+        self._session_append(session_id, scope, "assistant", answer,
+                             pre_llm=False)
         return RagResponse(
             answer=answer, answerable=True,
             citations=verification.citations,
@@ -247,6 +332,7 @@ class RagService:
     def ask_streaming(self, query: str, *, filters: dict | None = None,
                       top_k: int = 10, mode: str = "hybrid",
                       history: str | None = None,
+                      session_id: str | None = None, scope: str | None = None,
                       request_id: str | None = None):
         """P7-7: yield typed SSE events for /ask/stream.
 
@@ -271,7 +357,16 @@ class RagService:
             logger.info("rag stream request %s query_hash=%s",
                         request_id or "-", query_hash(query))
 
-        retrieval = self.retriever.retrieve(query, filters=filters,
+        standalone, history_text, session_obj, condense_spend = \
+            self._prepare_session(query, session_id, scope)
+        if session_id and self.sessions is not None:
+            turns = len(session_obj.turns) if session_obj else 0
+            if turns + 2 > self.config.session_max_turns:
+                raise SessionCapExceeded(f"turns:{turns + 2}")
+            self._session_append(session_id, scope, "user", query,
+                                 pre_llm=True)
+
+        retrieval = self.retriever.retrieve(standalone, filters=filters,
                                              k=top_k, mode=mode)
         if retrieval.retrieval_error is not None:
             self.metrics.record_degraded()
@@ -319,7 +414,7 @@ class RagService:
             dedup_threshold=self.config.dedup_threshold,
             stitch_neighbors=self.config.stitch_neighbors,
             fetch_neighbors=self._neighbor_fetcher)
-        prompt = build_prompt(query, selection, history=history,
+        prompt = build_prompt(standalone, selection, history=history_text,
                               redact_pii_enabled=self.config.redact_pii)
         if prompt.redaction_total():
             self.metrics.record_redactions(prompt.redaction_total())
@@ -455,20 +550,24 @@ class RagService:
             "sanitizer_removals": removed + leaked,
             "redactions": prompt.redactions,
         }}
+        self._session_append(session_id, scope, "assistant", answer,
+                             pre_llm=False)
         yield {"event": "done", "data": {
-            "spend": spend,
+            "spend": {**spend,
+                      "condense_tokens_in": condense_spend["tokens_in"],
+                      "condense_tokens_out": condense_spend["tokens_out"]},
             "latency_ms": int((time.perf_counter() - started) * 1000),
             "answer": answer,
             "answerable": True,
             "sources": [_source_out(s) for s in selection.sources]}}
 
-    def _spend(self, result: LLMResult) -> dict:
-        cost = self.config.estimate_cost(result.usage.tokens_in,
-                                         result.usage.tokens_out)
-        self.metrics.record_usage(result.usage.tokens_in,
-                                   result.usage.tokens_out, cost)
-        return {"tokens_in": result.usage.tokens_in,
-                "tokens_out": result.usage.tokens_out,
+    def _spend(self, result: LLMResult, extra: dict | None = None) -> dict:
+        tokens_in = result.usage.tokens_in + (extra or {}).get("tokens_in", 0)
+        tokens_out = result.usage.tokens_out + (extra or {}).get("tokens_out", 0)
+        cost = self.config.estimate_cost(tokens_in, tokens_out)
+        self.metrics.record_usage(tokens_in, tokens_out, cost)
+        return {"tokens_in": tokens_in,
+                "tokens_out": tokens_out,
                 "estimated_cost": cost,
                 "provider": result.provider,
                 "model": result.model}
@@ -479,14 +578,18 @@ class RagService:
             "latency_ms": int((time.perf_counter() - started) * 1000),
             "prompt_version": PROMPT_VERSION,
             "retrieval": retrieval_meta,
-            **spend,
+            "condense_tokens_in": spend.get("condense_tokens_in", 0),
+            "condense_tokens_out": spend.get("condense_tokens_out", 0),
+            **{k: v for k, v in spend.items()
+               if not k.startswith("condense_")},
         }
         if extra:
             meta.update(extra)
         return meta
 
     def _degraded(self, reason, retrieval, selection, retrieval_meta,
-                  started) -> RagResponse:
+                  started, condense_spend: dict | None = None) -> RagResponse:
+        c = condense_spend or {}
         return RagResponse(
             answer=None, answerable=True,  # the evidence exists; the LLM
             degraded_reason=reason,        # answer does not
@@ -494,10 +597,29 @@ class RagService:
                      (selection.sources if selection.sources
                       else _sources_for_refusal(retrieval.results))],
             metadata=self._meta(started, retrieval_meta,
-                                spend={"tokens_in": 0, "tokens_out": 0,
+                                spend={"tokens_in": c.get("tokens_in", 0),
+                                       "tokens_out": c.get("tokens_out", 0),
                                        "estimated_cost": None,
+                                       "condense_tokens_in": c.get("tokens_in", 0),
+                                       "condense_tokens_out": c.get("tokens_out", 0),
                                        "provider": self.provider.name,
                                        "model": self.provider.model}))
+
+
+def _condense_messages(history_text: str, query: str) -> list[dict]:
+    """Prompt for the LLM follow-up condense step: the transcript and the
+    follow-up are DATA in a fenced region; the instruction is fixed."""
+    return [
+        {"role": "system", "content":
+            "Rewrite the user's follow-up question as ONE standalone "
+            "question that can be understood without the conversation. "
+            "Output ONLY the rewritten question — no preamble, no answer."},
+        {"role": "user", "content":
+            f"==== NXSRAG-CONDENSE HISTORY ====\n{history_text}\n"
+            f"==== NXSRAG-CONDENSE END HISTORY ====\n"
+            f"==== NXSRAG-CONDENSE QUESTION ====\n{query}\n"
+            f"==== NXSRAG-CONDENSE END QUESTION ===="},
+    ]
 
 
 def _sources_for_refusal(results, limit: int = 5):

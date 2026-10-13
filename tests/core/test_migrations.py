@@ -71,9 +71,10 @@ class TestMigrations(unittest.TestCase):
     def test_storage_reports_its_version(self):
         s = Storage(self.path)
         # v1 = baseline schema; v2 = idx_documents_added_at (WP6);
-        # v3 = rag_token_usage (P7-6 shared-state token budgets)
-        self.assertEqual(s.schema_version, 3)
-        self.assertEqual(get_version(s.conn, "storage"), 3)
+        # v3 = rag_token_usage (P7-6 shared-state token budgets);
+        # v4 = rag_sessions (P7-8 opt-in shared session store)
+        self.assertEqual(s.schema_version, 4)
+        self.assertEqual(get_version(s.conn, "storage"), 4)
         # existing behavior intact
         s.upsert_document("d", "t", "c", "text", 1, {})
         self.assertEqual(s.document_count(), 1)
@@ -86,8 +87,9 @@ class TestMigrations(unittest.TestCase):
         s.upsert_document_with_postings("d", "t", "c", "text", 1, {}, {"c": 1})
         s.close()
         s = Storage(self.path)
-        # v1 = baseline; v2 = added_at index (WP6); v3 = rag_token_usage (P7-6)
-        self.assertEqual(s.schema_version, 3)
+        # v1 = baseline; v2 = added_at index (WP6); v3 = rag_token_usage
+        # (P7-6); v4 = rag_sessions (P7-8 opt-in)
+        self.assertEqual(s.schema_version, 4)
         self.assertEqual(s.document_count(), 1)
         s.close()
 

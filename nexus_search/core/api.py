@@ -28,6 +28,7 @@ from ..rag.metrics import global_metrics
 from ..rag.pipeline import RagService, RagServiceUnavailable
 from ..rag.provider import ProviderBusy, ProviderError
 from ..rag.retrieval import RagRetriever, use_rerank_from_env
+from ..rag.session import SessionCapExceeded, SessionExpired
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
 from .query_parser import parse_query
@@ -243,10 +244,37 @@ if _rag_status == "ok":
             bm25_search=_bm25_searcher,
             use_rerank=use_rerank_from_env(),
             link_intel=_link_graph)
+        # Sessions (P7-8): RAM per-worker by default; the opt-in shared
+        # SQLite store rides the ONE storage connection set (v4).
+        _session_store = None
+        if _rag_config.session_store == "sqlite":
+            from ..rag.session import SqliteSessionStore
+            _session_store = SqliteSessionStore(
+                _storage,
+                max_turns=_rag_config.session_max_turns,
+                max_context_tokens=_rag_config.session_max_context_tokens,
+                chars_per_token=_rag_config.chars_per_token,
+                max_turn_bytes=_rag_config.session_max_turn_bytes,
+                ttl=_rag_config.session_ttl,
+                global_cap=_rag_config.session_cap)
+            logger.info("RAG sessions: SHARED sqlite store "
+                        "(retention: prune on a schedule)")
+        else:
+            from ..rag.session import MemorySessionStore
+            _session_store = MemorySessionStore(
+                max_turns=_rag_config.session_max_turns,
+                max_context_tokens=_rag_config.session_max_context_tokens,
+                chars_per_token=_rag_config.chars_per_token,
+                max_turn_bytes=_rag_config.session_max_turn_bytes,
+                ttl=_rag_config.session_ttl,
+                global_cap=_rag_config.session_cap)
+            logger.info("RAG sessions: per-worker RAM store "
+                        "(multi-worker deployments need sticky routing)")
         _rag_service = RagService(
             _rag_config, _retriever, _rag_provider, _storage,
             metrics=global_metrics(),
-            neighbor_fetcher=make_storage_neighbor_fetcher(_storage))
+            neighbor_fetcher=make_storage_neighbor_fetcher(_storage),
+            session_store=_session_store)
         logger.info("RAG service ready (provider=%s, model=%s)",
                     _rag_provider.name, _rag_provider.model)
 
@@ -939,7 +967,12 @@ def ask(request: Request, body: AskRequest, response: Response,
     try:
         result = _rag_service.ask(
             body.query, filters=body.filters, top_k=body.top_k,
-            mode=body.mode, request_id=request_id)
+            mode=body.mode, session_id=body.session_id, scope=bucket,
+            request_id=request_id)
+    except SessionExpired:
+        raise HTTPException(status_code=400, detail="session_expired")
+    except SessionCapExceeded as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except RagServiceUnavailable:
         raise HTTPException(status_code=503,
                             detail="rag temporarily unavailable")
@@ -1049,7 +1082,8 @@ def ask_stream(request: Request, body: AskRequest,
         try:
             for event in _rag_service.ask_streaming(
                     body.query, filters=body.filters, top_k=body.top_k,
-                    mode=body.mode, request_id=request_id):
+                    mode=body.mode, session_id=body.session_id, scope=bucket,
+                    request_id=request_id):
                 yield _sse_event(event)
                 if event["event"] == "done" and not settled:
                     settled = True
@@ -1058,6 +1092,13 @@ def ask_stream(request: Request, body: AskRequest,
                     # settle() no-ops on <=0, so a plain settle is safe
                     settle(_storage, bucket,
                            spend.get("tokens_in", 0) + spend.get("tokens_out", 0))
+        except SessionExpired:
+            yield _sse_event({"event": "error",
+                               "data": {"reason": "session_expired"}})
+        except SessionCapExceeded as exc:
+            yield _sse_event({"event": "error",
+                               "data": {"reason": "session_cap_exceeded",
+                                        "detail": str(exc)}})
         except RagServiceUnavailable:
             yield _sse_event({"event": "error", "data":
                               {"reason": "retrieval_unavailable"}})

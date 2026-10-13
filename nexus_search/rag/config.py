@@ -82,6 +82,16 @@ class RagConfig:
     log_queries: bool = False       # logs query HASHES only, never text
     redact_pii: bool = False
 
+    # sessions (P7-8): RAM default (per-worker, sticky routing required);
+    # NEXUS_RAG_SESSION_STORE=sqlite opts into the shared store (v4).
+    session_store: str = "ram"      # "ram" | "sqlite"
+    session_max_turns: int = 10
+    session_max_context_tokens: int = 4096
+    session_max_turn_bytes: int = 2000
+    session_ttl: float = 3600.0
+    session_cap: int = 10_000
+    followup_condense: str = "heuristic"  # heuristic | llm | off
+
     @classmethod
     def from_env(cls) -> "RagConfig":
         provider = (_env("NEXUS_LLM_PROVIDER") or DEFAULT_PROVIDER).lower()
@@ -133,6 +143,18 @@ class RagConfig:
             stitch_neighbors=_env_bool("NEXUS_RAG_STITCH_NEIGHBORS", True),
             log_queries=_env_bool("NEXUS_RAG_LOG_QUERIES", False),
             redact_pii=_env_bool("NEXUS_RAG_REDACT_PII", False),
+            session_store=(_env("NEXUS_RAG_SESSION_STORE") or "ram").lower(),
+            session_max_turns=_env_int("NEXUS_RAG_SESSION_MAX_TURNS", 10,
+                                       1, 100),
+            session_max_context_tokens=_env_int(
+                "NEXUS_RAG_SESSION_MAX_CONTEXT_TOKENS", 4096, 1, 1_000_000),
+            session_max_turn_bytes=_env_int("NEXUS_RAG_SESSION_MAX_TURN_BYTES",
+                                           2000, 1, 100_000),
+            session_ttl=_env_float("NEXUS_RAG_SESSION_TTL", 3600.0,
+                                   1.0, 30 * 86400.0),
+            session_cap=_env_int("NEXUS_RAG_SESSION_CAP", 10_000, 1, 1_000_000),
+            followup_condense=(_env("NEXUS_RAG_FOLLOWUP_CONDENSE")
+                               or "heuristic").lower(),
         )
 
     # ----------------------------------------------------------- boot policy
