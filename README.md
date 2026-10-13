@@ -162,16 +162,21 @@ Operations notes:
   matrix can lag by seconds. Horizontal scale-out needs the Phase 8 shared
   store (pgvector/Qdrant), not more workers here.
 
-Test suite: **844 passed, 7 skipped, 614 subtests** offline (hash embedder,
-WP13-remeasured from the WP13 head on Windows/3.14 AND Ubuntu/3.12 —
-identical outcomes; skips are model/benchmark-gated: set
-`NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM for **849 passed,
-2 skipped**). CI runs the suite as a charset-normalizer matrix (3.5.1
-pinned + 3.4.6 — the encoding detection must not depend on the detector
-version) plus the graph-benchmark smoke, the authority on/off benchmark,
-the duplicate-test-name lint, the env-var documentation check and the
-checklist-paths check. Run: `python -m pytest -q` (test-only deps live in
-`requirements-dev.txt` since WP14 — runtime code never imports them).
+Test suite: **1181 passed, 13 skipped, 641 subtests** offline (hash
+embedder; measured 2026-10-14 on the `review/hardening` audit — the
+`main` numbers were 1168 passed/13 skipped before its fixes; re-measure
+with `python -m pytest -q`). The suite is order-independent by design
+(tests/conftest.py pins a session baseline env; single-file runs pass).
+Skips are env-gated paths (real-LLM arms, load smoke, full graph
+benchmark, and the sentence-transformers model tests): set
+`NEXUS_RUN_MODEL_TESTS=1` with the cached MiniLM for the model-gated arm
+(**1186 passed, 5 skipped** measured). CI runs the suite as a
+charset-normalizer matrix (3.5.1 pinned + 3.4.6 — the encoding detection
+must not depend on the detector version) plus the graph-benchmark smoke,
+the authority on/off benchmark, the duplicate-test-name lint, the
+env-var documentation check and the checklist-paths check. Test-only
+deps live in `requirements-dev.txt` — runtime code never imports them
+(claim re-verified by the review audit). Run: `python -m pytest -q`.
 Rerank A/B quick-check: `python -m nexus_search.evaluation.rerank_benchmark`
 (hybrid vs hybrid+rerank on the built-in benchmark dataset).
 
@@ -323,17 +328,19 @@ material only, not wired into the codebase.
 -   Crawl metrics
 -   End-to-end crawler testing
 
-### Test Status (per test file, measured)
+### Test Status (per test file, measured 2026-10-14 by the review audit)
 
--   Frontier: 11 tests
--   URL utils: 10 tests
+-   Frontier: 16 tests
+-   URL utils: 15 tests
 -   Politeness (robots.txt / crawl-delay): 8 tests
--   Security/SSRF: 6 tests + DNS pinning: 4 tests
--   Fetcher: 4 tests, Sitemap: 2 tests, Scheduler: 4 tests, Metrics: 5 tests
+-   Security/SSRF: 6 + security-edges 13 + DNS pinning 6 + redirect-robots gating 4 tests
+-   Fetcher: 14 tests, Sitemap: 15 tests, Scheduler: 4 tests, Metrics: 5 tests
 -   End-to-end (local test server): 5 integration tests (full crawl, depth limit, domain limit, incremental recrawl, private host blocked)
 -   Chunk lifecycle: 12 tests (grouping, cascade delete, crawl-path chunking, index hooks)
 -   Regressions: 19 tests (fetcher/crawler/politeness/dedup/ingest failure paths)
--   Phase 3 as shipped had 90 tests
+-   Whole-directory counts (phase attribution is fuzzy for cross-cutting
+    files — `pytest tests/crawler --collect-only -q` is authoritative):
+    tests/crawler = 146 tests
 
 ------------------------------------------------------------------------
 
@@ -385,7 +392,7 @@ material only, not wired into the codebase.
 -   Debug Search Explanation
 -   Automated Tests
 
-### Test Status (per test file, measured)
+### Test Status (per test file, measured 2026-10-14 by the review audit)
 
 -   Embedder layer: 20 tests (hash embedder, config, determinism; sentence-transformers cases env-gated)
 -   Phase 4 core (hybrid search, fusion math, evaluation metrics, dataset, integration): 18 tests
@@ -442,15 +449,17 @@ material only, not wired into the codebase.
 -   Sorting
 -   Pagination Improvements
 
-### Test Status (per test file, measured)
+### Test Status (per test file, measured 2026-10-14 by the review audit)
 
--   Query understanding (`tests/ranking/test_query_understanding.py`): 27 tests
+-   Query understanding (`tests/ranking/test_query_understanding.py`): 28 tests
+-   Spell-correction bounds (`tests/ranking/test_spell_budget.py`): 10 tests
 -   Signals (`tests/ranking/test_signals.py`): 24 tests
 -   Features + shared normalizers (`tests/ranking/test_features.py`): 7 tests
--   Ranker / LTR framework / A-B instrumentation (`tests/ranking/test_ranker.py`): 18 tests
--   Suggestions & UX internals (`tests/ranking/test_suggestions.py`): 12 tests
--   API surface (`TestApiPhase5Ux` in `tests/core/test_api.py`): 12 tests
--   Phase 5 total: 100 new tests, 0 failed (311 pre-existing Phase 1-4 tests still pass unchanged)
+-   Ranker / LTR framework / A-B instrumentation (`tests/ranking/test_ranker.py` + `test_ab.py`): 28 tests
+-   Suggestions & UX internals (`tests/ranking/test_suggestions.py`): 15 tests
+-   API surface (`TestApiPhase5Ux` in `tests/core/test_api.py`)
+-   Authority integration (`tests/ranking/test_authority_integration.py`): 4 tests
+-   tests/ranking = 116 tests, 0 failed
 
 Honest scope notes (per SPEC.md): learning-to-rank ships as framework +
 weighted-sum model only (no labeled data exists to train one); A/B ships as
@@ -517,6 +526,10 @@ remediation; every bullet below matches shipped code):
 -   [x] Large Graph Benchmark (10k pages / 100k edges: recompute 3.2s
       against the committed 30s bound; smoke mode in CI)
 -   [x] Failure Recovery (shadow-swap scores; concurrent-writes test)
+
+Test status (measured 2026-10-14 by the review audit): tests/links =
+78 tests, 0 failed (authority 16, domain cap 8, graph analysis 27,
+graph API 9, graph normalization 9, graph store 9).
 
 ------------------------------------------------------------------------
 
@@ -589,6 +602,12 @@ test-pinned on branch `phase-7`; decisions, commands and outputs in
       debug CLI; load smoke extended to `/ask` + `/ask/stream` (0 5xx,
       bounded p95/memory); n8n workflow marked DO-NOT-USE for production
       RAG; `.env.example` documents all 61 knobs (lint-enforced)
+
+Test status (measured 2026-10-14 by the review audit): tests/rag = 185
+tests, 0 failed (ask API 14, ask stream 9, chunk embeddings 5, citations
+14, context 18, coverage edges 15, egress 13, gate 16, gate calibration
+7 [2 model-gated], metrics 5, pipeline 16, prompt 15, provider 30,
+provider HTTP 13, retrieval 11, sanitize 11, sessions 14).
 
 Operations notes for RAG: multi-worker deployments share the token
 budget (SQLite) but NOT the default RAM sessions — sticky routing is
