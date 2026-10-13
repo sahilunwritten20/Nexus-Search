@@ -230,3 +230,38 @@ numbers grew).
   pending (A5-3).
 - Full ruff/bandit/mypy/vulture outputs preserved in the opencode
   temp review_runs dir; key counts recorded here.
+
+### S1.5 Convergence round 1 — UTC-1 + STREAM-1 (RED -> GREEN -> mutation)
+
+#### UTC-1 (P2) FIXED — budget day keys were local time, docs say UTC
+[E] RED: tests/core/test_storage.py::test_day_key_is_utc_not_local —
+  mocked localtime (+14h / -10h views of the same instant) made
+  pre-fix _day_key return the LOCAL calendar day; fails pre-fix.
+[D] Fix: storage._day_key and rag/metrics._day_key now use time.gmtime
+  (the contract budget.py's docstring + the 429 Retry-After comment
+  already stated). One-time upgrade note: existing rag_token_usage rows
+  carry local-day strings; "today" resets once on upgrade.
+[E] Mutation: revert to localtime -> test fails; restored -> pass.
+
+#### STREAM-1 (P2) FIXED — unbounded SSE accumulation
+Two halves:
+1. pipeline.ask_streaming: per-gap watchdog did not bound a trickling
+   stream. Now: total-chars cap (2 * max_tokens * chars_per_token) and
+   total-duration cap (10 * timeout); exceeded -> truncated event
+   reason "stream_limit" + done (same shape as provider_timeout).
+   [E] RED: tests/rag/test_pipeline.py::TestStreamIsBounded (firehose
+   provider, 50k deltas; pre-fix streamed everything, no truncated).
+   [E] Mutation: disabling the char-cap branch -> test fails; restored.
+2. provider adapters: _parse_stream buffered the ENTIRE SSE body inside
+   the worker thread (network-bound memory: a fast hostile endpoint can
+   deliver far more than max_tokens within the join(timeout) window).
+   Now: text cap (max_tokens*8 chars, floor 1024) aborts the read with
+   ProviderError("provider_stream_too_large") (maps to the clean error
+   event; nothing of the flood is buffered).
+   [E] RED: tests/rag/test_provider_http.py::
+     test_streaming_far_beyond_budget_is_cut_not_buffered (500 x 100-char
+   deltas at max_tokens=32; pre-fix buffered all 50k chars).
+
+[E] Regression after both: full rag+storage packages 239 passed/2 skipped;
+  the background RANDOMIZED full-suite run with fix batch 1: 1171 passed,
+  13 skipped (order-independence now by design, not by leaked env).
