@@ -248,6 +248,63 @@ class TestFollowups(_SessionApiTest):
         self.assertIn("history", [x["source"] for x in redactions
                                   if isinstance(x.get("source"), str)])
 
+    def test_ask_and_stream_prompt_the_same_question(self):
+        """Review ASK-VS-STREAM: /ask builds the prompt with the RAW
+        follow-up query (history rides in the data region), but
+        ask_streaming built it with the CONDENSED standalone query — the
+        two endpoints showed the provider different question text for the
+        same request. The streamed path must match /ask: retrieval runs
+        on the standalone query, the QUESTION region carries the user's
+        actual words."""
+        import re
+        api, client = self._boot()
+        ok = {"X-API-Key": "secret"}
+        captured = []
+
+        class SpyProvider(type(api._rag_service.provider)):
+            def complete(self, messages, *, max_tokens, timeout=None,
+                         stream=False):
+                captured.append(messages[-1]["content"])
+                return super().complete(messages, max_tokens=max_tokens,
+                                        timeout=timeout, stream=stream)
+
+        api._rag_service.provider = SpyProvider()
+        try:
+            r1 = client.post("/ask", json={"query": "what is bm25",
+                                           "session_id": "sx"}, headers=ok)
+            self.assertEqual(r1.status_code, 200)
+            r2 = client.post("/ask", json={"query": "and vector embeddings?",
+                                           "session_id": "sx"}, headers=ok)
+            self.assertEqual(r2.status_code, 200)
+            with client.stream("POST", "/ask/stream",
+                              json={"query": "and vector embeddings?",
+                                    "session_id": "sx"},
+                              headers=ok) as resp:
+                for _ in resp.iter_raw():
+                    pass
+            self.assertEqual(resp.status_code, 200)
+        finally:
+            api._rag_service.provider = type(api._rag_service.provider)()
+
+        def question_region(user_content):
+            m = re.search(r"QUESTION ====\n(.*?)\n==== NXSRAG",
+                          user_content, re.DOTALL)
+            return m.group(1) if m else None
+
+        # gate refusals make no provider call, so index from the END:
+        # the last two captures are the ask() follow-up and the stream
+        self.assertEqual(len(captured) >= 2, True)
+        ask_capture = captured[-2]
+        stream_capture = captured[-1]
+        # the ask() follow-up question region is the RAW query...
+        self.assertEqual(question_region(ask_capture),
+                         "and vector embeddings?")
+        # ...and the streamed follow-up must carry the same text
+        self.assertEqual(question_region(stream_capture),
+                         "and vector embeddings?",
+                         "ask_streaming must prompt the SAME question text "
+                         "as /ask (raw query; history is data)")
+
 
 class TestSessionStores(unittest.TestCase):
     def test_memory_store_caps_bytes_and_global_cap(self):

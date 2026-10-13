@@ -416,7 +416,11 @@ class RagService:
             dedup_threshold=self.config.dedup_threshold,
             stitch_neighbors=self.config.stitch_neighbors,
             fetch_neighbors=self._neighbor_fetcher)
-        prompt = build_prompt(standalone, selection, history=history_text,
+        # Same contract as ask(): retrieval ran on the standalone query,
+        # but the QUESTION region carries the user's RAW words (the
+        # transcript rides in the data region) — the two endpoints must
+        # show the provider identical question text (review ASK-VS-STREAM).
+        prompt = build_prompt(query, selection, history=history_text,
                               redact_pii_enabled=self.config.redact_pii)
         if prompt.redaction_total():
             self.metrics.record_redactions(prompt.redaction_total())
