@@ -10,7 +10,7 @@ os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
 
 from nexus_search.evaluation.benchmark import run_benchmark
 from nexus_search.evaluation.dataset import create_benchmark_dataset
-from nexus_search.evaluation.metrics import evaluate_all
+from nexus_search.evaluation.metrics import evaluate_all, ndcg_at_k
 
 
 class TestBenchmark(unittest.TestCase):
@@ -29,6 +29,14 @@ class TestBenchmark(unittest.TestCase):
             for doc_id, rel in q.relevant_docs.items():
                 self.assertIn(doc_id, {d.doc_id for d in docs})
                 self.assertIn(rel, (0, 1, 2, 3))
+
+    def test_ndcg_with_no_relevant_docs_is_zero_not_perfect(self):
+        """Review NDCG-EMPTY: a query with NO relevant documents must not
+        score a PERFECT 1.0 — that grades 'retrieved garbage for an
+        unanswerable query' as the best possible outcome (trec_eval
+        convention: 0)."""
+        self.assertEqual(ndcg_at_k({}, ["junk1", "junk2"], 10), 0.0)
+        self.assertEqual(ndcg_at_k({"doc1": 0}, ["doc1"], 10), 0.0)
 
     def test_benchmark_runs_all_modes(self):
         with contextlib.redirect_stdout(io.StringIO()):

@@ -59,7 +59,10 @@ def ndcg_at_k(relevant: dict[str, int], retrieved: list[str], k: int) -> float:
     ideal_dcg = dcg(ideal_items[:k])
 
     if ideal_dcg == 0:
-        return 1.0
+        # No relevant documents for this query: NDCG is 0, not a perfect
+        # score (review NDCG-EMPTY — trec_eval convention; 1.0 here
+        # graded "retrieved garbage for an unanswerable query" as ideal).
+        return 0.0
     return actual_dcg / ideal_dcg
 
 

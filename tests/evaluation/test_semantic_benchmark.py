@@ -28,16 +28,24 @@ _bench._cache = None
 
 
 class TestHashFloors(unittest.TestCase):
-    """Offline (hash-embedder) quality floors — runs in default CI."""
+    """Offline (hash-embedder) quality floors — runs in default CI.
+
+    Review NDCG-EMPTY: ndcg_at_k previously returned a PERFECT 1.0 for
+    queries with no relevant docs, which inflated every aggregate by the
+    no-answer queries' free 1.0s. The metric now scores them 0.0
+    (trec_eval convention) and these floors were RE-DERIVED from the
+    corrected measurements (docs/SEMANTIC_BENCHMARK.md, regenerated):
+    keyword 0.534 -> floor 0.52; semantic-hash 0.631 -> floor 0.61.
+    Per-category floors were unaffected (no-answer is its own category)."""
 
     def test_keyword_floor(self):
         row = _bench()["systems"]["keyword"]
-        self.assertGreaterEqual(row["ndcg@10"], 0.55,
+        self.assertGreaterEqual(row["ndcg@10"], 0.52,
                                 f"keyword NDCG@10 regressed: {row}")
 
     def test_semantic_hash_floor(self):
         row = _bench()["systems"]["semantic-hash"]
-        self.assertGreaterEqual(row["ndcg@10"], 0.65,
+        self.assertGreaterEqual(row["ndcg@10"], 0.61,
                                 f"hash semantic NDCG@10 regressed: {row}")
 
     def test_exact_keyword_floor(self):
