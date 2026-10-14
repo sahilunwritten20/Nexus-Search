@@ -1,13 +1,17 @@
 """Robots.txt compliance and per-domain rate limiting for the crawler.
 
-Known limit (documented, deliberate): stdlib `urllib.robotparser` does not
-honor `*`/`$` path wildcards in Allow/Disallow lines — sites relying on
-wildcard rules may be crawled more broadly than the author intended. The
-fail-closed-on-unreachable behavior below is unaffected. A fuller parser
-(protego) is a possible Phase 8+ dependency call."""
+RFC 9309 matching is OWNED (crawler/robots.py, review ROBOTS-WILDCARD):
+the stdlib robotparser treats `*`/`$` as literals on Python 3.12 (the CI
+runtime) and supports them only on 3.14+ — politeness behavior must not
+depend on the interpreter version. The fail-closed-on-unreachable
+contract below is unchanged: register_robots_txt("") means robots
+confirmed ABSENT (4xx -> allowed); an UNREACHABLE robots.txt must be
+registered by the caller as the synthetic disallow-everything ruleset.
+"""
 import threading
 import time
-import urllib.robotparser
+
+from .robots import RobotsRules
 from typing import Dict, Optional
 
 
@@ -21,7 +25,7 @@ class PolitenessManager:
     def __init__(self, user_agent: str = "NexusSearchBot/0.1", default_delay: float = 1.0):
         self.user_agent = user_agent
         self.default_delay = default_delay
-        self._parsers: Dict[str, urllib.robotparser.RobotFileParser] = {}
+        self._parsers: Dict[str, RobotsRules] = {}
         self._last_request: Dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -39,8 +43,7 @@ class PolitenessManager:
         domain for the run. This class does not fail open on fetch errors;
         do not change _ensure_robots without understanding that contract.
         """
-        rp = urllib.robotparser.RobotFileParser()
-        rp.parse(content.splitlines())
+        rp = RobotsRules(content)
         with self._lock:
             self._parsers[domain] = rp
 
@@ -53,7 +56,7 @@ class PolitenessManager:
             parser = self._parsers.get(domain)
         if parser is None:
             return True  # not fetched yet — caller should register_robots_txt first
-        return parser.can_fetch(self.user_agent, url)
+        return parser.is_allowed(self.user_agent, url)
 
     def crawl_delay(self, domain: str) -> float:
         with self._lock:
@@ -93,7 +96,7 @@ class PolitenessManager:
         """Sitemap: lines declared in this domain's robots.txt."""
         with self._lock:
             parser = self._parsers.get(domain)
-        return list(parser.site_maps() or []) if parser is not None else []
+        return list(parser.sitemaps) if parser is not None else []
 
     def record_request(self, domain: str):
         with self._lock:
