@@ -977,8 +977,11 @@ def ask(request: Request, body: AskRequest, response: Response,
     bucket = _rag_bucket(api_key, request)
 
     # Bounds are enforced BEFORE any LLM spend, each with a clear 4xx.
+    # REDTEAM-FILTERS: unsupported filter keys used to raise ValueError
+    # deep in retrieval -> a 500 with internals; validate them here.
     try:
         _rag_service.retriever.validate_query(body.query)
+        _rag_service.retriever._render_filters(body.filters)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -1083,6 +1086,7 @@ def ask_stream(request: Request, body: AskRequest,
                             detail=f"rag subsystem {_rag_status}")
     try:
         _rag_service.retriever.validate_query(body.query)
+        _rag_service.retriever._render_filters(body.filters)  # REDTEAM-FILTERS
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
