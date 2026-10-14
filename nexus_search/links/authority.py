@@ -24,7 +24,13 @@ from .graph import LinkGraph
 logger = logging.getLogger("nexus_search.links.authority")
 
 DAMPING = 0.85
-MAX_ITERATIONS = 30
+# Iteration cap (review PR-CONVERGE): 30 iterations cannot reach the
+# 1e-6 L1 tolerance on hub-heavy graphs (a 20-hub star carries a ~0.85^k
+# residual — 0.0076 at k=30); the differential suite against
+# networkx.pagerank caught the truncation. 100 matches networkx's
+# default; well-behaved graphs still exit on the tolerance in a handful
+# of passes (the real crawl's graph converged in 7).
+MAX_ITERATIONS = 100
 CONVERGENCE_TOL = 1e-6
 RECIPROCAL_FACTOR = 0.25  # mutual admiration discount, both directions
 
