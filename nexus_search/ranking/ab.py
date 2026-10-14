@@ -74,6 +74,18 @@ class ExperimentLog:
                 (query,),
             ).fetchall()
 
+    def recent_distinct_queries(self, max_rows: int = 10_000) -> list[str]:
+        """Most-recent DISTINCT query strings, bounded by `max_rows`,
+        read UNDER the lock (review SUGGEST-LOCK: the suggester used to
+        reach into .conn directly, bypassing this lock and racing
+        concurrent record() calls on the shared connection)."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT DISTINCT query FROM (SELECT query FROM query_experiments "
+                "ORDER BY id DESC LIMIT ?)", (int(max_rows),)
+            ).fetchall()
+        return [r for (r,) in rows]
+
     def count(self) -> int:
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM query_experiments").fetchone()[0]

@@ -121,11 +121,8 @@ class Suggester:
         from ..core.query_parser import parse_query
         my_terms = set(parse_query(query).terms)
         counts: Counter[str] = Counter()
-        rows = log.conn.execute(
-            "SELECT DISTINCT query FROM (SELECT query FROM query_experiments "
-            "ORDER BY id DESC LIMIT ?)", (max_log_rows,)
-        ).fetchall()
-        for (other,) in rows:
+        rows = log.recent_distinct_queries(max_log_rows)  # locked read
+        for other in rows:
             other_terms = set(parse_query(other).terms)
             if my_terms & other_terms and other != query:
                 counts[other] += len(my_terms & other_terms)

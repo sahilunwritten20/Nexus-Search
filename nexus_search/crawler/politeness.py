@@ -65,13 +65,17 @@ class PolitenessManager:
         return self.default_delay
 
     def time_until_allowed(self, domain: str) -> float:
-        """Seconds to wait before this domain may be hit again. 0 if clear now."""
+        """Seconds to wait before this domain may be hit again. 0 if clear now.
+
+        Runs on the MONOTONIC clock (review POLITENESS-MONO): a wall-clock
+        step (NTP correction) must not collapse or inflate the delay a site
+        owner asked for."""
         delay = self.crawl_delay(domain)
         with self._lock:
             last = self._last_request.get(domain)
         if last is None:
             return 0.0
-        elapsed = time.time() - last
+        elapsed = time.monotonic() - last
         return max(0.0, delay - elapsed)
 
     def reserve_slot(self, domain: str) -> float:
@@ -80,7 +84,7 @@ class PolitenessManager:
         DIFFERENT slots, so the crawl delay holds under concurrency."""
         delay = self.crawl_delay(domain)  # takes the lock itself, so call it first
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             slot = max(now, self._last_request.get(domain, 0.0) + delay)
             self._last_request[domain] = slot
             return slot - now
@@ -93,4 +97,4 @@ class PolitenessManager:
 
     def record_request(self, domain: str):
         with self._lock:
-            self._last_request[domain] = time.time()
+            self._last_request[domain] = time.monotonic()

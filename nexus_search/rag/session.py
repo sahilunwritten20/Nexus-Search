@@ -202,11 +202,13 @@ class SqliteSessionStore:
             for _idx, role, text, updated in rows:
                 session.turns.append(SessionTurn(role=role, text=text,
                                                  ts=updated))
-            if now - session.last_used > self.ttl:
-                self.storage.rag_session_delete(scope, session_id)
-                self._expired.add((scope, session_id))
-                raise SessionExpired(session_id)
-            if rows and now - max(r[3] for r in rows) > self.ttl:
+            # REVIEW SESSION-DEADCHECK: an earlier check compared
+            # now - session.last_used, but last_used was JUST set to now
+            # above, so it could never fire (dead code). The real staleness
+            # rule is the row timestamps: a session is expired when its
+            # LAST ACTIVITY (max updated_at) is older than the TTL — the
+            # same rule the RAM store's last_used implements.
+            if now - max(r[3] for r in rows) > self.ttl:
                 self.storage.rag_session_delete(scope, session_id)
                 self._expired.add((scope, session_id))
                 raise SessionExpired(session_id)

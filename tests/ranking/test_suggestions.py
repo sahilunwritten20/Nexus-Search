@@ -62,6 +62,43 @@ class TestSuggest(_Base):
         self.assertIn("blorp", s.suggest("blorp"))  # doc-count refresh
 
 
+class TestRelatedSearchesLockDiscipline(_Base):
+    """Review SUGGEST-LOCK: Suggester._from_log used to reach into
+    log.conn directly, bypassing ExperimentLog's RLock — a concurrent
+    record() on the same connection could interleave. Reads must go
+    through a locked ExperimentLog method."""
+
+    def test_related_searches_never_touches_log_conn_directly(self):
+        self.indexer.add_document("d1", "bm25 ranking basics and vector similarity")
+        log = ExperimentLog(self.path)
+        try:
+            log.record("bm25 ranking basics", "control", "keyword")
+            log.record("vector similarity ranking", "treatment", "hybrid")
+
+            class GuardedLog:
+                """Log double that FAILS the test on any direct .conn
+                access (the pre-fix bypass) and otherwise delegates."""
+                def __init__(self, real):
+                    self._real = real
+
+                @property
+                def conn(self):
+                    raise AssertionError(
+                        "Suggester read the query log through log.conn "
+                        "directly, bypassing ExperimentLog.lock")
+
+                def recent_distinct_queries(self, max_rows):
+                    return self._real.recent_distinct_queries(max_rows)
+
+            related = Suggester(self.storage).related_searches(
+                "bm25 ranking", experiment_log=GuardedLog(log))
+            self.assertTrue(any("vector" in r for r in related),
+                            "co-occurrence must still work through the "
+                            "locked read path")
+        finally:
+            log.close()
+
+
 class TestRelatedSearches(_Base):
     def test_empty_log_falls_back_without_crash(self):
         self.indexer.add_document("d1", "machine learning models")

@@ -46,6 +46,53 @@ class TestPoliteness(unittest.TestCase):
         time.sleep(0.06)
         self.assertEqual(pm.time_until_allowed("example.com"), 0.0)
 
+    def test_crawl_delay_survives_forward_wall_clock_skew(self):
+        """Review POLITENESS-MONO: pacing must run on the monotonic
+        clock. A wall-clock step FORWARD (NTP correction after drift)
+        made the old time.time() math think the whole delay had elapsed
+        and let the next request fire immediately — a politeness
+        violation invisible to every test that runs on a healthy clock."""
+        from unittest import mock
+        pm = PolitenessManager(default_delay=10.0)
+        state = {"mono": 1000.0, "wall": 1700000000.0}
+
+        def fake_time():
+            return state["wall"]
+
+        def fake_mono():
+            return state["mono"]
+
+        with mock.patch("time.time", fake_time), \
+             mock.patch("time.monotonic", fake_mono):
+            pm.record_request("example.com")
+            state["mono"] += 1.0     # ONE real second passed
+            state["wall"] += 3600.0  # wall clock jumped an hour forward
+            wait = pm.time_until_allowed("example.com")
+        self.assertGreater(
+            wait, 8.0,
+            f"a wall-clock jump must not collapse the crawl delay (got {wait})")
+
+    def test_reserve_slot_survives_forward_wall_clock_skew(self):
+        from unittest import mock
+        pm = PolitenessManager(default_delay=10.0)
+        state = {"mono": 1000.0, "wall": 1700000000.0}
+
+        def fake_time():
+            return state["wall"]
+
+        def fake_mono():
+            return state["mono"]
+
+        with mock.patch("time.time", fake_time), \
+             mock.patch("time.monotonic", fake_mono):
+            pm.reserve_slot("example.com")
+            state["mono"] += 1.0
+            state["wall"] += 3600.0
+            wait = pm.reserve_slot("example.com")
+        self.assertGreater(
+            wait, 8.0,
+            f"slot spacing must survive wall-clock skew (got {wait})")
+
 
 if __name__ == "__main__":
     unittest.main()

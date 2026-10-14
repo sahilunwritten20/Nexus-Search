@@ -889,7 +889,8 @@ def ready():
 
 
 @app.get("/metrics", dependencies=[Depends(require_api_key)])
-def metrics():
+@limiter.limit(_RATE_LIMIT)  # METRICS-NOLIMIT (review): gated routes are limited
+def metrics(request: Request, response: Response):
     """Ops endpoint: corpus size/embedder identity/queue depth — internal
     information, so it follows the same key gate as the write endpoints.
     The P7-10 rag block carries NUMBERS ONLY (tokens, costs, refusal and

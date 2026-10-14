@@ -843,6 +843,13 @@ def read_file(path: Path) -> str:
         if sniffed == "application/octet-stream":
             logger.warning("Refusing to read %s: binary content", path)
             return ""
+        if sniffed == "application/zip":
+            # a plain ZIP (not a recognized OOXML container) under ANY
+            # extension: there is no text reader for generic zip data —
+            # falling through to the extension reader would index the
+            # binary as replacement-char garbage (review ZIP-TXT).
+            logger.warning("Refusing to read %s: ZIP container content", path)
+            return ""
         reader = _CONTENT_READERS.get(sniffed)
         if reader is not None:
             return reader(path)

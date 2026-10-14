@@ -211,6 +211,39 @@ class TestFilesConnector(unittest.TestCase):
         self.assertEqual(docs[0].doc_id, "file:b.md")
 
 
+class TestZipRenamedTxtIsRefused(unittest.TestCase):
+    """Review ZIP-TXT: a ZIP container renamed .txt sniffs as
+    application/zip; pre-fix the content-reader table missed it and the
+    EXTENSION reader then decoded the binary as replacement-char garbage
+    and INDEXED it — bypassing the binary refusal entirely."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_zip_named_txt_is_refused_not_indexed_as_garbage(self):
+        import zipfile
+        p = self.dir / "actually-a-zip.txt"
+        with zipfile.ZipFile(p, "w") as zf:
+            zf.writestr("payload.txt", "zip content that must not index")
+        from nexus_search.ingestion.connectors.files import read_file
+        content = read_file(p)
+        self.assertEqual(
+            content, "",
+            "a ZIP container wearing a text extension must be refused "
+            "by content, not decoded as mojibake garbage")
+        docs = list(iter_files(str(self.dir), extensions={".txt"}))
+        self.assertEqual(docs, [], "the zip must not be indexed at all")
+
+    def test_real_txt_still_indexes(self):
+        (self.dir / "real.txt").write_text("plain text content", encoding="utf-8")
+        docs = list(iter_files(str(self.dir), extensions={".txt"}))
+        self.assertEqual(len(docs), 1)
+        self.assertIn("plain text content", docs[0].content)
+
+
 class TestSizeLimit(unittest.TestCase):
     """NEXUS_MAX_INGEST_BYTES: refused BEFORE reading, boundary-exact."""
 

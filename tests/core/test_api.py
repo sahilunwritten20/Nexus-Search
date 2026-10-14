@@ -109,6 +109,16 @@ class TestApiRateLimit(unittest.TestCase):
         r = self.client.post("/documents", json={"doc_id": "d3", "content": "c"})
         self.assertEqual(r.status_code, 429)
 
+    def test_metrics_is_limited_too(self):
+        """Review METRICS-NOLIMIT: /metrics is key-gated internal data —
+        it must ride the same limiter as every other gated route (an
+        unlimited /metrics lets one key scrape it in a tight loop)."""
+        for i in range(3):
+            r = self.client.get("/metrics")
+            self.assertEqual(r.status_code, 200, f"request {i} should pass")
+        r = self.client.get("/metrics")
+        self.assertEqual(r.status_code, 429)
+
     def test_limit_is_scoped_per_api_key(self):
         # P0-3 contract: only a key that VERIFIES against the configured
         # NEXUS_API_KEY earns its own bucket. Pre-fix, ANY header value
