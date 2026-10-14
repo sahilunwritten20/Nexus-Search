@@ -287,3 +287,86 @@ Two halves:
   approximation.
 [E] Mutation: wiring validate_url back instead of _hop_gate -> the 3
   tests fail; restored -> 135 crawler tests pass (incl. e2e suite).
+
+### S1.7 A6 live service probe [E]
+
+Production-mode server (key set, temp DB, limiter off) probed across
+60+ cases: /health /ready open; /metrics 401/200 with key; /docs +
+/openapi.json 404 in production (info-disclosure claim TRUE); query
+bounds 400s exact; top_k/offset/diversity 422s; NaN weight REJECTED
+(422) but **bm25_weight=inf ACCEPTED (200)** -> finding INF-WEIGHT (P3,
+fixed later); zero-weights 400; bad cursor 400; emoji/broken-UTF-8
+queries 200 (graceful); doc_id/metadata/bulk/session-id/filters bounds
+all clean 422; /ask 503 "rag subsystem absent" honest (stub not opted
+in); DELETE-without-key 401; path-traversal doc id -> 404 (doc ids are
+DB keys, not paths). Live boot-refusal without key: RuntimeError
+raised as documented. scripts/dev/check_env_docs.py: "env docs
+consistent: 61 documented vars".
+INF-WEIGHT post-fix probe semantics: raw JSON 1e999 parses to +inf
+server-side (httpx refuses to SEND inf — the test uses the raw-body
+path, which is the realistic attacker route).
+
+### S1.8 A3/A4 — truth pass + coverage [E]
+
+A3: README corrected (suite counts 1189/13 offline after this batch's
+8 new tests; 1186/5 model-gated pre-batch; NEXUS_MAX_DECOMPRESSED_BYTES
+row 67108864; per-file Phase 3/4/5/6/7 counts; commit b01f623).
+
+A4: coverage (pytest --cov --cov-branch, full suite):
+  OVERALL 88.2% lines (7915/8791), 82.0% branches (2128/2598).
+  Below-85% modules (14): rag/__main__.py 0.0% (73 missing), semantic
+  __main__ 0.0%, scale_benchmark 43.8, dataset 46.3, rag_benchmark/
+  runner 59.9, graph_benchmark 74.7, semantic runner 76.9, files.py
+  81.3 (74 missing), authority_benchmark 81.5, session.py 81.6,
+  fetcher.py 82.4 (JS-render + charset paths), benchmark.py 82.9,
+  rag fixture 83.0.
+  Security-critical vs exit gate (>=97 line / >=90 branch): storage.py
+  90.7, security.py 96.6 (1 miss), sanitize.py 96.9, prompt.py 96.1,
+  citations.py 96.6, politeness.py 95.2, files.py 81.3 — GATE NOT MET;
+  lift work queued for later rounds. url_utils.py 100 ✓, egress 100 ✓,
+  gate.py 97.2 ✓, retrieval.py 97.2 ✓.
+  Env-gated skips (13) inventoried in S1.1 — model-gated arm verified
+  green separately (1176/5 at the time).
+
+### S1.9 NDCG-EMPTY — the metric was inflating published numbers (P2->P3 mix; effects P2)
+
+[E] RED: ndcg_at_k({}, ...) == 0.0 — pre-fix returned 1.0 ("perfect"
+score for an unanswerable query). The frozen CI floors FAILED after the
+metric fix (keyword 0.5339 < 0.55; hash 0.6309 < 0.65) — proof the OLD
+floors were calibrated on inflated aggregates (every no-answer query
+contributed a free 1.0). Floors re-derived from corrected measurements
+(keyword 0.534 -> floor 0.52; hash 0.631 -> floor 0.61; per-category
+floors unaffected: exact 0.904>=0.85, typo 0.430>=0.40, st-paraphrase
+0.625>=0.60). docs/SEMANTIC_BENCHMARK.{md,json} regenerated: no-answer
+per-category honestly 0.000; st aggregate 0.598 < hash 0.631 (st wins
+paraphrase 0.625 vs 0.351 and synonym 0.869 vs 0.715 — the aggregate
+flip is the lexical control winning exact/typo/multi, consistent with
+the fixture's known lexical-overlap bias; the sanity check pins
+st-beats-hash on PARAPHRASE, which still holds). Commit 9620f14.
+
+### S1.10 Final P3 batch (RED -> GREEN -> mutation) [E]
+
+- ASK-VS-STREAM: ask_streaming prompted the CONDENSED query, ask() the
+  RAW — provider saw different question text per endpoint. Fixed to
+  match ask() (raw query; history stays data). Test captures the
+  QUESTION region of both endpoints' prompts via a spy provider.
+  Mutation: build_prompt(standalone,...) -> test fails. Commit 55da15c.
+- METRICS-NOLIMIT: /metrics now rate-limited (needed request+response
+  params for slowapi). Mutation: decorator removed -> 429 test fails.
+- ZIP-TXT: generic ZIP under any extension refused by CONTENT (was:
+  extension fallback indexed binary as replacement-char garbage).
+  Mutation: zip branch disabled -> test fails.
+- SUGGEST-LOCK: ExperimentLog.recent_distinct_queries(max_rows) added
+  (locked read); Suggester uses it instead of log.conn. GuardedLog test
+  double FAILS on any direct .conn access — the test is its own
+  mutation-killer. (One fix-iteration bug found by the suite: my first
+  comprehension over-unpacked; suite caught it immediately.)
+- POLITENESS-MONO: pacing on time.monotonic (record_request,
+  time_until_allowed, reserve_slot). RED: mocked wall clock jumping
+  forward collapsed the wait to 0 pre-fix. Mutation-checked.
+- SESSION-DEADCHECK: dead first-TTL check removed (last_used was set to
+  now two lines above it); real max(updated_at) rule kept; TTL tests
+  green.
+
+[E] Full suite after batch: **1189 passed, 13 skipped, 641 subtests in
+409.65s** (was 1168 at review start; +21 review tests, 0 regressions).
