@@ -370,3 +370,63 @@ st-beats-hash on PARAPHRASE, which still holds). Commit 9620f14.
 
 [E] Full suite after batch: **1189 passed, 13 skipped, 641 subtests in
 409.65s** (was 1168 at review start; +21 review tests, 0 regressions).
+
+### S1.11 ROBOTS-WILDCARD (P2) FIXED — RFC 9309 matcher owned [E]
+
+[E] RED: tests/crawler/test_robots_rfc9309.py — 18-case conformance
+  table written FIRST; on Python 3.14 only 3 cases failed (BOM, mid-line
+  comments, mid-pattern $) — investigating revealed the stdlib
+  robotparser was MODERNIZED in 3.14 (wildcards added) while CI runs
+  Python 3.12 where `*`/`$` are LITERAL: politeness silently depended
+  on the interpreter version (the repo's own docstring claimed no
+  wildcard support at all).
+[D] Fix: nexus_search/crawler/robots.py — owned RFC 9309 matcher
+  (wildcards, trailing-$ anchor, longest-match precedence, tie->Allow,
+  BOM/CRLF/comments, empty-Disallow=allow, UA group merge, query-string
+  matching, /robots.txt implicitly allowed). PolitenessManager rewired;
+  fail-closed-on-unreachable contract unchanged. Commit 79e26f3.
+[E] Mutations: tie-break flipped -> equal-specificity test fails; $
+  anchoring disabled -> 2 tests fail; restored -> 18/18.
+[E] Full suite with matcher: 1207 passed / 13 skipped (0 regressions).
+  PHASES_1-6_CHECKLIST known-limits row updated.
+
+### S1.12 Baseline closures [E]
+
+- A2-4 clean-venv: fresh venv from requirements*.txt (CPU torch index)
+  -> pip check "No broken requirements found", imports OK. DONE.
+- A5-5 secret scan: git log --all -p pattern sweep (sk-/api_key=/
+  password=/AKIA/PEM keys) -> clean. (gitleaks binary unavailable on
+  this host; pattern sweep is the recorded method.)
+- A5-6 pip-licenses: NO copyleft licenses in the dependency tree.
+- A5-7 noqa triage (nexus_search/): all 14 noqa sites read and
+  individually justified (typing-only imports, deliberate post-env
+  import order, commented watchdog broad-excepts). Follow-up: a ruff
+  config making them live suppressions (Phase C dx).
+
+### S1.13 B-phase differentials round 1 [E]
+
+- BM25 differential (tests/core/test_bm25_differential.py): production
+  scores vs hand-derived Lucene-style reference at 1e-9 — single/multi
+  term, duplicate-term dedup, all-match positivity, length norm,
+  title-identity, 40 derandomized random corpora + full ranking-order
+  equality. The reference models the SHIPPED semantics (length + tf
+  span title+content — pinned by the golden corpus). Harness lesson:
+  hypothesis reuses TestCase instances — per-example DB state must be
+  rebuilt inside the test (the differential caught its own harness bug).
+  [E] Mutation: classic-idf swap -> all 7 fail; golden corpus unchanged.
+  Commit fc14515.
+- PageRank differential (tests/links/test_pagerank_differential.py):
+  vs networkx.pagerank on chain/star/cycle/disconnected/dangling/dense
+  + 8 seeded randoms at <5e-5, mass-sum-to-1, reciprocal-discount
+  deviation pinned. FOUND PR-CONVERGE (P2): the 30-iteration cap cannot
+  reach 1e-6 L1 on hub-heavy graphs (0.85^30 ~= 0.0076) — star/dangling
+  shapes shipped NON-CONVERGED approximations. Fix: cap 100 (networkx
+  parity); tolerance still exits in 7-12 iters on real graphs (smoke:
+  converged 12 iters / 0.09s / 30s budget OK). Commit 8b9f76b.
+- Fusion properties (tests/core/test_fusion_properties.py): RRF
+  rank-monotonicity, weighted own-score monotonicity, min-max collapse
+  rules, determinism, empty-side edge cases. Commit fe7cb12.
+- Vector-store exactness (tests/core/test_vector_recall.py): top-k ==
+  brute force incl. allowed_ids + min_score filters (recall@k exact by
+  construction — this pins the selection logic); tie contract pinned as
+  determinism + set-equality (positional order; all tied scores equal).
