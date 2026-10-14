@@ -50,6 +50,18 @@ def sanitize_text(text: str) -> tuple[str, int]:
     removed += n
     text, n = _URL_IN_PARENS_RE.subn("[link removed]", text)
     removed += n
+    # Fuzz-found hole (review B7): UNTERMINATED markdown link/image forms
+    # ("![a](http://attacker/" with no closing paren) survived every regex
+    # above, leaving live openers a lenient renderer can pair with later
+    # text. After the complete forms are gone, break any orphan opener:
+    # "!" before "[" kills image syntax; a space inside "](" kills link
+    # syntax. Plain-text answers are unaffected (the channel is the point).
+    if "![" in text:
+        text = text.replace("![", "[")
+        removed += 1
+    if "](" in text:
+        text = text.replace("](", "] (")
+        removed += 1
     # strip any residual control chars that could smuggle formatting
     text = text.replace("\x00", "")
     return text, removed
