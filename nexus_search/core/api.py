@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -278,6 +279,14 @@ if _rag_status == "ok":
             session_store=_session_store)
         logger.info("RAG service ready (provider=%s, model=%s)",
                     _rag_provider.name, _rag_provider.model)
+
+
+def _retry_after_next_utc_day() -> int:
+    """Seconds until the RAG budget's next UTC-day boundary — the 429's
+    Retry-After must state when the budget actually resets (review
+    RETRY-AFTER; the old flat 3600 under-stated resets by up to 23h)."""
+    now = time.time()
+    return max(1, ((int(now) // 86400) + 1) * 86400 - int(now))
 
 
 def _rag_bucket(api_key: Optional[str], request: Request) -> str:
@@ -985,7 +994,7 @@ def ask(request: Request, body: AskRequest, response: Response,
         raise HTTPException(
             status_code=429,
             detail="daily rag token budget exceeded for this key/ip",
-            headers={"Retry-After": "3600"})  # next UTC day at worst
+            headers={"Retry-After": str(_retry_after_next_utc_day())})  # next UTC day at worst
 
     try:
         result = _rag_service.ask(
@@ -1086,7 +1095,7 @@ def ask_stream(request: Request, body: AskRequest,
         global_metrics().record_budget_rejection()
         raise HTTPException(status_code=429,
                             detail="daily rag token budget exceeded for this key/ip",
-                            headers={"Retry-After": "3600"})
+                            headers={"Retry-After": str(_retry_after_next_utc_day())})
 
     cap = _max_open_streams_from_env()
     with _rag_open_streams_lock:
