@@ -42,14 +42,16 @@ Severity: P0/P1/P2/P3. Evidence = test name, command, or file:line.
 | ROBOTS-GAP | P2 | Redirect hops never robots/blocklist/allowed-domain checked | FIXED | 40741cf | tests/crawler/test_redirect_robots.py (4 tests) |
 | INF-WEIGHT | P3 | bm25_weight=inf accepted; scores degenerate to null | FIXED | 6bc2e08 | test_search_dos::TestNonFiniteWeights (3 tests) |
 | R-1/R-2/R-30/R-34 | P3 | Stale README counts + wrong env default row | FIXED | b01f623 | README truth pass |
-| METRICS-NOLIMIT | P3 | /metrics has no rate limiter | OPEN | - | - |
-| ZIP-TXT | P3 | zip renamed .txt indexed as garbage (bypasses binary refusal) | OPEN | - | - |
-| SUGGEST-LOCK | P3 | Suggester._from_log bypasses ExperimentLog.lock | OPEN | - | - |
-| POLITENESS-MONO | P3 | Politeness pacing uses wall clock not monotonic | OPEN | - | - |
-| ASK-VS-STREAM | P3 | ask() prompts raw query, ask_streaming() prompts condensed | OPEN | - | - |
-| NDCG-EMPTY | P3 | ndcg_at_k returns 1.0 for zero-relevant queries | OPEN | - | - |
-| ROBOTS-WILDCARD | P2 | stdlib robotparser lacks RFC 9309 * / $ wildcards (documented) | OPEN (documented limit; B3 decision: implement or accept) | - | - |
-| SESSION-DEADCHECK | P3 | SqliteSessionStore.get dead first TTL check (last_used just set) | OPEN (cosmetic; second check correct) | - | - |
+| METRICS-NOLIMIT | P3 | /metrics has no rate limiter | FIXED | 60c221f | test_api::TestApiRateLimit::test_metrics_is_limited_too |
+| ZIP-TXT | P3 | zip renamed .txt indexed as garbage (bypasses binary refusal) | FIXED | 60c221f | test_files_connector::TestZipRenamedTxtIsRefused (2 tests) |
+| SUGGEST-LOCK | P3 | Suggester._from_log bypasses ExperimentLog.lock | FIXED | 60c221f | test_suggestions::TestRelatedSearchesLockDiscipline (GuardedLog double) |
+| POLITENESS-MONO | P3 | Politeness pacing uses wall clock not monotonic | FIXED | 60c221f | test_politeness::test_crawl_delay_survives_forward_wall_clock_skew + test_reserve_slot_survives... |
+| ASK-VS-STREAM | P3 | ask() prompts raw query, ask_streaming() prompted condensed | FIXED | 55da15c | test_sessions::TestFollowups::test_ask_and_stream_prompt_the_same_question |
+| NDCG-EMPTY | P3 (effects P2) | ndcg_at_k returned 1.0 for zero-relevant queries — inflated ALL published aggregate NDCG by no-answer free 1.0s | FIXED | 9620f14 | test_benchmark::test_ndcg_with_no_relevant_docs_is_zero_not_perfect; floors re-derived |
+| SESSION-DEADCHECK | P3 | SqliteSessionStore.get dead first TTL check (last_used just set) | FIXED | 60c221f | existing TTL tests (test_sqlite_store_roundtrip_and_ttl_prune) |
+| ROBOTS-WILDCARD | P2 | stdlib robotparser lacks RFC 9309 * / $ wildcards + longest-match (documented) | OPEN — B3 decision: implement RFC 9309 matcher (no new deps) | - | - |
+| COVERAGE-GATE | P2 | 88.2% line / 82.0% branch vs exit gates (92/85 overall; 97/90 security-critical: storage 90.7, files 81.3, security 96.6, sanitize 96.9) | OPEN — lift in later rounds | - | coverage.json in temp; table in worklog S1.8 |
+| NOQA-DEBT | P2 | 94 unused noqa (RUF100) + 57 unused imports + BOM file | OPEN (A5-7) | - | ruff baseline S1.4 |
 
 ## Phase B — Per-Phase Adversarial Audit
 
