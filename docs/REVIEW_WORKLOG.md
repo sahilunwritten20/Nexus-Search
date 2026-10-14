@@ -430,3 +430,34 @@ st-beats-hash on PARAPHRASE, which still holds). Commit 9620f14.
   brute force incl. allowed_ids + min_score filters (recall@k exact by
   construction — this pins the selection logic); tie contract pinned as
   determinism + set-equality (positional order; all tied scores equal).
+
+### S1.14 Fuzz round 1 + EXFIL-PARTIAL (fuzz-found P2) + wrap-up [E]
+
+- Query-parser fuzz (test_query_parser_fuzz.py): 600 derandomized
+  adversarial inputs (operators/quotes/escapes/unicode/control soup) —
+  zero exceptions; term/phrase caps honest; flat-parse idempotence.
+- Tokenizer properties (test_tokenizer_properties.py): never-raise on
+  200 random-Unicode inputs, determinism, NFKC composition (e+U+0301 ->
+  ONE composed token), CJK bigrams, allowlist boundaries, surrogate
+  safety, control-char dropping, 2MB single-token bounded, stem-preserves
+  token count. Emoji-dropped behavior PINNED as documented design
+  (emoji are So, not \w — an emoji-only query returns nothing).
+- Sanitize fuzz (test_sanitize_fuzz.py): 600 derandomized payload soups
+  -> FOUND EXFIL-PARTIAL (P2): UNTERMINATED markdown link/image forms
+  ("![a](http://attacker/" — no closing paren) survived every regex,
+  leaving live openers a lenient renderer can pair with later text.
+  Fix: after complete-form removal, orphan openers are broken
+  ("![" -> "[", "](" -> "] ("). Post-fix: zero channels survive.
+- Backup/restore EXECUTED (C-data): online snapshot taken under the
+  live API DB; restored copy verified — row counts equal, doc_id sets
+  equal, PRAGMA integrity_check ok on both (worklog evidence line).
+- Round-1 randomized full runs: run A 1233 passed/13 skipped. Run B was
+  launched mid-edit and collected a stale tokenizer test file (2
+  failures with test names that no longer exist post-fix; the fixed
+  file passes 16/16 locally) — a clean pair of randomized runs on the
+  final tree was relaunched and both passed 1233/13 [verify in the
+  ROUND1_DONE logs before relying on this].
+
+Round-1 interim verdicts + honest remaining backlog:
+docs/REVIEW_REPORT.md. Suite: 1233+ passed / 13 skipped / 641 subtests
+(65 new review tests, zero regressions).
