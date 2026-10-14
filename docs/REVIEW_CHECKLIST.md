@@ -123,6 +123,10 @@ Severity: P0/P1/P2/P3. Evidence = test name, command, or file:line.
 
 | ID | Round | Result | Status |
 |----|-------|--------|--------|
-| E-R1 | 1 | - | INPROG |
-| E-R2 | 2 | - | TODO |
+| E-R1 | 1 | 17 findings fixed (1xP1 SSRF pin bypass, 7xP2 incl. 3 found by new differentials/fuzz, 9xP3 + docs truth pass); differentials BM25/PageRank/fusion/vector green; fuzz parser/tokenizer/sanitize green (1 fuzz-found P2 fixed); baselines closed (clean-venv, pip-audit, secrets, licenses); randomized suite 1259/13 twice. Interim verdicts in docs/REVIEW_REPORT.md | DONE |
+| E-R2 | 2 | NOT STARTED — resume backlog in REVIEW_REPORT.md section "NOT verified" (red-team corpus, mutmut, schemathesis, chaos, load/soak, coverage lift, migration tests, skeptic pass) | TODO |
 | E-R3 | 3 | - | TODO |
+
+Final round-1 suite evidence: two randomized full runs, both
+"1259 passed, 13 skipped, 641 subtests" (logs regress_round1{,b}.txt in
+the opencode temp dir; recorded 2026-10-14).
