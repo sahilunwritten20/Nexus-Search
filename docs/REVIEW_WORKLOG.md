@@ -461,3 +461,44 @@ st-beats-hash on PARAPHRASE, which still holds). Commit 9620f14.
 Round-1 interim verdicts + honest remaining backlog:
 docs/REVIEW_REPORT.md. Suite: 1233+ passed / 13 skipped / 641 subtests
 (65 new review tests, zero regressions).
+
+### S1.15 Round 2 — migrations, budgets, chaos, red team, ops docs [E]
+
+- Migration upgrades (test_migration_upgrade.py): 10 tests, ALL GREEN
+  FIRST RUN — storage v1/v3/v4-era populated files upgrade with zero
+  row loss (docs + postings + usage + sessions verified); pre-runner
+  era baselines; frontier v1->v2 + ancient no-etag visited repaired;
+  link_graph v1->v3 with from_domain/to_domain/is_internal BACKFILLS
+  verified against ground truth; legacy embeddings/vectors tables
+  dropped loudly. Claims: MIGRATIONS = TRUE.
+- UTC rollover (test_budget_rollover.py): budget resets exactly at the
+  UTC day boundary (usage never leaks across days; day-key = UTC
+  calendar day; 0=unlimited). Found RETRY-AFTER (P3): the budget 429's
+  flat "Retry-After: 3600" under-stated resets by up to 23h — fixed to
+  seconds-to-next-UTC-midnight (api.py, both /ask endpoints). RED->GREEN.
+- Crash safety (test_crash_safety.py): writer subprocess HARD-KILLED at
+  4 delays (TerminateProcess == kill -9); store reopens integrity ok,
+  zero orphan postings, zero bare documents, post-crash writes/searches
+  work. The atomic-transaction claim verified live.
+- RAG RED-TEAM CORPUS (red_team_corpus.py + test_red_team.py): 201
+  committed labeled cases / 16 families, executed through the REAL
+  RagService + TestClient. 0 injections obeyed, 0 secrets/PII in
+  prompts, 0 exfil channels, 0 prompt leaks, 0 invented citations,
+  llm_allowed never bypassed, all API abuse cases exact-status.
+  FOUND REDTEAM-FILTERS (P2): unknown filter keys on /ask escaped as a
+  500 with a full stack trace (ValueError from _render_filters
+  uncaught) — fixed: filters validated pre-spend -> clean 400 on
+  /ask and /ask/stream. Corpus harness bugs found along the way (flat
+  tuple, gate-marginal citemap corpora, env leak between API cases)
+  — all fixed in the corpus/runner, not by weakening assertions.
+- Ops docs: SECURITY.md (STRIDE matrix, 8 residual risks with removal
+  paths) + RUNBOOK.md (deploy/rollback/backup-restore/key-rotation/
+  retention/triage/reindex/capacity).
+- Fresh-clone test: git clone -> temp dir -> pip install from
+  requirements (clean venv) -> README boot -> /health 200 + /search 200.
+  PASSES (no undocumented steps).
+- Load smoke (NEXUS_RUN_LOAD_SMOKE=1): 2 passed (bounded /search +
+  /ask + /ask/stream).
+- mutmut: BLOCKED on native Windows (WSL-only; no Linux interpreter on
+  this host). Compensating evidence: per-fix manual mutation checks.
+  Run in Linux CI. Honest blocker, recorded.

@@ -59,24 +59,42 @@ Phase-3 known-limits row updated (commits b01f623, 35b2ed2).
 
 ## NOT verified this round (honest list — the resume backlog)
 
-1. **RAG red-team corpus (200+ committed cases)** — B7's largest item.
-2. **mutmut scores** on the high-risk modules (manual mutation checks
-   done per fix; tool-run pending).
-3. **Schemathesis/ZAP** API fuzzing (live probes + env-doc script done).
-4. **Chaos suite**: kill -9 at every critical section, SIGTERM during
-   crawl/SSE, disk-full, DB lock storm, UTC-rollover budget test.
-5. **Load/soak** at committed budgets (p50/p95/p99 + memory/FD curves).
-6. **Coverage lift to gates** (92/85 overall; 97/90 security-critical:
-   storage 90.7, files 81.3, security 96.6, sanitize 96.9 now).
-7. **Populated-DB migration tests** v1->v2->v3->v4 + downgrade notes.
-8. **Spam-farm benchmark** + registrable-domain decision (Phase D).
-9. **Refuse-gate improvement campaign** (train-split-only tuning).
-10. **Real-embedder (ST) benchmark re-run** under corrected NDCG; LTR
-    data path; GDPR erasure; API versioning; sticky-routing warning —
-    the Phase D list.
-11. **SECURITY.md (STRIDE), RUNBOOK.md, CONTRIBUTING**, fresh-clone
-    test, ruff/mypy curated configs, noqa config wiring.
-12. **Skeptic passes + convergence rounds 2-3** (mission minimum).
+Round 2 (this session) closed the top items:
+- ~~Populated-DB migration tests~~ — DONE (10 tests: storage v1/v3/v4-era
+  upgrades with zero row loss, pre-runner baselining, frontier ancient
+  shapes, link-graph backfills, legacy vector-table drop).
+- ~~UTC rollover + Retry-After~~ — DONE (budget resets at UTC midnight,
+  429 Retry-After states the real seconds; RETRY-AFTER fixed).
+- ~~Chaos: kill-9 mid-write~~ — DONE (4 kill delays -> integrity ok,
+  zero orphan postings/bare docs, recovery writes+searches work).
+- ~~RAG red-team corpus~~ — DONE: 201 committed cases / 16 families, all
+  green through the real service + API; found REDTEAM-FILTERS (P2:
+  unknown filter keys -> 500 with internals; fixed to a clean 400).
+- ~~SECURITY.md / RUNBOOK.md~~ — DONE (STRIDE matrix, 8 residual risks
+  with removal paths; ops procedures executed or test-covered).
+- ~~Fresh-clone test~~ — DONE (clone -> pip install -> README boot ->
+  /health + /search 200).
+- ~~Load smoke~~ — DONE (2 passed: /search + /ask + /ask/stream bounded).
+- mutmut: BLOCKED natively on Windows (WSL-only binary; no Linux
+  interpreter configured on this host). Compensating evidence: 14+
+  manual mutation checks in the worklog. Run mutmut in Linux CI to close.
+
+Still open for the NEXT session (in risk-reduction order):
+1. **Coverage lift to gates** (92/85 overall — now ~89 after new tests;
+   security-critical 97/90: storage 90.7, files 81.3 need work).
+2. **Schemathesis** property-based API fuzzing against the OpenAPI.
+3. **Soak test** (30-60 min) for memory/FD/thread leaks; full p50/p95/p99
+   load curve at committed budgets.
+4. **Spam-farm benchmark** + registrable-domain decision (Phase D).
+5. **Refuse-gate improvement campaign** (train-split-only tuning).
+6. **ST-arm benchmark re-run** under corrected NDCG + real-embedder
+   floors recheck.
+7. **Phase D features**: GDPR erasure, delete-by-URL cascade proof,
+   API versioning, sticky-routing warning, ruff/mypy curated configs
+   (the 800-baseline triage), noqa config wiring.
+8. **Skeptic passes + convergence rounds 2-3** (mission minimum): fresh
+   adversarial re-read of changed+unchanged code, re-run fuzzers with
+   new seeds.
 
 ## Reproduce
 
