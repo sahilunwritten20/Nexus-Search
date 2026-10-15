@@ -58,16 +58,20 @@ class TestPinnedResolutionSemantics(unittest.TestCase):
             self.assertEqual(out[0][4][0], "1.2.3.4")
             self.assertEqual(out[0][4][1], 80)
 
-    def test_pin_with_service_name_port_falls_back_to_real_dns(self):
-        # a service-name port must not be guessed into a number: the pin
-        # is skipped and the REAL resolver answers (may raise offline)
+    def test_pin_with_service_name_port_fails_closed(self):
+        """SKEP-5 (round-2 skeptic): a pinned host + service-name port
+        used to fall back to a REAL DNS lookup — the exact rebind window
+        the pin exists to close (one library refactor from exploitable).
+        A pinned host must never consult live DNS, for any request."""
         security.install_dns_pinning()
-        with mock.patch("socket.getaddrinfo", wraps=security._real_getaddrinfo) as real:
-            with security.pinned_resolution("example.com", self.ADDRS):
-                try:
+        addrs = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("1.2.3.4", 0))]
+        with mock.patch.object(security, "_real_getaddrinfo",
+                                wraps=security._real_getaddrinfo) as real:
+            with security.pinned_resolution("example.com", addrs):
+                with self.assertRaises(socket.gaierror):
                     socket.getaddrinfo("example.com", "http")
-                except socket.gaierror:
-                    pass  # offline test env: reaching the real resolver is the point
+        self.assertEqual(real.call_count, 0,
+                         "no real DNS lookup may happen for a pinned host")
 
     def test_wrong_family_or_type_pin_raises_gaierror(self):
         security.install_dns_pinning()

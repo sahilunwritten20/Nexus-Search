@@ -159,9 +159,12 @@ class CrawlPipeline:
 
         The entry URL already cleared the full gate chain in _crawl; a
         redirect target must clear the SAME politeness rules of ITS OWN
-        domain: blocklist, SSRF validation, allowed-domains, robots.txt.
-        Inside a robots.txt fetch (thread-local marker), hops are checked
-        for SSRF only — RFC 9309: the robots fetch itself cannot consult
+        domain: blocklist, SSRF validation, allowed-domains, robots.txt,
+        AND crawl-delay pacing (SKEP-3: pre-fix the gate checked
+        permission but not pacing, so a crawled site could 302 the
+        crawler into hammering a third party at full speed). Inside a
+        robots.txt fetch (thread-local marker), hops are checked for
+        SSRF only — RFC 9309: the robots fetch itself cannot consult
         robots, and the marker keeps a redirect chain from recursing
         through robots lookups."""
         if self.blocklist.is_blocked(url):
@@ -173,6 +176,9 @@ class CrawlPipeline:
         domain = get_domain(url)
         if not self._domain_allowed(domain):
             return False
+        wait = self.politeness.reserve_slot(domain)
+        if wait > 0:
+            time.sleep(wait)
         self._ensure_robots(url, domain)
         return self.politeness.is_allowed(domain, url)
 
@@ -211,11 +217,20 @@ class CrawlPipeline:
             self.frontier.add(url, depth=0, priority=10)
 
     def seed_from_sitemap(self, sitemap_url: str, max_sitemaps: int = 10, max_urls: int = 5000) -> int:
-        """Queue page URLs from a sitemap (following sitemap-index files)."""
+        """Queue page URLs from a sitemap (following sitemap-index files).
+
+        SKEP-4 (P3): child sitemap URLs and page locs run the blocklist
+        and allowed-domains gates — a host that opted out via the
+        blocklist must not be fetched or queued just because a sitemap
+        index lists it."""
         queue, seen, added = [sitemap_url], set(), 0
         while queue and len(seen) < max_sitemaps:
             url = queue.pop(0)
             if url in seen or (not self.allow_private_hosts and not validate_url(url)):
+                continue
+            if self.blocklist.is_blocked(url):
+                continue
+            if not self._domain_allowed(get_domain(url)):
                 continue
             seen.add(url)
             xml = maybe_gzip(self.fetcher.fetch_bytes(url))
@@ -223,7 +238,10 @@ class CrawlPipeline:
             for loc in parse_sitemap(xml):
                 if added >= max_urls:
                     break
-                if self._domain_allowed(get_domain(loc)) and self.frontier.add(loc, depth=0, priority=5):
+                if self.blocklist.is_blocked(loc):
+                    continue
+                loc_domain = get_domain(loc)
+                if self._domain_allowed(loc_domain) and self.frontier.add(loc, depth=0, priority=5):
                     added += 1
         return added
 

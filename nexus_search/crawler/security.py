@@ -114,8 +114,15 @@ def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
         if pinned is not None:
             try:
                 port_num = int(port) if port is not None else 0
-            except (TypeError, ValueError):  # service name like "http": don't guess
-                return _real_getaddrinfo(host, port, family, type, proto, flags)
+            except (TypeError, ValueError):
+                # SKEP-5 (P3): a service-name port on a PINNED host used
+                # to fall back to a real DNS lookup — the exact rebind
+                # window the pin exists to close. Fail closed instead:
+                # the HTTP stack always passes numeric ports; anything
+                # else can safely be refused.
+                raise socket.gaierror(
+                    socket.EAI_NONAME,
+                    "no pinned address for service-name port")
             result = []
             for fam, stype, prot, canon, sa in pinned:
                 if family and fam != family:

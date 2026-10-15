@@ -25,32 +25,68 @@ Conformance (RFC 9309, test-pinned in tests/crawler/test_robots_rfc9309.py):
 import re
 from urllib.parse import urlsplit
 
+# SKEP-2 (P2): a site we crawl controls this number; 60s is the maximum
+# pacing the crawler will honor (Google ignores Crawl-delay entirely;
+# 60s is generous for real politeness while bounding a hostile value).
+CRAWL_DELAY_MAX = 60.0
+
 
 class _Rule:
-    __slots__ = ("allow", "pattern", "specificity", "_regex")
+    __slots__ = ("allow", "pattern", "specificity", "_body", "_anchored")
 
     def __init__(self, allow: bool, pattern: str):
         self.allow = allow
         self.pattern = pattern
-        # specificity = the pattern's text length (RFC 9309 §2.2.4:
-        # "the rule with the longer path" is the more specific one)
+        # specificity = the pattern's text length (RFC 9309 §2.2.4 /
+        # Google's documented rule-length precedence, $ counted)
         self.specificity = len(pattern)
-        self._regex = self._compile(pattern)
-
-    @staticmethod
-    def _compile(pattern: str) -> re.Pattern:
-        anchor_end = pattern.endswith("$")
-        if anchor_end:
-            pattern = pattern[:-1]
-        parts = ["^"]
-        for ch in pattern:
-            parts.append(".*" if ch == "*" else re.escape(ch))
-        if anchor_end:
-            parts.append("$")
-        return re.compile("".join(parts))
+        # SKEP-1 (P1): compiling attacker-controlled patterns into regexes
+        # allowed catastrophic backtracking ('/a*a*...*b' NEVER returned —
+        # measured hang at 8 stars x 5000 chars, freezing the whole
+        # process). Matching is now a LINEAR two-pointer glob.
+        self._anchored = pattern.endswith("$")
+        self._body = pattern[:-1] if self._anchored else pattern
 
     def matches(self, path: str) -> bool:
-        return self._regex.match(path) is not None
+        return _glob_match(self._body, path, require_full_text=self._anchored)
+
+
+def _glob_match(pattern: str, text: str, require_full_text: bool) -> bool:
+    """Linear wildcard match (SKEP-1): '*' matches any sequence
+    (including empty), everything else is literal; the match is
+    left-anchored. With require_full_text (the trailing-$ form), the
+    pattern must consume the ENTIRE text; otherwise a prefix match wins
+    (classic robots prefix semantics). Worst case O(len(pattern) *
+    len(text)) with NO exponential blowup — the classic star-anchored
+    backtracking loop, not a regex engine."""
+    pi = ti = 0
+    star_p = star_t = -1
+    n, m = len(pattern), len(text)
+    while ti < m:
+        if pi == n:
+            if require_full_text:
+                return False  # anchored form: trailing text breaks the $
+            return True       # prefix form: pattern exhausted = match
+        c = pattern[pi]
+        if c == "*":
+            star_p, star_t = pi, ti
+            pi += 1
+            continue
+        if c == text[ti]:
+            pi += 1
+            ti += 1
+            continue
+        if star_p >= 0:
+            # backtrack to the last star, let it absorb one more char
+            pi = star_p + 1
+            star_t += 1
+            ti = star_t
+            continue
+        return False
+    # text exhausted: trailing stars match the empty remainder
+    while pi < n and pattern[pi] == "*":
+        pi += 1
+    return pi == n
 
 
 class _Group:
@@ -60,10 +96,6 @@ class _Group:
         self.agents: set[str] = set()
         self.rules: list[_Rule] = []
         self.crawl_delay: float | None = None
-
-
-_EMPTY_RULES = re.compile(r"^(user-agent|disallow|allow|crawl-delay|sitemap)\s*$",
-                          re.IGNORECASE)
 
 
 def _split_groups(text: str) -> tuple[list[_Group], list[str]]:
@@ -114,10 +146,23 @@ def _split_groups(text: str) -> tuple[list[_Group], list[str]]:
             current.agents.add("*")
             groups.append(current)
         if key == "crawl-delay":
+            # SKEP-2 (P2): attacker-controlled value was consumed
+            # unvalidated — 99999999 slept a worker ~3 years, NaN/-5
+            # silently DISABLED pacing, 1e999 crashed time.sleep(inf).
+            # Clamp finite values to [0, CRAWL_DELAY_MAX]; anything
+            # non-numeric/negative/NaN is ignored (absent).
             try:
-                current.crawl_delay = float(value)
+                delay = float(value)
             except ValueError:
-                pass  # non-numeric crawl-delay: ignore per RFC
+                continue
+            if not (delay >= 0) or delay > CRAWL_DELAY_MAX:
+                # not(finite and >= 0) or absurdly large
+                if delay > CRAWL_DELAY_MAX:
+                    current.crawl_delay = CRAWL_DELAY_MAX
+                # else: negative/NaN -> leave as absent
+                saw_rule_in_current = True
+                continue
+            current.crawl_delay = delay
             saw_rule_in_current = True
             continue
         if not value:
