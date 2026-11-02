@@ -1145,9 +1145,17 @@ def ask_stream(request: Request, body: AskRequest,
                     _rag_open_streams.pop(bucket, None)
                 else:
                     _rag_open_streams[bucket] = remaining
+            # SKEP-R5 (P2): a client that disconnects before `done` used
+            # to settle NOTHING — full generations consumed for free
+            # against the one cross-worker cost control. Disconnects now
+            # settle the same worst-case estimate the pre-check reserved
+            # (refusals/degraded carry 0, so honest completions only).
+            if not settled:
+                settle(_storage, bucket,
+                       _rag_config.max_tokens
+                       + _rag_config.max_context_tokens + 256)
             # disconnect (GeneratorExit) lands here: the provider call
-            # result is abandoned, no budget settle happened, the bucket
-            # slot is released.
+            # result is abandoned, the bucket slot is released.
 
     from fastapi.responses import StreamingResponse
     return StreamingResponse(

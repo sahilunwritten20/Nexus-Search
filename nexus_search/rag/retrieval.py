@@ -212,6 +212,14 @@ class RagRetriever:
         unknown = set(filters) - _ALLOWED_FILTER_KEYS
         if unknown:
             raise ValueError(f"unsupported filter keys: {sorted(unknown)}")
+        # SKEP-R8 (P3): VALUES were unvalidated — a 100k-char doc_type made
+        # the retrieval input exceed MAX_QUERY_CHARS after the query was
+        # already capped ("never more expensive than /search" broken).
+        for key, value in filters.items():
+            if not isinstance(value, str):
+                raise ValueError(f"filter {key} must be a string value")
+            if not value or len(value) > 64:
+                raise ValueError(f"filter {key} must be 1-64 characters")
         parts = []
         if filters.get("doc_type"):
             parts.append(f"type:{filters['doc_type']}")

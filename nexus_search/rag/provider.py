@@ -63,7 +63,13 @@ class LLMStream:
 
     The RAG layer treats streamed text as provisional until the stream is
     exhausted (P7-7); this class is what makes the final text + usage
-    available for citation/quote verification at stream end."""
+    available for citation/quote verification at stream end.
+
+    SKEP-R3: real adapters fill this from a READER THREAD (the HTTP body
+    is iterated lazily, connection headers only in complete()), so
+    iteration BLOCKS until the next delta arrives, and a reader-side
+    failure surfaces as the stored error from __next__ instead of a
+    silent empty answer."""
 
     def __init__(self, model: str, provider: str):
         self._parts: list[str] = []
@@ -73,6 +79,7 @@ class LLMStream:
         self._model = model
         self._provider = provider
         self._done = False
+        self._error: BaseException | None = None
 
     def add(self, delta: str) -> None:
         with self._lock:
@@ -81,6 +88,11 @@ class LLMStream:
     def set_usage(self, usage: LLMUsage) -> None:
         with self._lock:
             self._usage = usage
+
+    def set_error(self, exc: BaseException) -> None:
+        with self._lock:
+            self._error = exc
+            self._done = True
 
     def finish(self) -> None:
         with self._lock:
@@ -101,13 +113,20 @@ class LLMStream:
 
     def __next__(self) -> str:
         # iteration is a cursor over the accumulated parts  consuming the
-        # iterator must NOT destroy the final text (result() reads it after)
-        with self._lock:
-            if self._cursor < len(self._parts):
-                piece = self._parts[self._cursor]
-                self._cursor += 1
-                return piece
-            raise StopIteration
+        # iterator must NOT destroy the final text (result() reads it after).
+        # With a live reader thread, blocks (10ms polls) until a part,
+        # the finish flag, or a reader error arrives.
+        while True:
+            with self._lock:
+                if self._cursor < len(self._parts):
+                    piece = self._parts[self._cursor]
+                    self._cursor += 1
+                    return piece
+                if self._error is not None:
+                    raise self._error
+                if self._done:
+                    raise StopIteration
+            time.sleep(0.01)
 
     def result(self) -> LLMResult:
         with self._lock:
@@ -153,17 +172,24 @@ def _sleep_jitter(attempt: int) -> None:
 
 
 def _post_with_retries(url: str, *, headers: dict, body: dict,
-                       timeout: float, max_retries: int):
+                       timeout: float, max_retries: int,
+                       stream_http: bool = False):
     """POST with the P7-3 retry contract: connect errors / 429 / 5xx are
     retried (<= max_retries, jittered); READ timeouts and other failures
     fail fast (a non-idempotent-capable call may already have landed).
     Raises ProviderError subclasses; returns the raw Response (callers
-    parse JSON or iterate SSE lines)."""
+    parse JSON or iterate SSE lines).
+
+    SKEP-R2 (P1): stream_http=True iterates the body LAZILY — without it
+    requests downloads the ENTIRE SSE payload into RAM before the
+    caller's size cap can fire. Retryable responses are CLOSED before
+    the retry (streamed bodies would otherwise leak sockets)."""
     attempt = 0
     while True:
         try:
             resp = requests.post(url, headers=headers,
-                                 json=body, timeout=(timeout, timeout))
+                                 json=body, timeout=(timeout, timeout),
+                                 stream=bool(stream_http))
         except requests.exceptions.ConnectionError:
             if attempt < max_retries:
                 _sleep_jitter(attempt)
@@ -175,13 +201,16 @@ def _post_with_retries(url: str, *, headers: dict, body: dict,
         except requests.exceptions.RequestException:
             raise ProviderError("provider_request_error") from None
         if resp.status_code in _RETRYABLE_STATUS and attempt < max_retries:
+            resp.close()
             _sleep_jitter(attempt)
             attempt += 1
             continue
         if resp.status_code == 401:
+            resp.close()
             raise ProviderError("provider_auth_error")
         if resp.status_code >= 400:
             # body deliberately dropped: never surfaced, never logged
+            resp.close()
             raise ProviderError(f"provider_http_error_{resp.status_code}")
         return resp
 
@@ -448,7 +477,8 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
             data = _post_with_retries(f"{self._base}/chat/completions",
                                       headers=headers, body=body,
                                       timeout=t,
-                                      max_retries=self.config.max_retries)
+                                      max_retries=self.config.max_retries,
+                                      stream_http=bool(stream))
             if stream:
                 return self._parse_stream(data, max_tokens)
             try:
@@ -467,44 +497,64 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
         """Consume the SSE body into an LLMStream. Usage: estimated from
         text length when the endpoint does not include it (documented).
 
-        STREAM-1 bound: a hostile endpoint can ignore max_tokens and
-        stream far past the requested answer budget; the read is aborted
-        with provider_stream_too_large instead of buffering the body."""
+        SKEP-R2/R3 (P1/P2): the body is iterated LAZILY (requests
+        stream=True was set by the caller) on a READER THREAD holding
+        the provider slot, under a TOTAL read deadline (10x the call
+        timeout) and the text cap — a hostile endpoint can neither
+        buffer gigabytes into RAM (the old eager download did) nor
+        trickle forever holding a concurrency slot (the old zombie
+        worker did). complete() returns once HEADERS are in, so the
+        pipeline's gap/char caps see live tokens."""
         stream = LLMStream(self._model, self.name)
-        text_parts: list[str] = []
-        text_cap = max(max_tokens * 8, 1024)  # ~2x the chars/token estimate
-        total = 0
-        try:
-            for raw_line in resp.iter_lines(decode_unicode=True):
-                if not raw_line or not raw_line.startswith("data:"):
-                    continue
-                payload = raw_line[5:].strip()
-                if payload == "[DONE]":
-                    break
+        cap = max(max_tokens * 8, 1024)
+        deadline_seconds = 10.0 * max(self.config.timeout, 1.0)
+
+        def _read():
+            try:
+                with self._slot():
+                    total = 0
+                    deadline = time.monotonic() + deadline_seconds
+                    for raw_line in resp.iter_lines(decode_unicode=True):
+                        if not raw_line or not raw_line.startswith("data:"):
+                            continue
+                        payload = raw_line[5:].strip()
+                        if payload == "[DONE]":
+                            break
+                        if time.monotonic() > deadline:
+                            raise ProviderError("provider_stream_timeout")
+                        try:
+                            chunk = json.loads(payload)
+                        except ValueError:
+                            continue
+                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                        piece = delta.get("content")
+                        if piece:
+                            total += len(piece)
+                            if total > cap:
+                                raise ProviderError("provider_stream_too_large")
+                            stream.add(piece)
+                        usage = chunk.get("usage")
+                        if usage:
+                            stream.set_usage(LLMUsage(
+                                tokens_in=int(usage.get("prompt_tokens", 0)),
+                                tokens_out=int(usage.get("completion_tokens", 0))))
+                    if not stream.usage.tokens_in and not stream.usage.tokens_out:
+                        joined = stream.text_so_far
+                        stream.set_usage(LLMUsage(tokens_in=-(-len(joined) // 4),
+                                                  tokens_out=-(-len(joined) // 4)))
+            except requests.exceptions.RequestException:
+                stream.set_error(ProviderTimeout())
+            except BaseException as exc:  # reader thread failure surfaces
+                stream.set_error(exc)     # via __next__, never swallowed
+            finally:
                 try:
-                    chunk = json.loads(payload)
-                except ValueError:
-                    continue
-                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                piece = delta.get("content")
-                if piece:
-                    total += len(piece)
-                    if total > text_cap:
-                        raise ProviderError("provider_stream_too_large")
-                    text_parts.append(piece)
-                    stream.add(piece)
-                usage = chunk.get("usage")
-                if usage:
-                    stream.set_usage(LLMUsage(
-                        tokens_in=int(usage.get("prompt_tokens", 0)),
-                        tokens_out=int(usage.get("completion_tokens", 0))))
-        except requests.exceptions.RequestException:
-            raise ProviderTimeout() from None
-        if not stream.usage.tokens_in and not stream.usage.tokens_out:
-            joined = "".join(text_parts)
-            stream.set_usage(LLMUsage(tokens_in=-(-len(joined) // 4),
-                                      tokens_out=-(-len(joined) // 4)))
-        stream.finish()
+                    resp.close()
+                except Exception:
+                    pass
+                stream.finish()
+
+        threading.Thread(target=_read, daemon=True,
+                         name="openai-sse-reader").start()
         return stream
 
 
@@ -550,7 +600,8 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
             data = _post_with_retries(f"{self._base}/v1/messages",
                                       headers=headers, body=body,
                                       timeout=t,
-                                      max_retries=self.config.max_retries)
+                                      max_retries=self.config.max_retries,
+                                      stream_http=bool(stream))
             if stream:
                 return self._parse_stream(data, max_tokens)
             try:
@@ -570,41 +621,59 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
                 raise ProviderError("provider_bad_response") from None
 
     def _parse_stream(self, data, max_tokens: int) -> LLMStream:
+        """SKEP-R2/R3 (see OpenAIProvider._parse_stream): lazy reader
+        thread + provider slot + total deadline + text cap."""
         stream = LLMStream(self._model, self.name)
-        text_parts: list[str] = []
-        text_cap = max(max_tokens * 8, 1024)  # STREAM-1 bound (see OpenAI)
-        total = 0
-        try:
-            for raw_line in data.iter_lines(decode_unicode=True):
-                if not raw_line or not raw_line.startswith("data:"):
-                    continue
+        cap = max(max_tokens * 8, 1024)
+        deadline_seconds = 10.0 * max(self.config.timeout, 1.0)
+
+        def _read():
+            try:
+                with self._slot():
+                    total = 0
+                    deadline = time.monotonic() + deadline_seconds
+                    for raw_line in data.iter_lines(decode_unicode=True):
+                        if not raw_line or not raw_line.startswith("data:"):
+                            continue
+                        if time.monotonic() > deadline:
+                            raise ProviderError("provider_stream_timeout")
+                        try:
+                            event = json.loads(raw_line[5:].strip())
+                        except ValueError:
+                            continue
+                        etype = event.get("type")
+                        if etype == "content_block_delta":
+                            piece = (event.get("delta") or {}).get("text")
+                            if piece:
+                                total += len(piece)
+                                if total > cap:
+                                    raise ProviderError(
+                                        "provider_stream_too_large")
+                                stream.add(piece)
+                        elif etype == "message_delta":
+                            usage = event.get("usage") or {}
+                            if usage:
+                                stream.set_usage(LLMUsage(
+                                    tokens_in=int(usage.get("input_tokens", 0)),
+                                    tokens_out=int(usage.get("output_tokens", 0))))
+                        elif etype == "message_stop":
+                            break
+                    if not stream.usage.tokens_out and stream.text_so_far:
+                        joined = stream.text_so_far
+                        stream.set_usage(LLMUsage(tokens_out=-(-len(joined) // 4)))
+            except requests.exceptions.RequestException:
+                stream.set_error(ProviderTimeout())
+            except BaseException as exc:
+                stream.set_error(exc)
+            finally:
                 try:
-                    event = json.loads(raw_line[5:].strip())
-                except ValueError:
-                    continue
-                etype = event.get("type")
-                if etype == "content_block_delta":
-                    piece = (event.get("delta") or {}).get("text")
-                    if piece:
-                        total += len(piece)
-                        if total > text_cap:
-                            raise ProviderError("provider_stream_too_large")
-                        text_parts.append(piece)
-                        stream.add(piece)
-                elif etype == "message_delta":
-                    usage = event.get("usage") or {}
-                    if usage:
-                        stream.set_usage(LLMUsage(
-                            tokens_in=int(usage.get("input_tokens", 0)),
-                            tokens_out=int(usage.get("output_tokens", 0))))
-                elif etype == "message_stop":
-                    break
-        except requests.exceptions.RequestException:
-            raise ProviderTimeout() from None
-        if not stream.usage.tokens_out and text_parts:
-            joined = "".join(text_parts)
-            stream.set_usage(LLMUsage(tokens_out=-(-len(joined) // 4)))
-        stream.finish()
+                    data.close()
+                except Exception:
+                    pass
+                stream.finish()
+
+        threading.Thread(target=_read, daemon=True,
+                         name="anthropic-sse-reader").start()
         return stream
 
 

@@ -220,6 +220,14 @@ class SqliteSessionStore:
         with self._lock:
             rows = self.storage.rag_session_turns(scope, session_id)
             now = time.time()
+            # SKEP-R10 (P3): appends used to RESURRECT idle-expired
+            # sessions (get() raised SessionExpired, append() didn't) —
+            # the same client flow got opposite verdicts per store mode,
+            # and appends kept a poisoned session alive past pruning.
+            if rows and now - max(r[3] for r in rows) > self.ttl:
+                self.storage.rag_session_delete(scope, session_id)
+                self._expired.add((scope, session_id))
+                raise SessionExpired(session_id)
             if (len(rows) + 1) > self.max_turns:
                 raise SessionCapExceeded(f"turns:{len(rows) + 1}")
             est_tokens = sum(-(-len(r[2]) // self.chars_per_token)

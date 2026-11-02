@@ -26,6 +26,16 @@ _SCRIPT_OPEN_RE = re.compile(r"<\s*/?\s*(script|style|iframe|object|embed|svg)"
 _HTML_TAG_RE = re.compile(r"<[^<>]{0,300}>")
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MD_LINK_RE = re.compile(r"\[(?!!)([^\]\[]{1,200})\]\(([^)\s]{0,500})\)")
+# SKEP-R4 (P2): CommonMark REFERENCE links are parenless and survived
+# every paren-form pass — "[1]: http://attacker/..." turns every [n]
+# citation marker (which the system prompt REQUIRES) into a clickable
+# exfil link under a lenient renderer. Kill both the full-reference
+# form and the definition lines.
+_MD_REF_LINK_RE = re.compile(r"\[([^\]\[]{1,200})\]\[[^\]\[]{1,200}\]")
+# matches reference definitions ANYWHERE in the text (lenient renderers
+# do not require line starts): "[1]: http://attacker/..."
+_MD_REF_DEF_RE = re.compile(
+    r"\[[^\]\n]{1,200}\]:\s*(?:https?|ftp|wss?|data|javascript)://?\S*")
 _URL_IN_PARENS_RE = re.compile(r"\((https?://[^)\s]{0,500})\)")
 
 
@@ -48,6 +58,10 @@ def sanitize_text(text: str) -> tuple[str, int]:
     # a legitimate citation like [1]; the parenthesized URL is the channel)
     text, n = _MD_LINK_RE.subn(lambda m: m.group(1), text)
     removed += n
+    text, n = _MD_REF_LINK_RE.subn(lambda m: m.group(1), text)
+    removed += n
+    text, n = _MD_REF_DEF_RE.subn("", text)
+    removed += n
     text, n = _URL_IN_PARENS_RE.subn("[link removed]", text)
     removed += n
     # Fuzz-found hole (review B7): UNTERMINATED markdown link/image forms
@@ -57,11 +71,11 @@ def sanitize_text(text: str) -> tuple[str, int]:
     # "!" before "[" kills image syntax; a space inside "](" kills link
     # syntax. Plain-text answers are unaffected (the channel is the point).
     if "![" in text:
+        removed += text.count("![")   # SKEP-R9: count occurrences
         text = text.replace("![", "[")
-        removed += 1
     if "](" in text:
+        removed += text.count("](")   # SKEP-R9: count occurrences
         text = text.replace("](", "] (")
-        removed += 1
     # strip any residual control chars that could smuggle formatting
     text = text.replace("\x00", "")
     return text, removed
@@ -205,4 +219,49 @@ def sanitize_stream(tokens) -> tuple[list[str], int]:
     out = [sanitizer.push(t) for t in tokens]
     out.append(sanitizer.flush())
     return [t for t in out if t], sanitizer.removed_count
+
+
+class StreamLeakScrubber:
+    """Incremental prompt-leak scrub for STREAMED tokens (SKEP-R1, P1:
+    token events used to bypass scrub_leaks entirely — a prompt-leaking
+    model shipped the system prompt and fencing nonce to any SSE reader).
+
+    Soundness argument (why partial fragments cannot escape): at every
+    push, the ENTIRE buffer is scrubbed first (so any COMPLETE leak
+    fragment — a full system-prompt sentence, the nonce, a frame marker
+    — is removed the moment it completes), and only the portion older
+    than `holdback` characters is emitted. A fragment no longer than
+    `holdback` is therefore fully inside the buffer before any of it
+    can be emitted. Cost: `holdback` chars of stream latency
+    (default 600 — above the longest system-prompt sentence).
+    """
+
+    def __init__(self, system_prompt: str, nonce: str = "",
+                 holdback: int = 600):
+        self._system = system_prompt or ""
+        self._nonce = nonce or ""
+        self._holdback = max(int(holdback), 1)
+        self._buffer = ""
+        self.removed_count = 0
+
+    def push(self, token: str) -> str:
+        if not token:
+            return ""
+        self._buffer += token
+        clean, removed = scrub_leaks(self._buffer, self._system,
+                                     self._nonce)
+        self.removed_count += removed
+        self._buffer = clean
+        if len(self._buffer) <= self._holdback:
+            return ""
+        emit = self._buffer[:-self._holdback]
+        self._buffer = self._buffer[len(self._buffer) - self._holdback:]
+        return emit
+
+    def flush(self) -> str:
+        clean, removed = scrub_leaks(self._buffer, self._system,
+                                    self._nonce)
+        self.removed_count += removed
+        self._buffer = ""
+        return clean
 

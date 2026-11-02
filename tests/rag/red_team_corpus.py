@@ -315,12 +315,13 @@ def build_red_team_corpus() -> list:
         note="PII in the QUERY is redacted before the provider"))
 
     # N: exfiltration channels via model output (varied provider payloads)
+    exfil_queries = ("topic ranking documentation", "tell me about the topic",
+                     "topic overview inverted index")
     for name, behavior in (("md-image-link", "markdown_exfil"),
                            ("html-script", "html_payload")):
-        for q in ("topic ranking documentation", "tell me about the topic",
-                  "topic overview inverted index"):
+        for i, q in enumerate(exfil_queries):
             add(RedTeamCase(
-                case_id=f"exfil:{name}:{abs(hash(q)) % 1000}",
+                case_id=f"exfil:{name}:{i}",
                 category="N-exfil",
                 expect="no_exfil",
                 provider_behavior=behavior,

@@ -29,7 +29,8 @@ from .metrics import RagMetrics, global_metrics
 from .prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt
 from .provider import LLMProvider, LLMResult, ProviderError, ProviderTimeout
 from .retrieval import RagRetriever
-from .sanitize import NoopModerator, sanitize_text, scrub_leaks
+from .sanitize import (NoopModerator, StreamLeakScrubber, StreamSanitizer,
+                       sanitize_text, scrub_leaks)
 from .session import SessionCapExceeded, heuristic_condense
 
 logger = logging.getLogger("nexus_search.rag.pipeline")
@@ -248,9 +249,22 @@ class RagService:
                                   selection, retrieval_meta, started,
                                   condense_spend=condense_spend)
 
-        # 6. parse + verify citations (existing Storage path)
+        # 6. parse + verify citations (existing Storage path) — against
+        #    the SANITIZED answer (SKEP-R7: verify-on-raw accepted
+        #    link-spoofed citations like "[1](http://x)" that
+        #    sanitization then destroyed; the stream path already
+        #    verified sanitized text — both endpoints now agree)
         raw_answer = result.text or ""
-        verification = verify_citations(raw_answer, selection, self.storage)
+        answer, removed = sanitize_text(raw_answer)
+        answer, leaked = scrub_leaks(answer, SYSTEM_PROMPT, prompt.nonce)
+        removed += leaked
+        moderated = self.moderator.moderate(answer)
+        if moderated is not None:
+            answer, removed_more = sanitize_text(moderated)
+            answer, leaked_more = scrub_leaks(answer, SYSTEM_PROMPT,
+                                              prompt.nonce)
+            removed += removed_more + leaked_more
+        verification = verify_citations(answer, selection, self.storage)
         if verification.all_failed:
             # EVERY citation failed -> refuse outright, never ship it
             self.metrics.record_refusal(REFUSAL_UNVERIFIABLE_CITATIONS)
@@ -275,7 +289,7 @@ class RagService:
 
         # 7. support + quote checks (deterministic, no extra LLM call) —
         #    against the text AS SENT (what the model actually saw)
-        support = check_support(raw_answer, selection,
+        support = check_support(answer, selection,
                                 as_sent=prompt.as_sent)
         if support.unsupported_claims:
             self.metrics.record_unsupported_claim(len(support.unsupported_claims))
@@ -283,18 +297,9 @@ class RagService:
             self.metrics.record_citation_failure(
                 sum(1 for qc in support.quote_checks if not qc.verified))
 
-        # 8. sanitize (plain text; exfil/markup channels removed; echoed
-        #    system prompt / frame markers / nonce scrubbed — a prompt
-        #    leak must never reach a response field)
-        answer, removed = sanitize_text(raw_answer)
-        answer, leaked = scrub_leaks(answer, SYSTEM_PROMPT, prompt.nonce)
-        removed += leaked
-        moderated = self.moderator.moderate(answer)
-        if moderated is not None:
-            answer, removed_more = sanitize_text(moderated)
-            answer, leaked_more = scrub_leaks(answer, SYSTEM_PROMPT,
-                                              prompt.nonce)
-            removed += removed_more + leaked_more
+        # (sanitization + leak scrub + moderation moved to step 6, so
+        #  citation/support verification sees exactly what ships —
+        #  SKEP-R7 parity with the stream path)
 
         # moderation hook may rewrite; citations were verified against the
         # pre-sanitized text and [n] markers survive sanitization untouched
@@ -398,6 +403,10 @@ class RagService:
             yield {"event": "meta", "data": {**base_meta,
                                              "answerable": False,
                                              "refusal_reason": gate.refusal_reason}}
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {gate.refusal_reason})",
+                                 pre_llm=False)  # SKEP-R6: transcript
+            # parity with /ask on refusals
             yield {"event": "done", "data": {
                 "spend": {"tokens_in": 0, "tokens_out": 0,
                           "estimated_cost": None},
@@ -476,6 +485,7 @@ class RagService:
 
         stream = box["stream"]
         sanitizer = StreamSanitizer()
+        leak_scrubber = StreamLeakScrubber(SYSTEM_PROMPT, prompt.nonce)
         final_text_parts: list[str] = []
         last_token_at = time.monotonic()
         # STREAM-1: the per-gap watchdog above does not bound a stream
@@ -503,15 +513,29 @@ class RagService:
                 total_chars += len(delta)
                 last_token_at = now
                 clean = sanitizer.push(delta)
+                # SKEP-R1 (P1): token events used to bypass scrub_leaks —
+                # a prompt-leaking model shipped the system prompt and
+                # nonce to SSE readers mid-stream. Every emitted token
+                # now passes the leak scrubber too (holdback-based, sound
+                # for fragments <= 600 chars).
+                clean = leak_scrubber.push(clean)
                 if clean:
                     final_text_parts.append(clean)
                     yield {"event": "token", "data": {"text": clean}}
             tail = sanitizer.flush()
+            tail = leak_scrubber.push(tail)
             if tail:
                 final_text_parts.append(tail)
                 yield {"event": "token", "data": {"text": tail}}
+            held = leak_scrubber.flush()
+            if held:
+                final_text_parts.append(held)
+                yield {"event": "token", "data": {"text": held}}
         except TimeoutError:
             self.metrics.record_provider_error("provider_timeout")
+            self._session_append(session_id, scope, "assistant",
+                                 "(no answer: provider_timeout)",
+                                 pre_llm=False)
             yield {"event": "truncated", "data": {"reason": "provider_timeout"}}
             yield {"event": "done", "data": {
                 "spend": {"tokens_in": 0, "tokens_out": 0,
@@ -522,6 +546,9 @@ class RagService:
             return
         except ProviderError as exc:
             self.metrics.record_provider_error(exc.code)
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {DEGRADED_PROVIDER_ERROR})",
+                                 pre_llm=False)
             yield {"event": "error", "data": {"reason": DEGRADED_PROVIDER_ERROR}}
             yield {"event": "done", "data": {
                 "spend": {"tokens_in": 0, "tokens_out": 0,
@@ -532,12 +559,15 @@ class RagService:
             return
         if over_limit:
             self.metrics.record_provider_error("stream_limit")
+            self._session_append(session_id, scope, "assistant",
+                                 "(no answer: stream_limit)",
+                                 pre_llm=False)
             yield {"event": "truncated", "data": {"reason": "stream_limit"}}
             yield {"event": "done", "data": {
                 "spend": {"tokens_in": 0, "tokens_out": 0,
                           "estimated_cost": None},
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "degraded_reason": DEGRADED_PROVIDER_TIMEOUT,
+                "degraded_reason": "stream_limit",  # SKEP-R12: honest reason
                 "sources": [_source_out(s) for s in selection.sources]}}
             return
 
@@ -551,7 +581,8 @@ class RagService:
         if support.unsupported_claims:
             self.metrics.record_unsupported_claim(len(support.unsupported_claims))
         if final is not None:
-            spend = self._spend(final)
+            spend = self._spend(final, condense_spend)  # SKEP-R5: bill
+            # the condense call too, exactly like /ask does
         else:
             spend = {"tokens_in": 0, "tokens_out": 0,
                      "estimated_cost": None,
@@ -561,6 +592,9 @@ class RagService:
         if verification.all_failed:
             self.metrics.record_refusal(REFUSAL_UNVERIFIABLE_CITATIONS)
             self.metrics.record_citation_failure(len(verification.dropped))
+            self._session_append(session_id, scope, "assistant",
+                                 f"(no answer: {REFUSAL_UNVERIFIABLE_CITATIONS})",
+                                 pre_llm=False)  # SKEP-R6 parity
             yield {"event": "citations", "data": {
                 "citations": [], "citations_verified": False,
                 "citation_drop_reasons": verification.dropped}}

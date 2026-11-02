@@ -27,6 +27,9 @@ class FakeResponse:
             raise ValueError("no json")
         return self._json
 
+    def close(self):
+        pass
+
     def iter_lines(self, decode_unicode=True):
         yield from self._sse
 
@@ -68,7 +71,8 @@ class _MockHTTP(unittest.TestCase):
 
     def _install(self, side_effects):
         """side_effects: list of callables/fakes consumed per attempt."""
-        def fake_post(url, headers=None, json=None, timeout=None):
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
             self.calls.append({"url": url, "headers": headers,
                                "body": json, "timeout": timeout})
             eff = side_effects[min(len(self.calls) - 1, len(side_effects) - 1)]
@@ -146,9 +150,12 @@ class TestOpenAIAdapter(_MockHTTP):
         flood = 'data: ' + json.dumps(
             {"choices": [{"delta": {"content": "word " * 20}}]})
         self._install([FakeResponse(sse_lines=[flood] * 500)])
-        with self.assertRaises(ProviderError) as ctx:
-            p.complete([{"role": "user", "content": "hi"}],
+        # SKEP-R2/R3: the error surfaces at ITERATION now (complete()
+        # returns after headers; the reader thread enforces the cap)
+        s = p.complete([{"role": "user", "content": "hi"}],
                        max_tokens=32, stream=True)
+        with self.assertRaises(ProviderError) as ctx:
+            list(s)
         self.assertEqual(ctx.exception.code, "provider_stream_too_large")
 
     def test_retry_on_429_then_success(self):

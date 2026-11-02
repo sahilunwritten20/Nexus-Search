@@ -443,8 +443,11 @@ class Storage:
 
     def rag_session_count(self) -> int:
         with self.lock:
+            # SKEP-R13: scope||session_id concatenation collided
+            # (("ab","c") vs ("a","bc")); a unit separator makes the
+            # distinct count correct.
             return self.conn.execute(
-                "SELECT COUNT(DISTINCT scope || session_id) FROM "
+                "SELECT COUNT(DISTINCT scope || char(31) || session_id) FROM "
                 "rag_sessions").fetchone()[0]
 
     def close(self):
