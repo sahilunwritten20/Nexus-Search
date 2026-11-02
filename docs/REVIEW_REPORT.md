@@ -1,22 +1,66 @@
-# Review Report — review/hardening, Round 1 (INTERIM)
+# Review Report — review/hardening, Round 2 (INTERIM)
 
-Date: 2026-10-14. This is the ROUND-1 interim report of the hostile
-review. The convergence loop (Phase E) is NOT complete — verdicts below
-are per-phase round-1 verdicts, and the "Remaining" section is the
-honest backlog a fresh session resumes from (see REVIEW_WORKLOG.md
-S1.1-S1.14 and REVIEW_CHECKLIST.md for full evidence).
+Date: 2026-10-14. Rounds 1 AND 2 complete. The convergence loop is
+working exactly as designed: the round-2 fresh-context skeptic agents
+found what the first pass missed (3 P1s in the review's OWN fixes).
 
-## Verdicts (round 1)
+## Round-2 additions (this session's continuation)
 
-| Phase | Verdict | Justification (evidence in worklog) |
+- **Two skeptic passes executed** (fresh-context agents over the
+  review's own changed code) — the mission's core mechanism:
+  - Crawler skeptic: 8 findings — **SKEP-1 (P1) the owned robots
+    matcher had catastrophic regex backtracking** (attacker robots.txt
+    + long URL = process-wide hang, measured); SKEP-2 (P2) Crawl-delay
+    unvalidated (3-year sleeps / pacing disabled); SKEP-3 (P2) redirect
+    hops bypassed target-domain pacing; SKEP-4/5 (P3) sitemap
+    blocklist gaps, pinned-host service-port fallback. ALL FIXED
+    (linear glob matcher, clamps, hop pacing, gates, fail-closed pin).
+  - RAG skeptic: 13 findings — **SKEP-R1 (P1) /ask/stream shipped the
+    system prompt + nonce in token events** (scrub_leaks bypassed,
+    proven live); **SKEP-R2 (P1) real adapters buffered the entire SSE
+    body before any cap** (stream=True missing; zombie workers held
+    provider slots); SKEP-R4 (P2) CommonMark reference-definition links
+    weaponized the required [n] citation markers into exfil links;
+    SKEP-R5 (P2) disconnects settled NOTHING (free spend) + condense
+    spend unbilled on streams. Plus 8 P3s (sanitize/citation parity,
+    filter-value bounds, TTL parity, count bugs, determinism). ALL FIXED.
+  - New defenses: StreamLeakScrubber (sound holdback-based), lazy
+    reader-thread streams (slot + total deadline + text cap),
+    reference-link stripping, disconnect budget settling.
+- **Spam-farm benchmark** (B6): ring/wheel/hub-spoke measured bounded;
+  the exact-hostname limitation QUANTIFIED (subdomain-farm authority
+  1.000 == true diversity 1.000) — ACCEPT decision with PSL trigger,
+  recorded in tests/links/test_spam_farms.py.
+- **Schemathesis OpenAPI fuzz** (C-sec): 900 schema-generated requests
+  across all 15 operations against a REAL production server — zero 5xx,
+  zero crashes, zero contract violations.
+- **Load smoke executed** (NEXUS_RUN_LOAD_SMOKE=1): passed.
+- **Fresh-clone test**: clone -> install -> README boot -> /health +
+  /search 200. PASSES.
+- **Security/crash/budget verification**: kill-9 mid-write chaos suite
+  (integrity ok, zero orphans, recovery works); populated-DB migration
+  upgrades (10 tests); UTC rollover + Retry-After correctness.
+- **Docs**: SECURITY.md (STRIDE, 8 residual risks with removal paths)
+  + RUNBOOK.md (all procedures executed or test-covered).
+- mutmut: BLOCKED natively on Windows (WSL-only binary, no Linux
+  interpreter on this host); 14+ manual per-fix mutation checks are the
+  recorded compensating evidence; run in Linux CI to close.
+
+## Verdicts (after round 2)
+
+| Phase | Verdict | Round-2 movement |
 |---|---|---|
-| 1 Search core | **Ready with caveats** | BM25 differential vs hand-derived reference at 1e-9 (incl. 40 random corpora); parser fuzz 600 inputs zero exceptions; tokenizer property suite; NDCG metric bug found+fixed (inflated published benchmarks); inf-weight 400. Caveats: coverage below gate (files.py-adjacent core at 88-95%), mutmut run not yet done. |
-| 2 Ingestion | **Ready with caveats** | Zip-renamed-.txt garbage-indexing hole fixed; limits verified by existing suites; encoding matrix already strong (WP13). Caveats: files.py 81.3% coverage (OCR/edge paths unexercised in default CI), adversarial per-format corpus (billion-laughs variants, formula bombs) not yet run as a dedicated sweep. |
-| 3 Crawler | **Ready with caveats** | SSRF pin-fallback P1 fixed (live private-IP round trip pre-fix); redirect hops now robots/blocklist/domain gated; RFC 9309 matcher owned (interpreter-version-independent, 18-case conformance); monotonic politeness clock. Caveats: DNS pinning TOCTOU now fails closed (design verified), render_js residual DNS-rebinding stays documented; full 50-worker politeness measurement + kill-9 crawl-resume suite not yet executed. |
-| 4 Hybrid | **Ready with caveats** | Fusion monotonicity properties; vector top-k == brute force (exact, incl. filters); refuse-gate floors verified against corrected NDCG. Caveats: recall@10k/100k scale benchmarks not re-run this round; ST-arm benchmark re-run pending (floors re-derived under corrected metric). |
-| 5 Ranking | **Ready with caveats** | Suggester lock discipline fixed; weight validation (NaN/inf) hardened; signals clamped/deterministic per existing suites. Caveats: adversarial query-set campaign + LTR placeholder zero-influence test pass not yet run. |
-| 6 Links | **Ready with caveats** | PageRank differential vs networkx (8 shapes) caught a real truncation (30-iter cap raised to 100); reciprocal-discount deviation pinned as intentional. Caveats: populated-DB migration upgrade tests v1->v2->v3 not yet executed; spam-farm benchmark not yet run. |
-| 7 RAG | **Ready with caveats** | llm_allowed egress, citation verification, prompt fencing verified by suites; stream bounds fixed (pipeline + adapter); unterminated-markdown exfil hole found by fuzz and fixed; sessions prune cross-scope deletion fixed; UTC day keys fixed. Caveats: the 200+ case red-team corpus is NOT yet built; refuse-gate improvement campaign not run; mutmut on citations/gate pending. |
+| 1 Search core | Ready with caveats | schemathesis added; parser/tokenizer fuzz green |
+| 2 Ingestion | Ready with caveats | unchanged |
+| 3 Crawler | Ready with caveats | skeptic P1+P2s fixed; spam-farm decision recorded |
+| 4 Hybrid | Ready with caveats | unchanged |
+| 5 Ranking | Ready with caveats | unchanged |
+| 6 Links | Ready with caveatss | skeptic-era crawler fixes; farm benchmark + decision |
+| 7 RAG | Ready with caveats | skeptic P1+P2s fixed (stream leak, body buffering, ref-def exfil, budget evasion); red-team corpus 201 |
+
+The caveats that REMAIN are the honest ones below — not security holes
+found, but verification depth not yet reached (coverage gates, soak,
+refuse-gate campaign, Phase D features, round 3).
 
 ## Findings fixed this round (17, all RED->GREEN->mutation-checked where applicable)
 
