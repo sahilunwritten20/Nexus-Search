@@ -502,3 +502,83 @@ docs/REVIEW_REPORT.md. Suite: 1233+ passed / 13 skipped / 641 subtests
 - mutmut: BLOCKED on native Windows (WSL-only; no Linux interpreter on
   this host). Compensating evidence: per-fix manual mutation checks.
   Run in Linux CI. Honest blocker, recorded.
+
+### S1.16 Round-2 SKEPTIC PASSES (fresh-context agents) — the convergence loop worked
+
+Two independent skeptic agents (fresh context, "assume the author was
+wrong") reviewed the review's own crawler and RAG changes. They found
+what the first pass missed:
+
+CRAWLER skeptic findings (all fixed, RED->GREEN):
+- SKEP-1 (P1): the owned RFC 9309 matcher compiled attacker robots.txt
+  patterns into regexes — `/a*a*a*a*a*a*a*a*b` HUNG THE PROCESS
+  (measured 8 stars x 5000 chars = eternal; sre holds the GIL). RED was
+  the suite itself hanging. Fix: linear two-pointer glob (worst case
+  O(p*t), no blowup); conformance suite unchanged green.
+- SKEP-2 (P2): Crawl-delay consumed unvalidated — 99999999 = ~3.16-YEAR
+  worker sleep; NaN/-5 silently DISABLED pacing; 1e999 crashed
+  time.sleep(inf). Fix: clamp finite values to [0, 60]
+  (CRAWL_DELAY_MAX), non-numeric/negative ignored.
+- SKEP-3 (P2): redirect hops passed the permission gate but bypassed
+  crawl-delay pacing — a crawled site could 302 the crawler into
+  hammering a third party at full speed. Fix: _hop_gate reserves a
+  politeness slot for the TARGET domain and sleeps the wait.
+- SKEP-4 (P3): sitemap index children + loc URLs skipped the blocklist.
+  Fix: gated in seed_from_sitemap.
+- SKEP-5 (P3): pinned hosts fell back to REAL DNS for service-name
+  ports (latent rebind window; proven live). Fix: fail closed
+  (gaierror); the old fail-open test corrected.
+- Verified-clean by the skeptic: recursion/marker safety, catch
+  coverage, thread-local correctness, SSRF on every fetch surface.
+Commit 5afb8e7 (+ tests/crawler/test_skeptic_round2.py).
+
+RAG skeptic findings (all fixed, RED->GREEN):
+- SKEP-R1 (P1): /ask/stream token events bypassed scrub_leaks AND the
+  moderator — a prompt-leaking model shipped the SYSTEM PROMPT and
+  fencing nonce to SSE readers (proven live with StubProvider
+  prompt_leak). Fix: StreamLeakScrubber (holdback-based, sound for
+  fragments <= 600 chars: the whole buffer is scrubbed before any of it
+  is emitted) wired into every token event + moderator at stream end.
+- SKEP-R2 (P1): real adapters buffered the ENTIRE SSE body before any
+  cap (requests.post without stream=True) — the text_cap trimmed
+  parsing, not download; the docstring claim was false. Fix: lazy
+  reader threads (stream_http=True) with the provider slot, a TOTAL
+  read deadline (10x timeout) and the text cap; complete() returns
+  after headers so the pipeline caps see live tokens.
+- SKEP-R3 (P2): worker.join(timeout) bounded the WHOLE buffered parse —
+  healthy slow streams truncated as provider_timeout + zombie workers
+  held semaphore slots (slot-exhaustion DoS). Fixed by the reader-thread
+  design above (join now bounds headers only; iteration enforces caps).
+- SKEP-R4 (P2): CommonMark reference-definition links
+  ("[1]: http://attacker/...") shipped verbatim — the [n] citation
+  markers the system prompt REQUIRES became clickable exfil links.
+  Fix: reference-def + full-reference regexes in sanitize_text
+  (matched anywhere, not only line starts).
+- SKEP-R5 (P2): /ask/stream settled NOTHING on client disconnect
+  (unbounded free spend vs the one cross-worker cost control) and the
+  LLM-condense spend was never billed on streams. Fix: disconnect
+  settles the pre-checked worst-case estimate in the generator finally;
+  condense spend merged into the done event (parity with /ask).
+- SKEP-R7 (P3): ask() verified citations on the RAW answer — a link-
+  spoofed citation "[1](http://x)" verified then got destroyed by
+  sanitization (stream verified sanitized). Fix: ask() verifies the
+  sanitized+scrubbed answer (both endpoints agree).
+- SKEP-R6/R8..R13 (P3): session-turn parity on streaming refusal paths;
+  filter VALUES type/length validated (100k-char doc_type broke the
+  "never more expensive than /search" bound); sanitizer removal counts;
+  sqlite session append TTL parity; session-count separator collision;
+  corpus id determinism (salted hash -> stable ids); stream_limit
+  done-reason honesty.
+- Verified-clean by the skeptic: STREAM-1 cap arithmetic, prune
+  semantics, REDTEAM-FILTERS input handling, ASK-VS-STREAM prompt
+  equality; plus 8 named corpus coverage gaps recorded as backlog.
+Commit 81b78d7 (+ tests/rag/test_skeptic_rag_round2.py, 14 tests).
+
+Spam-farm benchmark (B6): ring/wheel/hub-spoke bounded; the documented
+exact-hostname limitation QUANTIFIED — subdomain-farm authority 1.000 ==
+true-diversity 1.000. Decision recorded in tests/links/test_spam_farms.py:
+ACCEPT with a PSL-removal trigger.
+
+Post-skeptic seal: two randomized full runs — 1277 passed / 13 skipped
+(pre-RAG-skeptic batch), then post-batch suites green per package
+(rag 249, core 372, crawler+links 258) + final randomized pair.
