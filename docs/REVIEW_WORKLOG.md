@@ -582,3 +582,13 @@ ACCEPT with a PSL-removal trigger.
 Post-skeptic seal: two randomized full runs — 1277 passed / 13 skipped
 (pre-RAG-skeptic batch), then post-batch suites green per package
 (rag 249, core 372, crawler+links 258) + final randomized pair.
+
+### S1.17 Round-2 SEAL [E]
+
+Two randomized full-suite runs on the final tree:
+  run1: 1323 passed, 13 skipped, 846 subtests in 607.29s
+  run2: 1323 passed, 13 skipped, 846 subtests in 521.61s
+Zero flakes, order-independent. From review start: 1168 -> 1323 passed
+(+155 review tests), 13 skipped (all env-gated, inventoried), 641 ->
+846 subtests. Schemathesis: 900 generated requests / 15 operations /
+0 5xx. Red team: 201 cases / 0 violations.
