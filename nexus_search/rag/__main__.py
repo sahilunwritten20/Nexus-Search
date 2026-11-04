@@ -38,7 +38,12 @@ def _boot():
               "keyword-only degraded retrieval")
         vs = None
     hybrid = HybridSearch(storage, vector_store=vs, db_path=db) if vs else None
-    retriever = RagRetriever(hybrid, storage, bm25_search=None)
+    # REVIEW (CLI-DEGRADED): the degraded path wired bm25_search=None, so
+    # "keyword-only degraded retrieval" crashed with RuntimeError the
+    # moment it was used — wire the real keyword searcher instead.
+    from ..core.bm25 import BM25Search
+    retriever = RagRetriever(hybrid, storage,
+                             bm25_search=BM25Search(storage))
     service = RagService(config, retriever, provider, storage,
                          metrics=RagMetrics(),
                          neighbor_fetcher=make_storage_neighbor_fetcher(storage))
