@@ -64,9 +64,18 @@ def _glob_match(pattern: str, text: str, require_full_text: bool) -> bool:
     n, m = len(pattern), len(text)
     while ti < m:
         if pi == n:
-            if require_full_text:
-                return False  # anchored form: trailing text breaks the $
-            return True       # prefix form: pattern exhausted = match
+            if not require_full_text:
+                return True  # prefix form: pattern exhausted = match
+            if star_p >= 0:
+                # ROUND-3 differential catch: a trailing star must absorb
+                # the remaining text for anchored rules too ("/a*" vs
+                # "/ab" anchored is a match); the old early-return
+                # returned False instead of backtracking.
+                pi = star_p + 1
+                star_t += 1
+                ti = star_t
+                continue
+            return False  # anchored: no star left to absorb the tail
         c = pattern[pi]
         if c == "*":
             star_p, star_t = pi, ti
