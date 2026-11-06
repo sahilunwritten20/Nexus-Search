@@ -174,7 +174,8 @@ def collect_signals(retriever: RagRetriever, queries) -> list[SignalRow]:
 def _gate_refuses(row: SignalRow, bm25_floor: float,
                   vector_floor: float) -> bool:
     """The gate's exact decision math on one signal row (mirror of
-    RefuseGate.evaluate's rule; the calibration tests keep them in sync)."""
+    RefuseGate.evaluate's rule; the calibration tests keep them in sync).
+    Refuse iff EVERY present signal is below its floor (original semantics)."""
     if row.n_results == 0:
         return True  # no_evidence
     present: dict[str, float] = {}

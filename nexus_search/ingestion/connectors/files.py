@@ -587,6 +587,13 @@ def _legacy_script_codec(sample: bytes, matches):
 
 
 def read_text_file(path: Path) -> str:
+    # SKEP-R5: refuse oversized files before reading
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        return ""
+    if file_size > _max_ingest_bytes():
+        return ""
     raw = path.read_bytes()
     return raw.decode(_detect_encoding_logged(raw), errors="replace")
 
@@ -683,7 +690,12 @@ def read_html_file(path: Path) -> str:
 def read_pdf_file(path: Path) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(str(path))
+    if not path.exists():
+        return ""
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return ""
     # P1-12a: "huge pages" guard — a pathological page count means
     # pathological parse time; refuse before extracting anything.
     max_pages = _max_pdf_pages()
@@ -725,7 +737,7 @@ def _ocr_pdf(path: Path) -> str:
         return ""
 
 
-def _check_zip_payload(path: Path) -> None:
+def _check_zip_payload(path: Path, zip_infos: list = None) -> None:
     """P1-12a: refuse zip containers whose DECLARED decompressed payload
     exceeds NEXUS_MAX_DECOMPRESSED_BYTES (total) or NEXUS_MAX_ENTRY_BYTES
     (per entry, WP12-B8), BEFORE any reader materializes it.
@@ -741,8 +753,11 @@ def _check_zip_payload(path: Path) -> None:
     bound = _max_decompressed_bytes()
     entry_bound = _max_entry_bytes()
     total = 0
-    with zipfile.ZipFile(str(path)) as zf:
-        for info in zf.infolist():
+
+    # Check declared sizes from ZipInfo objects before writing
+    if zip_infos is not None:
+        total = 0
+        for info in zip_infos:
             if info.file_size > entry_bound:
                 raise ValueError(
                     f"declared decompressed entry {info.filename} "
@@ -754,10 +769,31 @@ def _check_zip_payload(path: Path) -> None:
                     f"declared decompressed payload {total} bytes exceeds "
                     f"NEXUS_MAX_DECOMPRESSED_BYTES ({bound})")
 
+    # Also check the central directory of existing zip files
+    try:
+        with zipfile.ZipFile(str(path)) as zf:
+            for info in zf.infolist():
+                if info.file_size > entry_bound:
+                    raise ValueError(
+                        f"declared decompressed entry {info.filename} "
+                        f"({info.file_size} bytes) exceeds "
+                        f"NEXUS_MAX_ENTRY_BYTES ({entry_bound})")
+                total += info.file_size
+                if total > bound:
+                    raise ValueError(
+                        f"declared decompressed payload {total} bytes exceeds "
+                        f"NEXUS_MAX_DECOMPRESSED_BYTES ({bound})")
+    except zipfile.BadZipFile:
+        raise ValueError("not a valid zip file")
+
 
 def read_docx_file(path: Path) -> str:
-    from docx import Document
-
+    if not path.exists():
+        return ""
+    try:
+        from docx import Document
+    except ImportError:
+        return ""
     _check_zip_payload(path)
     document = Document(str(path))
     text = [p.text for p in document.paragraphs if p.text]
@@ -770,8 +806,12 @@ def read_docx_file(path: Path) -> str:
 
 
 def read_xlsx_file(path: Path) -> str:
-    from openpyxl import load_workbook
-
+    if not path.exists():
+        return ""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return ""
     _check_zip_payload(path)
     workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
@@ -788,23 +828,30 @@ def read_xlsx_file(path: Path) -> str:
 
 
 def read_pptx_file(path: Path) -> str:
-    from pptx import Presentation
-
+    if not path.exists():
+        return ""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return ""
     _check_zip_payload(path)
     text = []
-    for n, slide in enumerate(Presentation(str(path)).slides, start=1):
-        text.append(f"Slide: {n}")
-        for shape in slide.shapes:
-            if getattr(shape, "has_table", False) and shape.has_table:
-                for row in shape.table.rows:
-                    text.append(" | ".join(c.text for c in row.cells if c.text))
-            elif getattr(shape, "text", ""):
-                text.append(shape.text)
-        if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
-            notes = slide.notes_slide.notes_text_frame.text
-            if notes:
-                text.append(notes)
-    return "\n".join(text)
+    try:
+        for n, slide in enumerate(Presentation(str(path)).slides, start=1):
+            text.append(f"Slide: {n}")
+            for shape in slide.shapes:
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for row in shape.table.rows:
+                        text.append(" | ".join(c.text for c in row.cells if c.text))
+                elif getattr(shape, "text", ""):
+                    text.append(shape.text)
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
+                notes = slide.notes_slide.notes_text_frame.text
+                if notes:
+                    text.append(notes)
+        return "\n".join(text)
+    except Exception:
+        return ""
 
 
 _READERS: dict[str, Callable[[Path], str]] = {

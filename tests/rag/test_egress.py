@@ -9,7 +9,7 @@ import unittest
 
 os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
 
-from nexus_search.rag.egress import EGRESS_DOC, query_hash, redact_pii
+from nexus_search.rag.egress import EGRESS_DOC, query_hash, redact_pii, llm_allowed
 
 try:
     from fastapi.testclient import TestClient
@@ -63,6 +63,41 @@ class TestEgressDoc(unittest.TestCase):
         self.assertIn("llm_allowed", joined)
         self.assertIn("NEXUS_RAG_REDACT_PII", joined)
         self.assertIn("NEVER leaves", joined)
+
+
+class TestLLMAllowed(unittest.TestCase):
+    """Tests for llm_allowed function (lines 28-38)"""
+
+    def test_explicit_false_returns_false(self):
+        """llm_allowed: false explicitly -> False (line 35)"""
+        self.assertFalse(llm_allowed({"llm_allowed": False}))
+
+    def test_explicit_true_returns_true(self):
+        """llm_allowed: true explicitly -> True (line 35)"""
+        self.assertTrue(llm_allowed({"llm_allowed": True}))
+
+    def test_missing_key_returns_true(self):
+        """llm_allowed: key missing -> True (opt-out default, line 35)"""
+        self.assertTrue(llm_allowed({}))
+        self.assertTrue(llm_allowed({"other_key": "value"}))
+
+    def test_non_boolean_false_values_return_true(self):
+        """llm_allowed: 'false' string, 0, None -> True (only False is False, line 35)"""
+        self.assertTrue(llm_allowed({"llm_allowed": "false"}))
+        self.assertTrue(llm_allowed({"llm_allowed": 0}))
+        self.assertTrue(llm_allowed({"llm_allowed": None}))
+        self.assertTrue(llm_allowed({"llm_allowed": []}))
+
+    def test_non_mapping_metadata_returns_true(self):
+        """llm_allowed: metadata not a dict -> True (AttributeError branch, lines 36-37)"""
+        self.assertTrue(llm_allowed(None))
+        self.assertTrue(llm_allowed("not a dict"))
+        self.assertTrue(llm_allowed(123))
+        self.assertTrue(llm_allowed(["list"]))
+
+    def test_metadata_with_false_in_nested_dict(self):
+        """llm_allowed: nested dict doesn't matter, only top-level key"""
+        self.assertTrue(llm_allowed({"meta": {"llm_allowed": False}}))
 
 
 @unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
