@@ -9,6 +9,7 @@ The rag package never imports core.api (the CLI builds its own stack
 from the same pieces); no key is ever printed."""
 
 import argparse
+import contextlib
 import os
 
 
@@ -76,12 +77,10 @@ def main(argv=None) -> int:
     try:
         result = service.ask(args.query, top_k=args.top_k, mode=args.mode)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             if service.retriever.hybrid is not None:
                 service.retriever.hybrid.close()
             service.storage.close()
-        except Exception:
-            pass
     print(f'answerable : {result.answerable}')
     if result.refusal_reason:
         print(f'refusal    : {result.refusal_reason}')
