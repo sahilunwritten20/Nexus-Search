@@ -490,7 +490,7 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
                     model=self._model,
                     provider=self.name,
                 )
-            except KeyError, TypeError, ValueError:
+            except (KeyError, TypeError, ValueError):
                 raise ProviderError('provider_bad_response') from None
 
     def _parse_stream(self, resp, max_tokens: int) -> LLMStream:
@@ -621,7 +621,7 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
                     model=self._model,
                     provider=self.name,
                 )
-            except KeyError, TypeError, ValueError:
+            except (KeyError, TypeError, ValueError):
                 raise ProviderError('provider_bad_response') from None
 
     def _parse_stream(self, data, max_tokens: int) -> LLMStream:

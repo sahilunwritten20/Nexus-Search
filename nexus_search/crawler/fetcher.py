@@ -273,7 +273,7 @@ class Fetcher:
             if resp.status_code == 200:
                 return self._read_bytes(resp)
             resp.close()
-        except FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException:
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException):
             pass
         return b''
 
@@ -394,7 +394,7 @@ class Fetcher:
                 return self._read_text(resp)[:512_000]
             resp.close()
             return '' if 400 <= resp.status_code < 500 else None
-        except FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException:
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException):
             return None
 
     def fetch_text(self, url: str) -> str:
@@ -404,7 +404,7 @@ class Fetcher:
             if resp.status_code == 200:
                 return self._read_text(resp)
             resp.close()
-        except FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException:
+        except (FetchBlocked, TooLarge, PinnedResolutionBlocked, requests.RequestException):
             pass
         return ''
 

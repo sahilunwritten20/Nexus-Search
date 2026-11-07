@@ -85,7 +85,7 @@ def orphan_pages(storage, graph: LinkGraph, exclude_seeds: bool = True) -> list[
     for doc_id, metadata_json in rows:
         try:
             metadata = json.loads(metadata_json) if metadata_json else {}
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             metadata = {}
         url = metadata.get('url') or metadata.get('canonical_url')
         if not url:

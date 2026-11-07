@@ -45,7 +45,7 @@ def maybe_gzip(data: bytes, content_type: str = '') -> str:
             out = stream.decompress(data, _MAX_SITEMAP_BYTES)
             if stream.unconsumed_tail:
                 return ''
-        except zlib.error, ValueError, EOFError:
+        except (zlib.error, ValueError, EOFError):
             return ''
         data = out
     return data.decode('utf-8', errors='replace')
@@ -56,7 +56,7 @@ def _root(xml_text: str) -> ElementTree.Element | None:
         return None
     try:
         return ElementTree.fromstring(xml_text)
-    except ElementTree.ParseError, DefusedXmlException:
+    except (ElementTree.ParseError, DefusedXmlException):
         # malformed XML and forbidden DTD/entity payloads land the same way:
         # this sitemap is unusable, not fatal
         return None

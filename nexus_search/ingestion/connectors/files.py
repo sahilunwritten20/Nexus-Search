@@ -358,7 +358,7 @@ def _odd_guess_explains(sample: bytes, enc_l: str) -> bool:
     ~0.0)."""
     try:
         decoded = sample.decode(enc_l)
-    except UnicodeDecodeError, LookupError:
+    except (UnicodeDecodeError, LookupError):
         return False  # guess can't even read the bytes -> misfire
     if enc_l.startswith(('utf_16', 'utf16', 'utf_32', 'utf32')):
         # Genuine BOM-less UTF-16 of Latin text is ~50% NUL bytes; CJK
@@ -394,7 +394,7 @@ def _best_cjk_candidate(sample: bytes, matches, cjk_only: bool = False):
             continue
         try:
             decoded = sample.decode(enc_l)
-        except UnicodeDecodeError, LookupError:
+        except (UnicodeDecodeError, LookupError):
             continue
         share = _cjk_share(decoded)
         coherence = _cjk_coherence(decoded)
@@ -556,7 +556,7 @@ def _legacy_script_codec(sample: bytes, matches):
     for codec, script in _LEGACY_SCRIPTS.items():
         try:
             text = sample.decode(codec)
-        except UnicodeDecodeError, LookupError:
+        except (UnicodeDecodeError, LookupError):
             continue
         if any(0x80 <= ord(c) <= 0x9F for c in text):
             continue  # C1 controls: wrong codec for these bytes

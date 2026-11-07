@@ -45,7 +45,7 @@ def sniff_content_type(path: str) -> str:
                             return mime
                     if any(n == '[Content_Types].xml' for n in names):
                         return 'application/octet-stream'  # Office-ish but unclaimed
-            except zipfile.BadZipFile, OSError:
+            except (zipfile.BadZipFile, OSError):
                 return 'application/zip'
             return 'application/zip'
         # text vs binary: NUL bytes or a majority of non-text bytes in the

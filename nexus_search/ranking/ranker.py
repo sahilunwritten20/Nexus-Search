@@ -19,6 +19,8 @@ WeightedSumModel(weights=(1,1,0..)) returns the RRF/weighted fused score
 unchanged. Re-deriving normalized scores here instead would break that.
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -102,7 +104,7 @@ class RankingWeights:
                         continue
                     try:
                         numeric = float(value)
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         logger.warning('NEXUS_RERANK_WEIGHTS: %r=%r is not a float; ignored', key, value)
                         continue
                     clamped = max(0.0, min(1.0, numeric))
