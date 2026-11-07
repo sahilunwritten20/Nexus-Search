@@ -28,12 +28,12 @@ from .scheduler import CrawlScheduler
 
 
 def _frontier_db_path(db: str) -> str:
-    return os.path.splitext(db)[0] + "_frontier.db"
+    return os.path.splitext(db)[0] + '_frontier.db'
 
 
 def load_config(path: str) -> dict:
     try:
-        with open(path, encoding="utf-8") as file:
+        with open(path, encoding='utf-8') as file:
             return yaml.safe_load(file) or {}
     except FileNotFoundError:
         return {}
@@ -58,7 +58,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
     # Phase 6: every fetched page feeds the link graph (read-only on ranking
     # until an operator recomputes + opts in via env weights)
     link_graph = LinkGraph(args.db)
-    recrawl = _pick(args.recrawl_interval, config, "recrawl_interval", 0)
+    recrawl = _pick(args.recrawl_interval, config, 'recrawl_interval', 0)
     if args.every and not recrawl:
         recrawl = args.every  # scheduled runs re-check old pages automatically
 
@@ -68,18 +68,18 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         # the public path still enforces SSRF validation + a real UA
         allow_private_hosts=args.allow_private_hosts,
         allowed_domains=domains,
-        max_pages=_pick(args.max_pages, config, "max_pages", 1000),
-        max_depth=_pick(args.max_depth, config, "max_depth", 3),
-        concurrency=_pick(args.concurrency, config, "concurrency", 8),
-        max_pages_per_domain=_pick(args.max_pages_per_domain, config, "max_pages_per_domain", 0),
+        max_pages=_pick(args.max_pages, config, 'max_pages', 1000),
+        max_depth=_pick(args.max_depth, config, 'max_depth', 3),
+        concurrency=_pick(args.concurrency, config, 'concurrency', 8),
+        max_pages_per_domain=_pick(args.max_pages_per_domain, config, 'max_pages_per_domain', 0),
         recrawl_interval=recrawl,
-        default_crawl_delay=config.get("default_crawl_delay", 1.0),
-        user_agent=config.get("user_agent"),
+        default_crawl_delay=config.get('default_crawl_delay', 1.0),
+        user_agent=config.get('user_agent'),
         ingest_fn=make_crawler_ingest_fn(
             indexer,
             dedup,
-            min_quality=_pick(args.min_quality, config, "min_quality", None),
-            chunk_size=_pick(args.chunk_size, config, "chunk_size", None),
+            min_quality=_pick(args.min_quality, config, 'min_quality', None),
+            chunk_size=_pick(args.chunk_size, config, 'chunk_size', None),
             failure_queue=failures,
             history=history,
         ),
@@ -90,7 +90,7 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
         for sitemap_url in args.sitemap or []:
             pipeline.seed_from_sitemap(sitemap_url)
         stats = pipeline.run()
-        stats["documents_in_index"] = storage.document_count()
+        stats['documents_in_index'] = storage.document_count()
         return stats
     finally:
         sync.flush()
@@ -105,89 +105,98 @@ def run_once(args, config: dict, seeds: list, domains: list) -> dict:
 
 
 def report(stats: dict, metrics_file: str | None) -> None:
-    print(f"Done: {stats}")
+    print(f'Done: {stats}')
     if metrics_file:
-        with open(metrics_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": time.time(), **stats}) + "\n")
+        with open(metrics_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'ts': time.time(), **stats}) + '\n')
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nexus Search — crawler")
-    parser.add_argument("command", nargs="?", default="crawl",
-                        choices=["crawl", "block", "unblock", "blocklist",
-                                 "authority", "normalize-links",
-                                 "dead-links", "orphans"],
-                        help="block/unblock a host, blocklist, authority ops, "
-                             "normalize-links (BUG-02 data migration), "
-                             "dead-links / orphans reports, or crawl (default)")
-    parser.add_argument("host", nargs="?", default=None,
-                        help="host (or URL) for block/unblock")
-    parser.add_argument("--recompute", action="store_true",
-                        help="authority: recompute PageRank/authority scores")
-    parser.add_argument("--show", metavar="URL", default=None,
-                        help="authority: show one URL's scores")
-    parser.add_argument("--reason", default="", help="why a host was blocked (recorded with 'block')")
-    parser.add_argument("--seeds", help="Path to seed URL file")
-    parser.add_argument("--sitemap", action="append", help="Sitemap URL (repeatable)")
-    parser.add_argument("--config", default="crawler_config.yaml")
-    parser.add_argument("--max-pages", type=int, default=None)
-    parser.add_argument("--max-depth", type=int, default=None)
-    parser.add_argument("--domains", help="Comma-separated allowed domains")
-    parser.add_argument("--concurrency", type=int, default=None)
-    parser.add_argument("--max-pages-per-domain", type=int, default=None)
-    parser.add_argument("--recrawl-interval", type=float, default=None)
-    parser.add_argument("--every", type=float, default=None, help="Re-run the crawl every N seconds")
-    parser.add_argument("--metrics-file", help="Append one JSON line of stats per run")
-    parser.add_argument("--min-quality", type=float, default=None, help="Skip pages scoring below this (0-1)")
-    parser.add_argument("--chunk-size", type=int, default=None, help="Split long pages into chunks")
-    parser.add_argument("--db", default="nexus_search.db")
-    parser.add_argument("--allow-private-hosts", action="store_true",
-                        help="allow crawling localhost/private IPs (tests, intranet)")
+    parser = argparse.ArgumentParser(description='Nexus Search — crawler')
+    parser.add_argument(
+        'command',
+        nargs='?',
+        default='crawl',
+        choices=['crawl', 'block', 'unblock', 'blocklist', 'authority', 'normalize-links', 'dead-links', 'orphans'],
+        help='block/unblock a host, blocklist, authority ops, '
+        'normalize-links (BUG-02 data migration), '
+        'dead-links / orphans reports, or crawl (default)',
+    )
+    parser.add_argument('host', nargs='?', default=None, help='host (or URL) for block/unblock')
+    parser.add_argument('--recompute', action='store_true', help='authority: recompute PageRank/authority scores')
+    parser.add_argument('--show', metavar='URL', default=None, help="authority: show one URL's scores")
+    parser.add_argument('--reason', default='', help="why a host was blocked (recorded with 'block')")
+    parser.add_argument('--seeds', help='Path to seed URL file')
+    parser.add_argument('--sitemap', action='append', help='Sitemap URL (repeatable)')
+    parser.add_argument('--config', default='crawler_config.yaml')
+    parser.add_argument('--max-pages', type=int, default=None)
+    parser.add_argument('--max-depth', type=int, default=None)
+    parser.add_argument('--domains', help='Comma-separated allowed domains')
+    parser.add_argument('--concurrency', type=int, default=None)
+    parser.add_argument('--max-pages-per-domain', type=int, default=None)
+    parser.add_argument('--recrawl-interval', type=float, default=None)
+    parser.add_argument('--every', type=float, default=None, help='Re-run the crawl every N seconds')
+    parser.add_argument('--metrics-file', help='Append one JSON line of stats per run')
+    parser.add_argument('--min-quality', type=float, default=None, help='Skip pages scoring below this (0-1)')
+    parser.add_argument('--chunk-size', type=int, default=None, help='Split long pages into chunks')
+    parser.add_argument('--db', default='nexus_search.db')
+    parser.add_argument(
+        '--allow-private-hosts', action='store_true', help='allow crawling localhost/private IPs (tests, intranet)'
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
     # Authority subcommand: recompute/inspect link intelligence (offline,
     # never on the request path).
-    if args.command == "authority":
+    if args.command == 'authority':
         from ..links.authority import compute_authority
         from ..links.graph import LinkGraph
+
         graph = LinkGraph(args.db)
         try:
             if args.show:
                 found = graph.authority_for(args.show)
-                print(f"{args.show}: authority={found[0]:.4f} popularity={found[1]:.3f}"
-                      if found else f"{args.show}: not in graph (ranker sees NEUTRAL)")
+                print(
+                    f'{args.show}: authority={found[0]:.4f} popularity={found[1]:.3f}'
+                    if found
+                    else f'{args.show}: not in graph (ranker sees NEUTRAL)'
+                )
             elif args.recompute:
                 # explicit operator action: force past the version guard
                 stats = compute_authority(graph, force=True)
-                print(f"authority recomputed: {stats.pages} pages, {stats.edges_used}/"
-                      f"{stats.edges_in} endorsing edges, {stats.iterations} iterations "
-                      f"({'converged' if stats.converged else 'max-iterations'}), "
-                      f"{stats.seconds:.2f}s, {stats.reciprocal_pairs} discounted "
-                      f"reciprocal pairs")
+                print(
+                    f'authority recomputed: {stats.pages} pages, {stats.edges_used}/'
+                    f'{stats.edges_in} endorsing edges, {stats.iterations} iterations '
+                    f'({"converged" if stats.converged else "max-iterations"}), '
+                    f'{stats.seconds:.2f}s, {stats.reciprocal_pairs} discounted '
+                    f'reciprocal pairs'
+                )
             else:
-                print(f"link graph: {graph.stats()}")
+                print(f'link graph: {graph.stats()}')
         finally:
             graph.close()
         return
 
     # Blocklist ops don't crawl anything — they only touch the frontier DB.
-    if args.command in ("block", "unblock", "blocklist"):
+    if args.command in ('block', 'unblock', 'blocklist'):
         blocklist = Blocklist(_frontier_db_path(args.db))
         try:
-            if args.command == "blocklist":
+            if args.command == 'blocklist':
                 for host, reason, _ts in blocklist.list_all():
-                    print(f"{host}\t{reason}")
+                    print(f'{host}\t{reason}')
             elif not args.host:
                 parser.error(f"'{args.command}' requires a host argument")
-            elif args.command == "block":
+            elif args.command == 'block':
                 blocklist.block(args.host, reason=args.reason)
-                print(f"blocked {Blocklist._host_of(args.host)}")
+                print(f'blocked {Blocklist._host_of(args.host)}')
             else:
                 removed = blocklist.unblock(args.host)
-                print(f"unblocked {Blocklist._host_of(args.host)}" if removed
-                      else f"host was not blocked: {Blocklist._host_of(args.host)}")
+                print(
+                    f'unblocked {Blocklist._host_of(args.host)}'
+                    if removed
+                    else f'host was not blocked: {Blocklist._host_of(args.host)}'
+                )
         finally:
             blocklist.close()
         return
@@ -196,40 +205,46 @@ def main():
     # graph nodes share the frontier's URL space, merge duplicates (earliest
     # first_seen, latest last_seen, recrawl anchor/rel), drop post-
     # normalization self-links. Idempotent; --recompute refreshes scores.
-    if args.command == "normalize-links":
+    if args.command == 'normalize-links':
         from ..links.authority import compute_authority
         from ..links.graph import LinkGraph, normalize_existing_edges
+
         graph = LinkGraph(args.db)
         try:
             stats = normalize_existing_edges(graph)
-            print(f"normalize-links: {stats}")
+            print(f'normalize-links: {stats}')
             if args.recompute:
                 auth_stats = compute_authority(graph, force=True)
-                print(f"authority recomputed: {auth_stats.pages} pages, "
-                      f"{auth_stats.iterations} iterations "
-                      f"({'converged' if auth_stats.converged else 'max-iterations'})")
+                print(
+                    f'authority recomputed: {auth_stats.pages} pages, '
+                    f'{auth_stats.iterations} iterations '
+                    f'({"converged" if auth_stats.converged else "max-iterations"})'
+                )
         finally:
             graph.close()
         return
 
     # dead-links / orphans: read-only Phase 6 reports (WP5). They cross-
     # reference existing data only — neither command ever fetches.
-    if args.command in ("dead-links", "orphans"):
-        if args.command == "dead-links":
+    if args.command in ('dead-links', 'orphans'):
+        if args.command == 'dead-links':
             from ..links.reports import dead_links
+
             dl_report = dead_links(args.db, _frontier_db_path(args.db))
-            for entry in dl_report["dead"]:
-                print(f"DEAD  {entry['url']}  [{entry['error']}]  "
-                      f"inlinks={entry['inlink_count']} "
-                      f"(e.g. {entry['inlinks'][:3]})")
-            for url in dl_report["unfetched"]:
-                print(f"UNFETCHED  {url}  (linked, never crawled)")
-            print(f"{len(dl_report['dead'])} dead links, "
-                  f"{len(dl_report['unfetched'])} linked-but-unfetched targets")
+            for entry in dl_report['dead']:
+                print(
+                    f'DEAD  {entry["url"]}  [{entry["error"]}]  '
+                    f'inlinks={entry["inlink_count"]} '
+                    f'(e.g. {entry["inlinks"][:3]})'
+                )
+            for url in dl_report['unfetched']:
+                print(f'UNFETCHED  {url}  (linked, never crawled)')
+            print(f'{len(dl_report["dead"])} dead links, {len(dl_report["unfetched"])} linked-but-unfetched targets')
         else:
+            from ..core.storage import Storage
             from ..links.graph import LinkGraph
             from ..links.reports import orphan_pages
-            from ..core.storage import Storage
+
             storage = Storage(args.db)
             graph = LinkGraph(args.db)
             try:
@@ -238,23 +253,23 @@ def main():
                 graph.close()
                 storage.close()
             for entry in orphans:
-                print(f"ORPHAN  {entry['url']}  ({entry['doc_id']})")
-            print(f"{len(orphans)} orphan pages (zero inbound edges, seeds excluded)")
+                print(f'ORPHAN  {entry["url"]}  ({entry["doc_id"]})')
+            print(f'{len(orphans)} orphan pages (zero inbound edges, seeds excluded)')
         return
 
     config = load_config(args.config)
 
-    seeds = config.get("seeds", [])
+    seeds = config.get('seeds', [])
     if args.seeds:
-        with open(args.seeds, encoding="utf-8") as file:
-            seeds = [l.strip() for l in file if l.strip() and not l.startswith("#")]
+        with open(args.seeds, encoding='utf-8') as file:
+            seeds = [l.strip() for l in file if l.strip() and not l.startswith('#')]
 
-    domains = config.get("allowed_domains", [])
+    domains = config.get('allowed_domains', [])
     if args.domains:
-        domains = [d.strip() for d in args.domains.split(",") if d.strip()]
+        domains = [d.strip() for d in args.domains.split(',') if d.strip()]
 
     if not seeds and not args.sitemap:
-        raise SystemExit("No seed URLs or sitemaps given.")
+        raise SystemExit('No seed URLs or sitemaps given.')
 
     if not args.every:
         report(run_once(args, config, seeds, domains), args.metrics_file)
@@ -268,8 +283,8 @@ def main():
                 scheduler.schedule_next()
             time.sleep(min(max(scheduler.seconds_until_next(), 0.5), 30))
     except KeyboardInterrupt:
-        print("Stopped.")
+        print('Stopped.')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

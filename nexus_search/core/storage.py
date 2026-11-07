@@ -1,11 +1,11 @@
 """SQLite-backed storage for documents and the inverted-index postings."""
+
 import json
 import re
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -47,52 +47,62 @@ class Storage:
     with a sharded/distributed store without changing this class's interface.
     """
 
-    def __init__(self, db_path: str = "nexus_search.db"):
+    def __init__(self, db_path: str = 'nexus_search.db'):
         from .migrations import apply_migrations
 
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.execute("PRAGMA busy_timeout = 5000")
-        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute('PRAGMA busy_timeout = 5000')
+        self.conn.execute('PRAGMA journal_mode = WAL')
         self.lock = threading.RLock()
         # Schema comes up through the migration runner: v1 is the baseline
         # schema; future column changes become v2, v3, ... (see migrations.py)
         self.schema_version = apply_migrations(
-            self.conn, "storage",
-            [(1, SCHEMA),
-             # v2 (WP6): freshness sorting reads added_at for the whole
-             # candidate pool; the index makes the batch read cheap.
-             (2, "CREATE INDEX IF NOT EXISTS idx_documents_added_at "
-                 "ON documents (added_at);"),
-             # v3 (P7-6): per-bucket DAILY token usage for the RAG answer
-             # path — SHARED state so caps hold across workers/replicas
-             # (the slowapi limiter is in-process and cannot). Downgrade
-             # path: the table is additive; rollback = DROP TABLE
-             # rag_token_usage (schema_version row 'storage' -> 2).
-             # Pruning: rag_usage_prune(keep_days) deletes old days.
-             (3, "CREATE TABLE IF NOT EXISTS rag_token_usage ("
-                 "bucket TEXT NOT NULL, "
-                 "day TEXT NOT NULL, "
-                 "tokens INTEGER NOT NULL DEFAULT 0, "
-                 "PRIMARY KEY (bucket, day))"),
-             # v4 (P7-8): opt-in SHARED session store
-             # (NEXUS_RAG_SESSION_STORE=sqlite). RETENTION NOTE: this is
-             # the ONLY persistence path for RAG transcripts and it is
-             # OFF by default; while on, transcripts persist until TTL
-             # pruning (rag_session_prune) — schedule it like the A/B
-             # log purge. Rollback: DROP TABLE rag_sessions (version -> 3).
-             (4, "CREATE TABLE IF NOT EXISTS rag_sessions ("
-                 "scope TEXT NOT NULL, "
-                 "session_id TEXT NOT NULL, "
-                 "turn_idx INTEGER NOT NULL, "
-                 "role TEXT NOT NULL, "
-                 "text TEXT NOT NULL, "
-                 "updated_at REAL NOT NULL, "
-                 "PRIMARY KEY (scope, session_id, turn_idx))")],
+            self.conn,
+            'storage',
+            [
+                (1, SCHEMA),
+                # v2 (WP6): freshness sorting reads added_at for the whole
+                # candidate pool; the index makes the batch read cheap.
+                (2, 'CREATE INDEX IF NOT EXISTS idx_documents_added_at ON documents (added_at);'),
+                # v3 (P7-6): per-bucket DAILY token usage for the RAG answer
+                # path — SHARED state so caps hold across workers/replicas
+                # (the slowapi limiter is in-process and cannot). Downgrade
+                # path: the table is additive; rollback = DROP TABLE
+                # rag_token_usage (schema_version row 'storage' -> 2).
+                # Pruning: rag_usage_prune(keep_days) deletes old days.
+                (
+                    3,
+                    (
+                        'CREATE TABLE IF NOT EXISTS rag_token_usage ('
+                        'bucket TEXT NOT NULL, '
+                        'day TEXT NOT NULL, '
+                        'tokens INTEGER NOT NULL DEFAULT 0, '
+                        'PRIMARY KEY (bucket, day))'
+                    ),
+                ),
+                # v4 (P7-8): opt-in SHARED session store
+                # (NEXUS_RAG_SESSION_STORE=sqlite). RETENTION NOTE: this is
+                # the ONLY persistence path for RAG transcripts and it is
+                # OFF by default; while on, transcripts persist until TTL
+                # pruning (rag_session_prune) — schedule it like the A/B
+                # log purge. Rollback: DROP TABLE rag_sessions (version -> 3).
+                (
+                    4,
+                    (
+                        'CREATE TABLE IF NOT EXISTS rag_sessions ('
+                        'scope TEXT NOT NULL, '
+                        'session_id TEXT NOT NULL, '
+                        'turn_idx INTEGER NOT NULL, '
+                        'role TEXT NOT NULL, '
+                        'text TEXT NOT NULL, '
+                        'updated_at REAL NOT NULL, '
+                        'PRIMARY KEY (scope, session_id, turn_idx))'
+                    ),
+                ),
+            ],
         )
 
-    def upsert_document(
-        self, doc_id: str, title: str, content: str, doc_type: str, length: int, metadata: dict
-    ):
+    def upsert_document(self, doc_id: str, title: str, content: str, doc_type: str, length: int, metadata: dict):
         """Legacy split write — kept for tests that hand-roll postings. Now
         COMMITS before returning: this connection is shared across threads,
         so leaving a transaction open meant any LATER unrelated commit could
@@ -100,15 +110,15 @@ class Storage:
         (atomic) everywhere else."""
         with self.lock:
             self.conn.execute(
-                "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(doc_id) DO UPDATE SET "
-                "title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, "
-                "length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at",
+                'INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?) '
+                'ON CONFLICT(doc_id) DO UPDATE SET '
+                'title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, '
+                'length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at',
                 (doc_id, title, content, doc_type, length, json.dumps(metadata), time.time()),
             )
             # Clear old postings so re-indexing a doc_id doesn't leave stale terms behind.
-            self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+            self.conn.execute('DELETE FROM postings WHERE doc_id = ?', (doc_id,))
             self.conn.commit()
 
     def add_postings(self, doc_id: str, term_freqs: dict[str, int]):
@@ -116,7 +126,7 @@ class Storage:
             return
         with self.lock:
             self.conn.executemany(
-                "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
+                'INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)',
                 [(term, doc_id, freq) for term, freq in term_freqs.items()],
             )
             self.conn.commit()
@@ -127,22 +137,26 @@ class Storage:
         if not doc_ids:
             return 0
         with self.lock:
-            placeholders = ",".join("?" for _ in doc_ids)
-            self.conn.execute("BEGIN IMMEDIATE")
+            placeholders = ','.join('?' for _ in doc_ids)
+            self.conn.execute('BEGIN IMMEDIATE')
             try:
-                self.conn.execute(
-                    f"DELETE FROM postings WHERE doc_id IN ({placeholders})", doc_ids)
-                cur = self.conn.execute(
-                    f"DELETE FROM documents WHERE doc_id IN ({placeholders})", doc_ids)
+                self.conn.execute(f'DELETE FROM postings WHERE doc_id IN ({placeholders})', doc_ids)
+                cur = self.conn.execute(f'DELETE FROM documents WHERE doc_id IN ({placeholders})', doc_ids)
             except BaseException:
-                self.conn.execute("ROLLBACK")
+                self.conn.execute('ROLLBACK')
                 raise
-            self.conn.execute("COMMIT")
+            self.conn.execute('COMMIT')
             return cur.rowcount
 
     def upsert_document_with_postings(
-        self, doc_id: str, title: str, content: str, doc_type: str, length: int,
-        metadata: dict, term_freqs: dict[str, int],
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        doc_type: str,
+        length: int,
+        metadata: dict,
+        term_freqs: dict[str, int],
     ):
         """Atomic document+postings write. An explicit BEGIN IMMEDIATE /
         COMMIT (ROLLBACK on any failure) guards against the real hazard of
@@ -150,36 +164,35 @@ class Storage:
         threads, and any other operation's commit() would otherwise make a
         half-written doc (row present, postings missing) durable."""
         with self.lock:
-            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute('BEGIN IMMEDIATE')
             try:
                 self.conn.execute(
-                    "INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(doc_id) DO UPDATE SET "
-                    "title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, "
-                    "length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at",
+                    'INSERT INTO documents (doc_id, title, content, doc_type, length, metadata, added_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?) '
+                    'ON CONFLICT(doc_id) DO UPDATE SET '
+                    'title=excluded.title, content=excluded.content, doc_type=excluded.doc_type, '
+                    'length=excluded.length, metadata=excluded.metadata, added_at=excluded.added_at',
                     (doc_id, title, content, doc_type, length, json.dumps(metadata), time.time()),
                 )
-                self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+                self.conn.execute('DELETE FROM postings WHERE doc_id = ?', (doc_id,))
                 if term_freqs:
                     self.conn.executemany(
-                        "INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)",
+                        'INSERT INTO postings (term, doc_id, term_freq) VALUES (?, ?, ?)',
                         [(term, doc_id, freq) for term, freq in term_freqs.items()],
                     )
             except BaseException:
-                self.conn.execute("ROLLBACK")
+                self.conn.execute('ROLLBACK')
                 raise
-            self.conn.execute("COMMIT")
+            self.conn.execute('COMMIT')
 
     def commit(self):
         with self.lock:
             self.conn.commit()
 
-    def get_document(self, doc_id: str) -> Optional[Document]:
+    def get_document(self, doc_id: str) -> Document | None:
         with self.lock:
             row = self.conn.execute(
-                "SELECT doc_id, title, content, doc_type, length, metadata, added_at "
-                "FROM documents WHERE doc_id = ?",
+                'SELECT doc_id, title, content, doc_type, length, metadata, added_at FROM documents WHERE doc_id = ?',
                 (doc_id,),
             ).fetchone()
         if row is None:
@@ -192,14 +205,13 @@ class Storage:
         if not doc_ids:
             return {}
         with self.lock:
-            placeholders = ",".join("?" for _ in doc_ids)
+            placeholders = ','.join('?' for _ in doc_ids)
             rows = self.conn.execute(
-                "SELECT doc_id, title, content, doc_type, length, metadata, added_at "
-                f"FROM documents WHERE doc_id IN ({placeholders})",
+                'SELECT doc_id, title, content, doc_type, length, metadata, added_at '
+                f'FROM documents WHERE doc_id IN ({placeholders})',
                 doc_ids,
             ).fetchall()
-        return {r[0]: Document(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]), r[6])
-                for r in rows}
+        return {r[0]: Document(r[0], r[1], r[2], r[3], r[4], json.loads(r[5]), r[6]) for r in rows}
 
     def get_documents_meta(self, doc_ids: list[str] | None = None) -> dict[str, Document]:
         """Metadata-only fetch (WP12-B3): doc_id, doc_type, metadata in ONE
@@ -209,38 +221,34 @@ class Storage:
         O(corpus) per filtered vector search (audit R4)."""
         with self.lock:
             if doc_ids:
-                placeholders = ",".join("?" for _ in doc_ids)
+                placeholders = ','.join('?' for _ in doc_ids)
                 rows = self.conn.execute(
-                    "SELECT doc_id, doc_type, metadata FROM documents "
-                    f"WHERE doc_id IN ({placeholders})", doc_ids).fetchall()
+                    f'SELECT doc_id, doc_type, metadata FROM documents WHERE doc_id IN ({placeholders})', doc_ids
+                ).fetchall()
             else:
-                rows = self.conn.execute(
-                    "SELECT doc_id, doc_type, metadata FROM documents").fetchall()
-        return {r[0]: Document(r[0], "", "", r[1], 0, json.loads(r[2]), 0.0)
-                for r in rows}
+                rows = self.conn.execute('SELECT doc_id, doc_type, metadata FROM documents').fetchall()
+        return {r[0]: Document(r[0], '', '', r[1], 0, json.loads(r[2]), 0.0) for r in rows}
 
     def delete_document(self, doc_id: str) -> bool:
         with self.lock:
-            cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-            self.conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+            cur = self.conn.execute('DELETE FROM documents WHERE doc_id = ?', (doc_id,))
+            self.conn.execute('DELETE FROM postings WHERE doc_id = ?', (doc_id,))
             self.conn.commit()
             return cur.rowcount > 0
 
     def document_count(self) -> int:
         with self.lock:
-            return self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            return self.conn.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
 
     def average_length(self) -> float:
         with self.lock:
-            row = self.conn.execute("SELECT AVG(length) FROM documents").fetchone()
+            row = self.conn.execute('SELECT AVG(length) FROM documents').fetchone()
             return row[0] or 0.0
 
     def postings_for_term(self, term: str) -> list[tuple[str, int]]:
         """[(doc_id, term_freq), ...] for every document containing this term."""
         with self.lock:
-            return self.conn.execute(
-                "SELECT doc_id, term_freq FROM postings WHERE term = ?", (term,)
-            ).fetchall()
+            return self.conn.execute('SELECT doc_id, term_freq FROM postings WHERE term = ?', (term,)).fetchall()
 
     def postings_for_terms(self, terms: list[str]) -> dict[str, list[tuple[str, int]]]:
         """postings_for_term for many terms in ONE query (BUG-01: one
@@ -250,10 +258,9 @@ class Storage:
         if not terms:
             return {}
         with self.lock:
-            placeholders = ",".join("?" for _ in terms)
+            placeholders = ','.join('?' for _ in terms)
             rows = self.conn.execute(
-                f"SELECT term, doc_id, term_freq FROM postings "
-                f"WHERE term IN ({placeholders})",
+                f'SELECT term, doc_id, term_freq FROM postings WHERE term IN ({placeholders})',
                 terms,
             ).fetchall()
         out: dict[str, list[tuple[str, int]]] = {}
@@ -264,9 +271,7 @@ class Storage:
     def document_frequency(self, term: str) -> int:
         """Number of distinct documents containing this term — BM25's n(t)."""
         with self.lock:
-            return self.conn.execute(
-                "SELECT COUNT(*) FROM postings WHERE term = ?", (term,)
-            ).fetchone()[0]
+            return self.conn.execute('SELECT COUNT(*) FROM postings WHERE term = ?', (term,)).fetchone()[0]
 
     def document_frequencies(self, terms: list[str]) -> dict[str, int]:
         """document_frequency for many terms in ONE query (spell-correction
@@ -275,18 +280,17 @@ class Storage:
         if not terms:
             return {}
         with self.lock:
-            placeholders = ",".join("?" for _ in terms)
+            placeholders = ','.join('?' for _ in terms)
             rows = self.conn.execute(
-                f"SELECT term, COUNT(*) AS n FROM postings "
-                f"WHERE term IN ({placeholders}) GROUP BY term",
+                f'SELECT term, COUNT(*) AS n FROM postings WHERE term IN ({placeholders}) GROUP BY term',
                 terms,
             ).fetchall()
-        found = {term: count for term, count in rows}
+        found = dict(rows)
         return {t: found.get(t, 0) for t in terms}
 
     def all_doc_ids(self) -> list[str]:
         with self.lock:
-            return [r[0] for r in self.conn.execute("SELECT doc_id FROM documents ORDER BY doc_id")]
+            return [r[0] for r in self.conn.execute('SELECT doc_id FROM documents ORDER BY doc_id')]
 
     def matching_doc_count(self, terms: list[str]) -> int:
         """COUNT(DISTINCT doc_id) over any term — the BM25 candidate-pool
@@ -297,10 +301,10 @@ class Storage:
         if not terms:
             return 0
         with self.lock:
-            placeholders = ",".join("?" for _ in terms)
+            placeholders = ','.join('?' for _ in terms)
             return self.conn.execute(
-                f"SELECT COUNT(DISTINCT doc_id) FROM postings "
-                f"WHERE term IN ({placeholders})", terms).fetchone()[0]
+                f'SELECT COUNT(DISTINCT doc_id) FROM postings WHERE term IN ({placeholders})', terms
+            ).fetchone()[0]
 
     def added_at_map(self, doc_ids: list[str]) -> dict[str, float]:
         """added_at for many docs in ONE query — the freshness sort fetches
@@ -309,34 +313,32 @@ class Storage:
         if not doc_ids:
             return {}
         with self.lock:
-            placeholders = ",".join("?" for _ in doc_ids)
+            placeholders = ','.join('?' for _ in doc_ids)
             rows = self.conn.execute(
-                f"SELECT doc_id, added_at FROM documents "
-                f"WHERE doc_id IN ({placeholders})", doc_ids).fetchall()
-        return {doc_id: ts for doc_id, ts in rows}
+                f'SELECT doc_id, added_at FROM documents WHERE doc_id IN ({placeholders})', doc_ids
+            ).fetchall()
+        return dict(rows)
 
     def all_terms(self) -> list[str]:
         """Sorted index vocabulary (distinct postings terms). Phase 5 query
         understanding builds spelling/suggestion candidates from this."""
         with self.lock:
-            return [r[0] for r in self.conn.execute("SELECT DISTINCT term FROM postings ORDER BY term")]
+            return [r[0] for r in self.conn.execute('SELECT DISTINCT term FROM postings ORDER BY term')]
 
     def doc_ids_with_prefix(self, prefix: str) -> list[str]:
         with self.lock:
             return [
                 r[0]
                 for r in self.conn.execute(
-                    "SELECT doc_id FROM documents WHERE substr(doc_id, 1, ?) = ?",
+                    'SELECT doc_id FROM documents WHERE substr(doc_id, 1, ?) = ?',
                     (len(prefix), prefix),
                 )
             ]
 
     def chunk_ids(self, parent_id: str) -> list[str]:
         """Ids of the chunk documents (parent_id#chunk0, #chunk1, ...) of a parent."""
-        pattern = re.compile(re.escape(parent_id) + r"#chunk\d+")
-        return [
-            d for d in self.doc_ids_with_prefix(parent_id + "#chunk") if pattern.fullmatch(d)
-        ]
+        pattern = re.compile(re.escape(parent_id) + r'#chunk\d+')
+        return [d for d in self.doc_ids_with_prefix(parent_id + '#chunk') if pattern.fullmatch(d)]
 
     # ------------------------------------------------- RAG token budgets
     # P7-6: shared-state per-bucket DAILY token accounting, on THIS
@@ -348,29 +350,30 @@ class Storage:
         # UTC day, matching the documented per-UTC-day budget contract
         # (rag/budget.py, the 429 Retry-After): local-time keys made worker
         # fleets in different timezones disagree on "today" (review UTC-1).
-        return time.strftime("%Y-%m-%d", time.gmtime(ts or time.time()))
+        return time.strftime('%Y-%m-%d', time.gmtime(ts or time.time()))
 
     def rag_usage_add(self, bucket: str, tokens: int, day: str | None = None) -> int:
         """Add `tokens` to `bucket`'s daily counter; returns the new total."""
         day = day or self._day_key()
         with self.lock:
             self.conn.execute(
-                "INSERT INTO rag_token_usage (bucket, day, tokens) VALUES (?, ?, ?) "
-                "ON CONFLICT(bucket, day) DO UPDATE SET "
-                "tokens = tokens + excluded.tokens",
-                (bucket, day, int(tokens)))
+                'INSERT INTO rag_token_usage (bucket, day, tokens) VALUES (?, ?, ?) '
+                'ON CONFLICT(bucket, day) DO UPDATE SET '
+                'tokens = tokens + excluded.tokens',
+                (bucket, day, int(tokens)),
+            )
             self.conn.commit()
             row = self.conn.execute(
-                "SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?",
-                (bucket, day)).fetchone()
+                'SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?', (bucket, day)
+            ).fetchone()
         return int(row[0]) if row else 0
 
     def rag_usage_get(self, bucket: str, day: str | None = None) -> int:
         day = day or self._day_key()
         with self.lock:
             row = self.conn.execute(
-                "SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?",
-                (bucket, day)).fetchone()
+                'SELECT tokens FROM rag_token_usage WHERE bucket = ? AND day = ?', (bucket, day)
+            ).fetchone()
         return int(row[0]) if row else 0
 
     def rag_usage_prune(self, keep_days: int = 14) -> int:
@@ -378,11 +381,10 @@ class Storage:
         Operators schedule this (see README) — old rows are only cost
         accounting, never functional."""
         if keep_days <= 0:
-            raise ValueError("keep_days must be positive")
+            raise ValueError('keep_days must be positive')
         cutoff = self._day_key(time.time() - keep_days * 86400.0)
         with self.lock:
-            cur = self.conn.execute(
-                "DELETE FROM rag_token_usage WHERE day < ?", (cutoff,))
+            cur = self.conn.execute('DELETE FROM rag_token_usage WHERE day < ?', (cutoff,))
             self.conn.commit()
         return cur.rowcount
 
@@ -391,32 +393,33 @@ class Storage:
     # bucket (verified-key hash or IP) so one key can never read another
     # key's sessions. On THIS connection only.
 
-    def rag_session_append(self, scope: str, session_id: str, idx: int,
-                           role: str, text: str, updated_at: float) -> None:
+    def rag_session_append(
+        self, scope: str, session_id: str, idx: int, role: str, text: str, updated_at: float
+    ) -> None:
         with self.lock:
             self.conn.execute(
-                "INSERT INTO rag_sessions (scope, session_id, turn_idx, role, "
-                "text, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(scope, session_id, turn_idx) DO UPDATE SET "
-                "role=excluded.role, text=excluded.text, "
-                "updated_at=excluded.updated_at",
-                (scope, session_id, int(idx), role, text, float(updated_at)))
+                'INSERT INTO rag_sessions (scope, session_id, turn_idx, role, '
+                'text, updated_at) VALUES (?, ?, ?, ?, ?, ?) '
+                'ON CONFLICT(scope, session_id, turn_idx) DO UPDATE SET '
+                'role=excluded.role, text=excluded.text, '
+                'updated_at=excluded.updated_at',
+                (scope, session_id, int(idx), role, text, float(updated_at)),
+            )
             self.conn.commit()
 
     def rag_session_turns(self, scope: str, session_id: str) -> list[tuple]:
         """[(idx, role, text, updated_at)] ordered by idx."""
         with self.lock:
             rows = self.conn.execute(
-                "SELECT turn_idx, role, text, updated_at FROM rag_sessions "
-                "WHERE scope = ? AND session_id = ? ORDER BY turn_idx",
-                (scope, session_id)).fetchall()
+                'SELECT turn_idx, role, text, updated_at FROM rag_sessions '
+                'WHERE scope = ? AND session_id = ? ORDER BY turn_idx',
+                (scope, session_id),
+            ).fetchall()
         return rows
 
     def rag_session_delete(self, scope: str, session_id: str) -> int:
         with self.lock:
-            cur = self.conn.execute(
-                "DELETE FROM rag_sessions WHERE scope = ? AND session_id = ?",
-                (scope, session_id))
+            cur = self.conn.execute('DELETE FROM rag_sessions WHERE scope = ? AND session_id = ?', (scope, session_id))
             self.conn.commit()
         return cur.rowcount
 
@@ -430,14 +433,16 @@ class Storage:
         is past the cutoff — the same rule the RAM store's last_used
         uses; a live session with an old first turn must survive."""
         if ttl_seconds <= 0:
-            raise ValueError("ttl must be positive")
+            raise ValueError('ttl must be positive')
         cutoff = time.time() - ttl_seconds
         with self.lock:
             cur = self.conn.execute(
-                "DELETE FROM rag_sessions WHERE (scope, session_id) IN ("
-                "SELECT scope, session_id FROM rag_sessions "
-                "GROUP BY scope, session_id "
-                "HAVING MAX(updated_at) < ?)", (cutoff,))
+                'DELETE FROM rag_sessions WHERE (scope, session_id) IN ('
+                'SELECT scope, session_id FROM rag_sessions '
+                'GROUP BY scope, session_id '
+                'HAVING MAX(updated_at) < ?)',
+                (cutoff,),
+            )
             self.conn.commit()
         return cur.rowcount
 
@@ -447,8 +452,8 @@ class Storage:
             # (("ab","c") vs ("a","bc")); a unit separator makes the
             # distinct count correct.
             return self.conn.execute(
-                "SELECT COUNT(DISTINCT scope || char(31) || session_id) FROM "
-                "rag_sessions").fetchone()[0]
+                'SELECT COUNT(DISTINCT scope || char(31) || session_id) FROM rag_sessions'
+            ).fetchone()[0]
 
     def close(self):
         with self.lock:

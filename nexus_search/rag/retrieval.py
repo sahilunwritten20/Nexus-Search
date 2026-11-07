@@ -19,12 +19,13 @@ to keyword retrieval with `degraded_reason` set (never a silent swap); when
 retrieval itself fails, `retrieval_error` carries the exception TYPE name
 only (the service maps it to a clean 503 — internals never reach clients).
 """
+
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
-logger = logging.getLogger("nexus_search.rag.retrieval")
+logger = logging.getLogger('nexus_search.rag.retrieval')
 
 # Bounds reused from /search (api.py MAX_QUERY_CHARS / MAX_QUERY_WORDS):
 # attacker-controlled parse cost is bounded at the same points, so a /ask
@@ -36,7 +37,7 @@ MAX_TOP_K = 100
 # The request-model filters dict supports exactly the two filter families
 # the query parser understands (filters.py); anything else would invent a
 # second filter semantics — refused loudly instead.
-_ALLOWED_FILTER_KEYS = {"doc_type", "language"}
+_ALLOWED_FILTER_KEYS = {'doc_type', 'language'}
 
 
 def use_rerank_from_env() -> bool:
@@ -44,10 +45,8 @@ def use_rerank_from_env() -> bool:
     Phase 5 reranker (+ Phase 6 authority/popularity weights via their env
     knobs, all default 0.0 = inert) as `/search`. Raw bm25/vector scores
     survive the rerank untouched (they live on the result object)."""
-    raw = (os.environ.get("NEXUS_RAG_USE_RERANK") or "").strip().lower()
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return True
+    raw = (os.environ.get('NEXUS_RAG_USE_RERANK') or '').strip().lower()
+    return raw not in ('0', 'false', 'no', 'off')
 
 
 @dataclass
@@ -58,34 +57,36 @@ class RagChunk:
     the plain doc id otherwise) — citations resolve through
     Storage.get_document on this id. `parent_id` is the metadata parent
     when the row is a chunk, else the row id itself."""
+
     chunk_id: str
-    parent_id: str = ""
-    chunk_index: Optional[int] = None
-    chunk_count: Optional[int] = None
-    title: str = ""
-    doc_type: str = ""
-    url: Optional[str] = None
+    parent_id: str = ''
+    chunk_index: int | None = None
+    chunk_count: int | None = None
+    title: str = ''
+    doc_type: str = ''
+    url: str | None = None
     # RAW per-retriever scores (None = that retriever did not find this
     # row). Never normalized, never fused — the refuse-gate's only inputs.
-    bm25_score: Optional[float] = None
-    vector_score: Optional[float] = None
+    bm25_score: float | None = None
+    vector_score: float | None = None
     fused_score: float = 0.0
-    source: str = "hybrid"
+    source: str = 'hybrid'
     metadata: dict = field(default_factory=dict)
-    text: str = ""  # full row content, from the ONE batched fetch
+    text: str = ''  # full row content, from the ONE batched fetch
 
 
 @dataclass
 class RagRetrieval:
     """The retriever's answer for one query."""
+
     query: str
-    language: str = "unknown"        # ranking.query.detect_language() result
-    mode: str = "hybrid"
+    language: str = 'unknown'  # ranking.query.detect_language() result
+    mode: str = 'hybrid'
     results: list[RagChunk] = field(default_factory=list)
     total: int = 0
     reranked: bool = False
-    degraded_reason: Optional[str] = None    # vector side down -> keyword
-    retrieval_error: Optional[str] = None     # exception TYPE name only
+    degraded_reason: str | None = None  # vector side down -> keyword
+    retrieval_error: str | None = None  # exception TYPE name only
 
     @property
     def degraded(self) -> bool:
@@ -95,12 +96,18 @@ class RagRetrieval:
 class RagRetriever:
     """Chunk-granular retrieval over the shared HybridSearch instance."""
 
-    def __init__(self, hybrid, storage, *, bm25_search=None,
-                 use_rerank: Optional[bool] = None,
-                 understanding_fn: Optional[Callable] = None,
-                 rerank_fn: Optional[Callable] = None,
-                 weights_fn: Optional[Callable] = None,
-                 link_intel=None):
+    def __init__(
+        self,
+        hybrid,
+        storage,
+        *,
+        bm25_search=None,
+        use_rerank: bool | None = None,
+        understanding_fn: Callable | None = None,
+        rerank_fn: Callable | None = None,
+        weights_fn: Callable | None = None,
+        link_intel=None,
+    ):
         # `hybrid` may be None: the vector subsystem never came up at boot
         # (api.py's degraded-boot path) — keyword-only retrieval with a
         # LOUD degraded_reason. `bm25_search` is then required.
@@ -111,21 +118,24 @@ class RagRetriever:
         self.link_intel = link_intel
         if understanding_fn is None:
             from ..ranking.query import understand_query
+
             understanding_fn = understand_query
         self._understanding_fn = understanding_fn
         if rerank_fn is None:
             from ..ranking.ranker import rerank as _rerank
+
             rerank_fn = _rerank
         self._rerank_fn = rerank_fn
         if weights_fn is None:
             from ..ranking.ranker import RankingWeights
+
             weights_fn = RankingWeights.from_env
         self._weights_fn = weights_fn
 
     # ------------------------------------------------------------------ api
 
     @property
-    def embedder_name(self) -> Optional[str]:
+    def embedder_name(self) -> str | None:
         """Identity of the shared embedder (e.g. 'hash:384') — gates the
         per-embedder calibrated floors. None when the vector subsystem is
         absent (keyword-only degraded mode)."""
@@ -140,14 +150,13 @@ class RagRetriever:
         """The /search bounds, enforced identically here so /ask queries
         can never be more expensive than /search queries."""
         if not query.strip():
-            raise ValueError("query must not be empty")
+            raise ValueError('query must not be empty')
         if len(query) > MAX_QUERY_CHARS:
-            raise ValueError("query too long")
+            raise ValueError('query too long')
         if len(query.split()) > MAX_QUERY_WORDS:
-            raise ValueError(f"query has more than {MAX_QUERY_WORDS} words")
+            raise ValueError(f'query has more than {MAX_QUERY_WORDS} words')
 
-    def retrieve(self, query: str, *, filters: Optional[dict] = None,
-                 k: int = 10, mode: str = "hybrid") -> RagRetrieval:
+    def retrieve(self, query: str, *, filters: dict | None = None, k: int = 10, mode: str = 'hybrid') -> RagRetrieval:
         """Retrieve up to `k` stored rows for `query`.
 
         `filters` maps {'doc_type': ..., 'language': ...} onto the exact
@@ -160,20 +169,19 @@ class RagRetriever:
         rendered = query
         filter_note = self._render_filters(filters)
         if filter_note:
-            rendered = f"{query} {filter_note}"
+            rendered = f'{query} {filter_note}'
 
         from ..ranking.query import detect_language
+
         language = detect_language(query)
 
         try:
-            results, total, degraded_reason, reranked = self._retrieve_rows(
-                rendered, k, mode)
+            results, total, degraded_reason, reranked = self._retrieve_rows(rendered, k, mode)
         except Exception:
             # Type name only — the API maps this to a clean 503; stack
             # traces / messages never reach a response body.
-            logger.exception("rag retrieval failed")
-            return RagRetrieval(query=query, language=language, mode=mode,
-                                retrieval_error="retrieval_error")
+            logger.exception('rag retrieval failed')
+            return RagRetrieval(query=query, language=language, mode=mode, retrieval_error='retrieval_error')
 
         # ONE batched fetch for every full row text (no N+1 — the WP12-B4
         # discipline holds on the RAG path too).
@@ -182,50 +190,58 @@ class RagRetriever:
         for r in results:
             doc = docs_by_id.get(r.doc_id)
             meta = dict(r.metadata or {})
-            text = doc.content if doc is not None else ""
-            parent = str(meta.get("parent_id") or r.doc_id)
-            chunks.append(RagChunk(
-                chunk_id=r.doc_id,
-                parent_id=parent,
-                chunk_index=meta.get("chunk_index"),
-                chunk_count=meta.get("chunk_count"),
-                title=r.title or (doc.title if doc is not None else ""),
-                doc_type=r.doc_type or (doc.doc_type if doc is not None else ""),
-                url=meta.get("url"),
-                bm25_score=r.bm25_score,
-                vector_score=r.vector_score,
-                fused_score=float(r.score or 0.0),
-                source=r.source or "hybrid",
-                metadata=meta,
-                text=text,
-            ))
-        return RagRetrieval(query=query, language=language, mode=mode,
-                            results=chunks, total=total,
-                            reranked=reranked, degraded_reason=degraded_reason)
+            text = doc.content if doc is not None else ''
+            parent = str(meta.get('parent_id') or r.doc_id)
+            chunks.append(
+                RagChunk(
+                    chunk_id=r.doc_id,
+                    parent_id=parent,
+                    chunk_index=meta.get('chunk_index'),
+                    chunk_count=meta.get('chunk_count'),
+                    title=r.title or (doc.title if doc is not None else ''),
+                    doc_type=r.doc_type or (doc.doc_type if doc is not None else ''),
+                    url=meta.get('url'),
+                    bm25_score=r.bm25_score,
+                    vector_score=r.vector_score,
+                    fused_score=float(r.score or 0.0),
+                    source=r.source or 'hybrid',
+                    metadata=meta,
+                    text=text,
+                )
+            )
+        return RagRetrieval(
+            query=query,
+            language=language,
+            mode=mode,
+            results=chunks,
+            total=total,
+            reranked=reranked,
+            degraded_reason=degraded_reason,
+        )
 
     # ------------------------------------------------------------ internals
 
     @staticmethod
-    def _render_filters(filters: Optional[dict]) -> str:
+    def _render_filters(filters: dict | None) -> str:
         if not filters:
-            return ""
+            return ''
         unknown = set(filters) - _ALLOWED_FILTER_KEYS
         if unknown:
-            raise ValueError(f"unsupported filter keys: {sorted(unknown)}")
+            raise ValueError(f'unsupported filter keys: {sorted(unknown)}')
         # SKEP-R8 (P3): VALUES were unvalidated — a 100k-char doc_type made
         # the retrieval input exceed MAX_QUERY_CHARS after the query was
         # already capped ("never more expensive than /search" broken).
         for key, value in filters.items():
             if not isinstance(value, str):
-                raise ValueError(f"filter {key} must be a string value")
+                raise ValueError(f'filter {key} must be a string value')
             if not value or len(value) > 64:
-                raise ValueError(f"filter {key} must be 1-64 characters")
+                raise ValueError(f'filter {key} must be 1-64 characters')
         parts = []
-        if filters.get("doc_type"):
-            parts.append(f"type:{filters['doc_type']}")
-        if filters.get("language"):
-            parts.append(f"lang:{filters['language']}")
-        return " ".join(parts)
+        if filters.get('doc_type'):
+            parts.append(f'type:{filters["doc_type"]}')
+        if filters.get('language'):
+            parts.append(f'lang:{filters["language"]}')
+        return ' '.join(parts)
 
     def _retrieve_rows(self, query: str, k: int, mode: str):
         """Returns (rows, total, degraded_reason, reranked)."""
@@ -233,35 +249,39 @@ class RagRetriever:
             # Degraded boot: vector subsystem never came up. Keyword-only,
             # flagged — never a silent swap.
             if self.bm25_search is None:
-                raise RuntimeError("no retriever available")
-            page = self.bm25_search.search_page(query, top_k=k, offset=0,
-                                                group_chunks=False)
+                raise RuntimeError('no retriever available')
+            page = self.bm25_search.search_page(query, top_k=k, offset=0, group_chunks=False)
             rows = [_row_from_bm25(r) for r in page.results]
             reranked = False
             if self.use_rerank and rows:
                 understanding = self._understanding_fn(query, self.storage)
                 ranked = self._rerank_fn(
-                    rows, query, weights=self._weights_fn(),
-                    storage=self.storage, understanding=understanding,
-                    link_intel=self.link_intel)
+                    rows,
+                    query,
+                    weights=self._weights_fn(),
+                    storage=self.storage,
+                    understanding=understanding,
+                    link_intel=self.link_intel,
+                )
                 rows = [rr.result for rr in ranked]
                 reranked = True
-            return rows, page.total, "vector_subsystem_unavailable", reranked
+            return rows, page.total, 'vector_subsystem_unavailable', reranked
 
         from ..core.hybrid_search import SearchMode
+
         search_mode = SearchMode(mode)
 
         understanding = self._understanding_fn(query, self.storage)
         page = self.hybrid.search_page(
-            query, top_k=k, offset=0, group_chunks=False, mode=search_mode,
-            understanding=understanding)
+            query, top_k=k, offset=0, group_chunks=False, mode=search_mode, understanding=understanding
+        )
 
         degraded_reason = None
         meta = page.metadata or {}
-        if meta.get("fallback"):
+        if meta.get('fallback'):
             # The vector side died mid-request and HybridSearch fell back
             # to BM25 — surface it (its own metadata reason, type-only).
-            degraded_reason = str(meta.get("fallback_reason") or "vector_fallback")
+            degraded_reason = str(meta.get('fallback_reason') or 'vector_fallback')
 
         rows = list(page.results)
         reranked = False
@@ -271,9 +291,13 @@ class RagRetriever:
             # default ON. Raw bm25/vector scores ride along on the result
             # objects, so they survive the rerank by construction.
             ranked = self._rerank_fn(
-                rows, query, weights=self._weights_fn(),
-                storage=self.storage, understanding=understanding,
-                link_intel=self.link_intel)
+                rows,
+                query,
+                weights=self._weights_fn(),
+                storage=self.storage,
+                understanding=understanding,
+                link_intel=self.link_intel,
+            )
             rows = [rr.result for rr in ranked]
             reranked = True
         return rows, page.total, degraded_reason, reranked
@@ -284,10 +308,17 @@ def _row_from_bm25(r):
     shape the mapping below reads (bm25 raw score; vector None by
     construction — the vector side is absent)."""
     from ..core.hybrid_search import HybridSearchResult
-    return HybridSearchResult(
-        doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
-        doc_type=r.doc_type, metadata=r.metadata, chunk_id=r.chunk_id,
-        matched_chunks=r.matched_chunks, bm25_score=r.score,
-        vector_score=None, source="bm25_degraded",
-    )
 
+    return HybridSearchResult(
+        doc_id=r.doc_id,
+        score=r.score,
+        title=r.title,
+        snippet=r.snippet,
+        doc_type=r.doc_type,
+        metadata=r.metadata,
+        chunk_id=r.chunk_id,
+        matched_chunks=r.matched_chunks,
+        bm25_score=r.score,
+        vector_score=None,
+        source='bm25_degraded',
+    )

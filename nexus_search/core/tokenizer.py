@@ -24,9 +24,9 @@ from functools import lru_cache
 # sentence would become ONE token, so runs of these characters are split into
 # overlapping character bigrams (the standard space-free fallback):
 # Hiragana/Katakana, CJK Ext-A, CJK Unified Ideographs, Compat Ideographs, Hangul.
-_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3"
-_HAS_CJK = re.compile(f"[{_CJK}]")
-_SCRIPT_RUN = re.compile(f"[{_CJK}]+|[^{_CJK}]+")
+_CJK = '\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7a3'
+_HAS_CJK = re.compile(f'[{_CJK}]')
+_SCRIPT_RUN = re.compile(f'[{_CJK}]+|[^{_CJK}]+')
 
 
 @lru_cache(maxsize=1)
@@ -34,10 +34,8 @@ def _get_token_re() -> re.Pattern:
     """Lazily build the token regex with Unicode combining marks.
     Avoids 50-100ms import-time penalty from iterating all 65K codepoints.
     """
-    marks = "".join(
-        chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) in ("Mn", "Mc")
-    )
-    w = rf"(?:[^\W_]|[{re.escape(marks)}])"
+    marks = ''.join(chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) in ('Mn', 'Mc'))
+    w = rf'(?:[^\W_]|[{re.escape(marks)}])'
     return re.compile(rf"{w}+(?:'{w}+)?")
 
 
@@ -47,9 +45,7 @@ def _get_token_re() -> re.Pattern:
 # term. INDEX-AFFECTING: existing deployments must re-run
 # `python -m nexus_search.core.reindex --db $NEXUS_DB --shadow` after
 # upgrading, or old postings miss the new terms.
-_ALLOWLIST_RE = re.compile(
-    r"(?<![a-z0-9])(c\+\+|c#|f#|node\.js|\.net)(?![a-z0-9])"
-)
+_ALLOWLIST_RE = re.compile(r'(?<![a-z0-9])(c\+\+|c#|f#|node\.js|\.net)(?![a-z0-9])')
 
 
 def _cjk_bigrams(run: str) -> list[str]:
@@ -65,8 +61,16 @@ def _cjk_bigrams(run: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _EN_STEM_RULES = (
-    ("ational", "ate"), ("tional", "tion"), ("ities", "ity"), ("ies", "y"),
-    ("ing", ""), ("edly", ""), ("ed", ""), ("ly", ""), ("es", ""), ("s", ""),
+    ('ational', 'ate'),
+    ('tional', 'tion'),
+    ('ities', 'ity'),
+    ('ies', 'y'),
+    ('ing', ''),
+    ('edly', ''),
+    ('ed', ''),
+    ('ly', ''),
+    ('es', ''),
+    ('s', ''),
 )
 
 
@@ -83,22 +87,22 @@ def _stem_en(token: str) -> str:
             stem = token[: len(token) - len(suffix)] + repl
             if not stem:
                 return token
-            if suffix == "s" and stem.endswith(("s", "u", "i")):
+            if suffix == 's' and stem.endswith(('s', 'u', 'i')):
                 return token  # "class"→"clas" is a false stem, not morphology
             # double-consonant resolution for inflected forms:
             # "running" → "run" (not "runn"), "stopped" → "stop"
-            if suffix in ("ing", "ed", "edly") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+            if suffix in ('ing', 'ed', 'edly') and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in 'aeiou':
                 stem = stem[:-1]
             # basic pronounceability guard: a result with no vowel isn't a stem
-            if any(c in "aeiouy" for c in stem):
+            if any(c in 'aeiouy' for c in stem):
                 return stem
     return token
 
 
-_TECHNIQUE = {"en": _stem_en}
+_TECHNIQUE = {'en': _stem_en}
 
 
-def stem_token(token: str, language: str = "en") -> str:
+def stem_token(token: str, language: str = 'en') -> str:
     """Pluggable per-language stemming. Unknown language -> token unchanged."""
     fn = _TECHNIQUE.get(language)
     return fn(token) if fn else token
@@ -117,7 +121,7 @@ def _tokens_of_segment(segment: str, stem: bool) -> list[str]:
     return tokens
 
 
-def tokenize(text: str, stem: "bool | None" = None) -> list[str]:
+def tokenize(text: str, stem: bool | None = None) -> list[str]:
     """Lowercase word tokens in any script. Keeps internal apostrophes
     (don't -> "don't") and drops all other punctuation. CJK runs become
     character bigrams; a mixed token like "iPhone15发布" is split by script
@@ -128,8 +132,8 @@ def tokenize(text: str, stem: "bool | None" = None) -> list[str]:
     `stem=None` follows the global default (NEXUS_STEMMING, on by default);
     pass True/False to force. Non-English-Latin tokens are never stemmed."""
     if stem is None:
-        stem = os.environ.get("NEXUS_STEMMING", "1") != "0"
-    lowered = unicodedata.normalize("NFKC", text).casefold()
+        stem = os.environ.get('NEXUS_STEMMING', '1') != '0'
+    lowered = unicodedata.normalize('NFKC', text).casefold()
     if not _ALLOWLIST_RE.search(lowered):
         # fast path: no allowlist term present — output is identical to the
         # pre-P3-10 tokenizer for this input
@@ -137,7 +141,7 @@ def tokenize(text: str, stem: "bool | None" = None) -> list[str]:
     tokens: list[str] = []
     pos = 0
     for m in _ALLOWLIST_RE.finditer(lowered):
-        tokens.extend(_tokens_of_segment(lowered[pos:m.start()], stem))
+        tokens.extend(_tokens_of_segment(lowered[pos : m.start()], stem))
         tokens.append(m.group(0))  # allowlist terms are never stemmed
         pos = m.end()
     tokens.extend(_tokens_of_segment(lowered[pos:], stem))

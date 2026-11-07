@@ -6,10 +6,8 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from .url_utils import normalize_url
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS frontier (
@@ -49,7 +47,7 @@ ALTER TABLE frontier ADD COLUMN next_retry_at REAL NOT NULL DEFAULT 0.0
 """
 
 # Retry policy for status='error': retry_count attempts, exponential backoff.
-MAX_FETCH_ATTEMPTS = 3          # then the URL leaves the frontier for good
+MAX_FETCH_ATTEMPTS = 3  # then the URL leaves the frontier for good
 _ERROR_BACKOFF_MAX = 120.0
 
 
@@ -60,50 +58,46 @@ class FrontierEntry:
     url: str
     depth: int
     priority: int = 0
-    etag: Optional[str] = None
-    last_modified: Optional[str] = None
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 class Frontier:
     """Persistent, deduplicated URL queue."""
 
-    def __init__(self, db_path: str = "crawler.db"):
+    def __init__(self, db_path: str = 'crawler.db'):
         self.conn = sqlite3.connect(
             db_path,
             check_same_thread=False,
         )
 
-        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self.conn.execute('PRAGMA busy_timeout = 5000')
 
         self.lock = threading.RLock()
 
         # Schema comes up through the versioned migration runner (v1 = base
         # DDL as-is for existing files, v2 = retry columns).
         from ..core.migrations import apply_migrations
-        self.schema_version = apply_migrations(
-            self.conn, "frontier", [(1, SCHEMA), (2, _SCHEMA_V2)]
-        )
+
+        self.schema_version = apply_migrations(self.conn, 'frontier', [(1, SCHEMA), (2, _SCHEMA_V2)])
 
         # Belt-and-braces for DBs written before the migrations runner
         # existed: visited gained these columns via _ensure_column back then.
         self._ensure_column(
-            "visited",
-            "etag",
-            "TEXT",
+            'visited',
+            'etag',
+            'TEXT',
         )
 
         self._ensure_column(
-            "visited",
-            "last_modified",
-            "TEXT",
+            'visited',
+            'last_modified',
+            'TEXT',
         )
 
         # Crash recovery: URLs claimed by a run that died (or skipped by
         # last run's limits) get another chance. One crawler process per frontier DB.
-        self.conn.execute(
-            "UPDATE frontier SET status = 'pending' "
-            "WHERE status IN ('in_progress', 'skipped')"
-        )
+        self.conn.execute("UPDATE frontier SET status = 'pending' WHERE status IN ('in_progress', 'skipped')")
 
         self.conn.commit()
 
@@ -119,14 +113,9 @@ class Frontier:
     ) -> None:
         """Add a column if it does not already exist."""
 
-        columns = self.conn.execute(
-            f"PRAGMA table_info({table})"
-        ).fetchall()
+        columns = self.conn.execute(f'PRAGMA table_info({table})').fetchall()
 
-        existing_columns = {
-            row[1]
-            for row in columns
-        }
+        existing_columns = {row[1] for row in columns}
 
         if column not in existing_columns:
             self.conn.execute(
@@ -145,7 +134,7 @@ class Frontier:
         url: str,
         depth: int,
         priority: int = 0,
-        base: Optional[str] = None,
+        base: str | None = None,
         allow_visited: bool = False,
     ) -> bool:
         """
@@ -164,11 +153,9 @@ class Frontier:
         )
 
         with self.lock:
-
             # Normally visited URLs must not be added again.
             # Recrawling can explicitly bypass this restriction.
             if not allow_visited:
-
                 cur = self.conn.execute(
                     """
                     SELECT 1
@@ -234,7 +221,6 @@ class Frontier:
             return []
 
         with self.lock:
-
             rows = self.conn.execute(
                 """
                 SELECT
@@ -260,14 +246,9 @@ class Frontier:
             if not rows:
                 return []
 
-            urls = [
-                row[0]
-                for row in rows
-            ]
+            urls = [row[0] for row in rows]
 
-            placeholders = ",".join(
-                "?" for _ in urls
-            )
+            placeholders = ','.join('?' for _ in urls)
 
             self.conn.execute(
                 f"""
@@ -298,16 +279,15 @@ class Frontier:
     def mark_done(
         self,
         url: str,
-        content_hash: Optional[str] = None,
-        etag: Optional[str] = None,
-        last_modified: Optional[str] = None,
+        content_hash: str | None = None,
+        etag: str | None = None,
+        last_modified: str | None = None,
     ) -> None:
         """Mark a URL as successfully crawled."""
 
         norm = normalize_url(url)
 
         with self.lock:
-
             # Remove it from the frontier.
             self.conn.execute(
                 """
@@ -363,8 +343,8 @@ class Frontier:
     def mark_not_modified(
         self,
         url: str,
-        etag: Optional[str] = None,
-        last_modified: Optional[str] = None,
+        etag: str | None = None,
+        last_modified: str | None = None,
     ) -> None:
         """
         Mark a URL as not modified.
@@ -377,7 +357,6 @@ class Frontier:
         norm = normalize_url(url)
 
         with self.lock:
-
             # Remove from frontier.
             self.conn.execute(
                 """
@@ -418,9 +397,7 @@ class Frontier:
         NOT recorded as visited, so a later run can still crawl it."""
         norm = normalize_url(url)
         with self.lock:
-            self.conn.execute(
-                "UPDATE frontier SET status = 'skipped' WHERE url = ?", (norm,)
-            )
+            self.conn.execute("UPDATE frontier SET status = 'skipped' WHERE url = ?", (norm,))
             self.conn.commit()
 
     # ================================================================
@@ -450,7 +427,6 @@ class Frontier:
         now = time.time()
 
         with self.lock:
-
             # Store the error (full log, both paths).
             self.conn.execute(
                 """
@@ -474,21 +450,18 @@ class Frontier:
 
             if permanent:
                 # terminal: no retry budget, leave the frontier now
-                self.conn.execute("DELETE FROM frontier WHERE url = ?", (norm,))
+                self.conn.execute('DELETE FROM frontier WHERE url = ?', (norm,))
             else:
-                row = self.conn.execute(
-                    "SELECT retry_count FROM frontier WHERE url = ?", (norm,)
-                ).fetchone()
+                row = self.conn.execute('SELECT retry_count FROM frontier WHERE url = ?', (norm,)).fetchone()
                 attempts = (row[0] if row else 0) + 1
                 if attempts >= MAX_FETCH_ATTEMPTS:
                     # exhausted: leave the frontier (rediscovery via add() works
                     # again), the failure history stays in crawl_errors
-                    self.conn.execute("DELETE FROM frontier WHERE url = ?", (norm,))
+                    self.conn.execute('DELETE FROM frontier WHERE url = ?', (norm,))
                 else:
-                    backoff = min(2.0 ** attempts, _ERROR_BACKOFF_MAX)
+                    backoff = min(2.0**attempts, _ERROR_BACKOFF_MAX)
                     self.conn.execute(
-                        "UPDATE frontier SET status = 'error', retry_count = ?, "
-                        "next_retry_at = ? WHERE url = ?",
+                        "UPDATE frontier SET status = 'error', retry_count = ?, next_retry_at = ? WHERE url = ?",
                         (attempts, now + backoff, norm),
                     )
 
@@ -507,7 +480,6 @@ class Frontier:
         norm = normalize_url(url)
 
         with self.lock:
-
             cur = self.conn.execute(
                 """
                 SELECT 1
@@ -544,7 +516,6 @@ class Frontier:
         norm = normalize_url(url)
 
         with self.lock:
-
             row = self.conn.execute(
                 """
                 SELECT
@@ -579,17 +550,11 @@ class Frontier:
         """
 
         if interval_seconds < 0:
-            raise ValueError(
-                "interval_seconds cannot be negative"
-            )
+            raise ValueError('interval_seconds cannot be negative')
 
-        cutoff = (
-            time.time()
-            - interval_seconds
-        )
+        cutoff = time.time() - interval_seconds
 
         with self.lock:
-
             rows = self.conn.execute(
                 """
                 SELECT url
@@ -599,10 +564,7 @@ class Frontier:
                 (cutoff,),
             ).fetchall()
 
-            return [
-                row[0]
-                for row in rows
-            ]
+            return [row[0] for row in rows]
 
     # ================================================================
     # Counts
@@ -612,7 +574,6 @@ class Frontier:
         """Return the number of pending URLs."""
 
         with self.lock:
-
             return self.conn.execute(
                 """
                 SELECT COUNT(*)
@@ -625,7 +586,6 @@ class Frontier:
         """Return the number of visited URLs."""
 
         with self.lock:
-
             return self.conn.execute(
                 """
                 SELECT COUNT(*)
@@ -641,7 +601,6 @@ class Frontier:
         """Close the SQLite database connection."""
 
         with self.lock:
-
             if self.conn is not None:
                 self.conn.close()
                 self.conn = None

@@ -5,9 +5,9 @@ the context signals need from Phase 4's HybridSearchResult + Storage,
 `extract_features()` computes all of them for one candidate. Both are pure
 and storage-light: the document row is fetched once per candidate here.
 """
+
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from ..core.storage import Storage
 from . import signals
@@ -22,12 +22,13 @@ class SignalContext:
     Phase 4 hybrid result (normalized contributions when debug=True, else
     raw scores clamped — see ranker.py). Defaults for the placeholder
     signals live here so they can be tuned without touching code."""
+
     query: str
-    understanding: Optional[QueryUnderstanding] = None
+    understanding: QueryUnderstanding | None = None
     now: float = 0.0
     freshness_half_life_days: float = 30.0
-    bm25_contribution: Optional[float] = None
-    vector_contribution: Optional[float] = None
+    bm25_contribution: float | None = None
+    vector_contribution: float | None = None
     default_authority: float = signals.NEUTRAL
     default_popularity: float = signals.NEUTRAL
     default_click: float = signals.NEUTRAL
@@ -55,41 +56,40 @@ class RankingFeatures:
 
     def as_dict(self) -> dict[str, float]:
         return {
-            "bm25_score": self.bm25_score,
-            "semantic_similarity": self.semantic_similarity,
-            "title_match": self.title_match,
-            "url_match": self.url_match,
-            "phrase_match": self.phrase_match,
-            "freshness": self.freshness,
-            "document_quality": self.document_quality,
-            "content_quality": self.content_quality,
-            "language_relevance": self.language_relevance,
-            "source_authority": self.source_authority,
-            "popularity": self.popularity,
-            "click_signal": self.click_signal,
-            "anchor_relevance": self.anchor_relevance,
+            'bm25_score': self.bm25_score,
+            'semantic_similarity': self.semantic_similarity,
+            'title_match': self.title_match,
+            'url_match': self.url_match,
+            'phrase_match': self.phrase_match,
+            'freshness': self.freshness,
+            'document_quality': self.document_quality,
+            'content_quality': self.content_quality,
+            'language_relevance': self.language_relevance,
+            'source_authority': self.source_authority,
+            'popularity': self.popularity,
+            'click_signal': self.click_signal,
+            'anchor_relevance': self.anchor_relevance,
         }
 
 
 _SIGNAL_FUNCS = {
-    "bm25_score": signals.compute_bm25_score,
-    "semantic_similarity": signals.compute_semantic_similarity,
-    "title_match": signals.compute_title_match,
-    "url_match": signals.compute_url_match,
-    "phrase_match": signals.compute_phrase_match,
-    "freshness": signals.compute_freshness,
-    "document_quality": signals.compute_document_quality,
-    "content_quality": signals.compute_content_quality,
-    "language_relevance": signals.compute_language_relevance,
-    "source_authority": signals.compute_source_authority,
-    "popularity": signals.compute_popularity,
-    "click_signal": signals.compute_click_signal,
-    "anchor_relevance": signals.compute_anchor_relevance,
+    'bm25_score': signals.compute_bm25_score,
+    'semantic_similarity': signals.compute_semantic_similarity,
+    'title_match': signals.compute_title_match,
+    'url_match': signals.compute_url_match,
+    'phrase_match': signals.compute_phrase_match,
+    'freshness': signals.compute_freshness,
+    'document_quality': signals.compute_document_quality,
+    'content_quality': signals.compute_content_quality,
+    'language_relevance': signals.compute_language_relevance,
+    'source_authority': signals.compute_source_authority,
+    'popularity': signals.compute_popularity,
+    'click_signal': signals.compute_click_signal,
+    'anchor_relevance': signals.compute_anchor_relevance,
 }
 
 
-def extract_features(doc_id: str, storage: Storage, context: SignalContext,
-                     doc=None) -> RankingFeatures:
+def extract_features(doc_id: str, storage: Storage, context: SignalContext, doc=None) -> RankingFeatures:
     """Compute every signal for one candidate. `doc` may be passed in if the
     caller already fetched it; otherwise it's read from storage here (once).
     A missing document NEVER crashes feature extraction — placeholders read
@@ -100,11 +100,16 @@ def extract_features(doc_id: str, storage: Storage, context: SignalContext,
     return RankingFeatures(**values)
 
 
-def build_context(query: str, understanding: Optional[QueryUnderstanding] = None,
-                  half_life_days: float = 30.0,
-                  link_intel=None) -> SignalContext:
+def build_context(
+    query: str, understanding: QueryUnderstanding | None = None, half_life_days: float = 30.0, link_intel=None
+) -> SignalContext:
     """New context for one query evaluation. `now` is stamped once so every
     candidate in the same rerank shares the same freshness clock. link_intel
     is the optional Phase-6 LinkGraph (its absence keeps Phase 5 neutral)."""
-    return SignalContext(query=query, understanding=understanding, now=time.time(),
-                         freshness_half_life_days=half_life_days, link_intel=link_intel)
+    return SignalContext(
+        query=query,
+        understanding=understanding,
+        now=time.time(),
+        freshness_half_life_days=half_life_days,
+        link_intel=link_intel,
+    )

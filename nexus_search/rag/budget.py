@@ -13,11 +13,12 @@ SETTLE with the actual usage after the call. The estimate = prompt token
 estimate (chars/token heuristic) + max_tokens — an upper bound, so a
 request that would not fit even in the best case is refused up front.
 """
+
 import hashlib
 import hmac
 import logging
 
-logger = logging.getLogger("nexus_search.rag.budget")
+logger = logging.getLogger('nexus_search.rag.budget')
 
 # NEXUS_RAG_DAILY_TOKEN_BUDGET: tokens per bucket per UTC-day. 0 = off.
 DEFAULT_DAILY_TOKEN_BUDGET = 1_000_000
@@ -25,27 +26,27 @@ DEFAULT_DAILY_TOKEN_BUDGET = 1_000_000
 
 def daily_budget_from_env() -> int:
     import os
-    raw = (os.environ.get("NEXUS_RAG_DAILY_TOKEN_BUDGET") or "").strip()
+
+    raw = (os.environ.get('NEXUS_RAG_DAILY_TOKEN_BUDGET') or '').strip()
     if not raw:
         return DEFAULT_DAILY_TOKEN_BUDGET
     try:
         value = int(raw)
     except ValueError:
-        logger.warning("NEXUS_RAG_DAILY_TOKEN_BUDGET=%r is not an int; "
-                       "default %d applies", raw, DEFAULT_DAILY_TOKEN_BUDGET)
+        logger.warning(
+            'NEXUS_RAG_DAILY_TOKEN_BUDGET=%r is not an int; default %d applies', raw, DEFAULT_DAILY_TOKEN_BUDGET
+        )
         return DEFAULT_DAILY_TOKEN_BUDGET
     return max(0, value)
 
 
-def bucket_key(api_key: str | None, configured_key: str | None,
-               client_ip: str | None) -> str:
+def bucket_key(api_key: str | None, configured_key: str | None, client_ip: str | None) -> str:
     """The budget bucket: a VERIFIED key hashes to its own bucket
     (constant-time check, hash stored — never the raw key); anything
     else (missing/wrong key, open dev mode) falls through to the IP."""
-    if api_key and configured_key:
-        if hmac.compare_digest(api_key, configured_key):
-            return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:24]
-    return "ip:" + (client_ip or "unknown")
+    if api_key and configured_key and hmac.compare_digest(api_key, configured_key):
+        return 'key:' + hashlib.sha256(api_key.encode()).hexdigest()[:24]
+    return 'ip:' + (client_ip or 'unknown')
 
 
 class BudgetExceeded(Exception):
@@ -53,13 +54,12 @@ class BudgetExceeded(Exception):
     429 + Retry-After (until the UTC day rolls over)."""
 
     def __init__(self, used: int, budget: int):
-        super().__init__("rag_token_budget_exceeded")
+        super().__init__('rag_token_budget_exceeded')
         self.used = used
         self.budget = budget
 
 
-def precheck(storage, bucket: str, estimate_tokens: int,
-             budget: int | None = None) -> None:
+def precheck(storage, bucket: str, estimate_tokens: int, budget: int | None = None) -> None:
     """Raise BudgetExceeded when `bucket` cannot fit `estimate_tokens`
     more tokens today. Called BEFORE any provider spend."""
     budget = daily_budget_from_env() if budget is None else budget
@@ -67,9 +67,13 @@ def precheck(storage, bucket: str, estimate_tokens: int,
         return  # 0 = unlimited (documented)
     used = storage.rag_usage_get(bucket)
     if used + estimate_tokens > budget:
-        logger.info("rag token budget pre-check refused bucket=%s "
-                    "used=%d estimate=%d budget=%d", bucket, used,
-                    estimate_tokens, budget)
+        logger.info(
+            'rag token budget pre-check refused bucket=%s used=%d estimate=%d budget=%d',
+            bucket,
+            used,
+            estimate_tokens,
+            budget,
+        )
         raise BudgetExceeded(used, budget)
 
 

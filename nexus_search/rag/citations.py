@@ -19,6 +19,7 @@ HONEST LIMIT: these are LEXICAL checks, not semantic entailment  a
 restated-but-true sentence scores lower than a verbatim copy, and a
 paraphrased lie can pass. The P7-9 benchmark measures the residual gap.
 """
+
 import re
 from dataclasses import dataclass, field
 
@@ -30,21 +31,21 @@ from ..core.tokenizer import tokenize
 # score < 0.2; 0.4 sits in the measured gap).
 SUPPORT_THRESHOLD = 0.4
 
-_CITATION_RE = re.compile(r"\[(\d{1,3})\]")
-_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-_QUOTE_RE = re.compile("[\"]([^\"]{2,400})[\"]")
+_CITATION_RE = re.compile(r'\[(\d{1,3})\]')
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+_QUOTE_RE = re.compile(r'["]([^"]{2,400})["]')
 
-VERIFIED = "verified"
-DROPPED_UNKNOWN_NUMBER = "unknown_source_number"
-DROPPED_MISSING_ROW = "source_row_missing"
+VERIFIED = 'verified'
+DROPPED_UNKNOWN_NUMBER = 'unknown_source_number'
+DROPPED_MISSING_ROW = 'source_row_missing'
 
 
 @dataclass
 class Citation:
     n: int
-    doc_id: str            # parent_id (the document)
+    doc_id: str  # parent_id (the document)
     parent_id: str
-    chunk_id: str          # the exact stored row id
+    chunk_id: str  # the exact stored row id
     chunk_index: int | None
     title: str
     url: str | None
@@ -79,16 +80,16 @@ class SupportReport:
 def parse_citations(answer_text: str) -> list[int]:
     """Unique [n] markers in order of first appearance."""
     seen: dict[int, None] = {}
-    for match in _CITATION_RE.finditer(answer_text or ""):
+    for match in _CITATION_RE.finditer(answer_text or ''):
         seen.setdefault(int(match.group(1)), None)
     return list(seen)
 
 
 def _snippet_of(text: str, width: int = 200) -> str:
-    text = (text or "").strip()
+    text = (text or '').strip()
     if len(text) <= width:
         return text
-    return text[:width].rstrip() + "..."
+    return text[:width].rstrip() + '...'
 
 
 def verify_citations(answer_text: str, selection, storage) -> CitationVerification:
@@ -108,7 +109,7 @@ def verify_citations(answer_text: str, selection, storage) -> CitationVerificati
     for n in numbers:
         source = by_number.get(n)
         if source is None:
-            out.dropped.append({"n": n, "reason": DROPPED_UNKNOWN_NUMBER})
+            out.dropped.append({'n': n, 'reason': DROPPED_UNKNOWN_NUMBER})
         else:
             to_resolve.append(source.chunk_id)
     # ONE batched fetch for every cited row (the existing path)
@@ -121,14 +122,20 @@ def verify_citations(answer_text: str, selection, storage) -> CitationVerificati
             continue
         row = rows.get(source.chunk_id)
         if row is None:
-            out.dropped.append({"n": n, "reason": DROPPED_MISSING_ROW})
+            out.dropped.append({'n': n, 'reason': DROPPED_MISSING_ROW})
             continue
-        out.citations.append(Citation(
-            n=n, doc_id=source.parent_id, parent_id=source.parent_id,
-            chunk_id=source.chunk_id, chunk_index=source.chunk_index,
-            title=row.title or source.title,
-            url=source.url,
-            snippet=_snippet_of(row.content)))
+        out.citations.append(
+            Citation(
+                n=n,
+                doc_id=source.parent_id,
+                parent_id=source.parent_id,
+                chunk_id=source.chunk_id,
+                chunk_index=source.chunk_index,
+                title=row.title or source.title,
+                url=source.url,
+                snippet=_snippet_of(row.content),
+            )
+        )
         verified_count += 1
 
     out.citations_verified = not out.dropped
@@ -157,16 +164,14 @@ def sentence_support(sentence: str, source_texts: list[str]) -> float:
 
 
 def _split_sentences(answer_text: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE_RE.split(answer_text or "")
-            if s and s.strip()]
+    return [s.strip() for s in _SENTENCE_RE.split(answer_text or '') if s and s.strip()]
 
 
 def _normalize_ws(text: str) -> str:
-    return " ".join((text or "").split())
+    return ' '.join((text or '').split())
 
 
-def check_quotes(answer_text: str, selection,
-                 as_sent: dict[str, str] | None = None) -> list[QuoteCheck]:
+def check_quotes(answer_text: str, selection, as_sent: dict[str, str] | None = None) -> list[QuoteCheck]:
     """Every quoted span must appear (whitespace-normalized) in the cited
     source(s) of the sentence it sits in — checked against the text AS
     SENT (post-redaction contract); verified quotes carry char offsets
@@ -180,28 +185,36 @@ def check_quotes(answer_text: str, selection,
             return as_sent[source.chunk_id]
         return source.text
 
-    for match in _QUOTE_RE.finditer(answer_text or ""):
+    for match in _QUOTE_RE.finditer(answer_text or ''):
         quote = match.group(1)
         cited = parse_citations(match.group(0))
         if not cited:
             # look for citations in the sentence containing the quote
-            start = answer_text.rfind(".", 0, match.start())
-            end = answer_text.find(".", match.end())
-            window = answer_text[max(start, 0): end + 1 if end != -1 else None]
+            start = answer_text.rfind('.', 0, match.start())
+            end = answer_text.find('.', match.end())
+            window = answer_text[max(start, 0) : end + 1 if end != -1 else None]
             cited = parse_citations(window)
         texts = [_text_of(n) for n in cited if n in source_by_number]
         normalized_quote = _normalize_ws(quote)
         verified = any(normalized_quote in _normalize_ws(t) for t in texts)
-        checks.append(QuoteCheck(
-            quote=quote, cited_numbers=cited, verified=verified,
-            answer_offset=(match.start(1), match.end(1)) if verified else None))
+        checks.append(
+            QuoteCheck(
+                quote=quote,
+                cited_numbers=cited,
+                verified=verified,
+                answer_offset=(match.start(1), match.end(1)) if verified else None,
+            )
+        )
     return checks
 
 
-def check_support(answer_text: str, selection,
-                  support_threshold: float = SUPPORT_THRESHOLD,
-                  check_quotes_too: bool = True,
-                  as_sent: dict[str, str] | None = None) -> SupportReport:
+def check_support(
+    answer_text: str,
+    selection,
+    support_threshold: float = SUPPORT_THRESHOLD,
+    check_quotes_too: bool = True,
+    as_sent: dict[str, str] | None = None,
+) -> SupportReport:
     """Per-cited-sentence lexical support + quote verification, against
     the cited sources' text AS SENT (post-redaction — what the model
     actually saw)."""
@@ -214,7 +227,7 @@ def check_support(answer_text: str, selection,
             return as_sent[source.chunk_id]
         return source.text
 
-    for sentence in _split_sentences(answer_text or ""):
+    for sentence in _split_sentences(answer_text or ''):
         if not _sentence_tokens(sentence):
             continue  # bare markers/punctuation carry nothing to assess
         cited = parse_citations(sentence)
@@ -226,20 +239,19 @@ def check_support(answer_text: str, selection,
         report.scored_sentences += 1
         if score < support_threshold:
             report.unsupported_claims.append({
-                "sentence": sentence,
-                "citations": cited,
-                "support_score": round(score, 3),
-                "reason": "low_lexical_support",
+                'sentence': sentence,
+                'citations': cited,
+                'support_score': round(score, 3),
+                'reason': 'low_lexical_support',
             })
     if check_quotes_too:
         for qc in check_quotes(answer_text, selection, as_sent=as_sent):
             report.quote_checks.append(qc)
             if not qc.verified:
                 report.unsupported_claims.append({
-                    "sentence": f'"{qc.quote}"',
-                    "citations": qc.cited_numbers,
-                    "support_score": 0.0,
-                    "reason": "quote_not_in_source",
+                    'sentence': f'"{qc.quote}"',
+                    'citations': qc.cited_numbers,
+                    'support_score': 0.0,
+                    'reason': 'quote_not_in_source',
                 })
     return report
-

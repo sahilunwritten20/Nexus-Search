@@ -10,16 +10,11 @@ transparent heuristics built on data the index already has (the postings
 vocabulary) or tiny embedded wordlists. They are deterministic and unit-testable;
 that determinism is the reason to prefer them over a dependency at prototype scale.
 """
+
 import heapq
 import os
 import re
 import threading
-from dataclasses import dataclass, field
-from typing import Optional
-
-from ..core.query_parser import parse_query
-from ..core.tokenizer import tokenize
-
 
 # understand_query()'s spell-correction needs the index vocabulary; loading
 # it per request scanned the whole vocabulary table every time. Memoize per
@@ -33,7 +28,12 @@ from ..core.tokenizer import tokenize
 # reused address could serve one store's vocabulary to another (observed
 # as full-suite flakiness: corrected_terms came back empty).
 import weakref
-_VOCAB_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+from dataclasses import dataclass, field
+
+from ..core.query_parser import parse_query
+from ..core.tokenizer import tokenize
+
+_VOCAB_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _VOCAB_CACHE_LOCK = threading.Lock()
 
 
@@ -48,34 +48,112 @@ def _vocabulary(storage) -> frozenset:
         _VOCAB_CACHE[storage] = (doc_count, vocab)
     return vocab
 
+
 # A tiny built-in synonym map. Interface accepts any dict[str, list[str]], so a
 # file-backed map can be plugged in later without changing call sites.
 SynonymMap = dict[str, list[str]]
 
 DEFAULT_SYNONYMS: SynonymMap = {
-    "car": ["automobile", "vehicle"],
-    "fast": ["quick", "speedy"],
-    "big": ["large", "huge"],
-    "buy": ["purchase", "price"],
-    "bug": ["error", "defect"],
-    "ml": ["machine", "learning"],
-    "ai": ["artificial", "intelligence"],
+    'car': ['automobile', 'vehicle'],
+    'fast': ['quick', 'speedy'],
+    'big': ['large', 'huge'],
+    'buy': ['purchase', 'price'],
+    'bug': ['error', 'defect'],
+    'ml': ['machine', 'learning'],
+    'ai': ['artificial', 'intelligence'],
 }
 
 # Pocket stopword lists — just enough for heuristic language DETECTION on
 # queries (not documents). Not a replacement for a real detector.
 _STOPWORDS: dict[str, frozenset[str]] = {
-    "en": frozenset("the a an and or of to in is are was for on with as at by it this that you i we".split()),
-    "fr": frozenset("le la les de des un une et ou dans pour avec est sont je tu il".split()),
-    "de": frozenset("der die das und oder in von zu ist sind ich du mit auf fur nicht".split()),
-    "es": frozenset("el la los las de del un una y o en para con es son yo tu".split()),
+    'en': frozenset([
+        'the',
+        'a',
+        'an',
+        'and',
+        'or',
+        'of',
+        'to',
+        'in',
+        'is',
+        'are',
+        'was',
+        'for',
+        'on',
+        'with',
+        'as',
+        'at',
+        'by',
+        'it',
+        'this',
+        'that',
+        'you',
+        'i',
+        'we',
+    ]),
+    'fr': frozenset([
+        'le',
+        'la',
+        'les',
+        'de',
+        'des',
+        'un',
+        'une',
+        'et',
+        'ou',
+        'dans',
+        'pour',
+        'avec',
+        'est',
+        'sont',
+        'je',
+        'tu',
+        'il',
+    ]),
+    'de': frozenset([
+        'der',
+        'die',
+        'das',
+        'und',
+        'oder',
+        'in',
+        'von',
+        'zu',
+        'ist',
+        'sind',
+        'ich',
+        'du',
+        'mit',
+        'auf',
+        'fur',
+        'nicht',
+    ]),
+    'es': frozenset([
+        'el',
+        'la',
+        'los',
+        'las',
+        'de',
+        'del',
+        'un',
+        'una',
+        'y',
+        'o',
+        'en',
+        'para',
+        'con',
+        'es',
+        'son',
+        'yo',
+        'tu',
+    ]),
 }
 
-_QUESTION_WORDS = {"what", "who", "where", "when", "why", "how", "which", "is", "are", "does", "do", "can"}
-_TRANSACTIONAL = {"buy", "price", "cheap", "deal", "discount", "order", "shop", "sale", "coupon", "purchase"}
-_NAVIGATIONAL = {"login", "signin", "sign", "official", "homepage", "site", "download", "app"}
+_QUESTION_WORDS = {'what', 'who', 'where', 'when', 'why', 'how', 'which', 'is', 'are', 'does', 'do', 'can'}
+_TRANSACTIONAL = {'buy', 'price', 'cheap', 'deal', 'discount', 'order', 'shop', 'sale', 'coupon', 'purchase'}
+_NAVIGATIONAL = {'login', 'signin', 'sign', 'official', 'homepage', 'site', 'download', 'app'}
 
-_WORD_RE = re.compile(r"[a-z0-9]+")
+_WORD_RE = re.compile(r'[a-z0-9]+')
 
 
 def normalize_query(query: str) -> str:
@@ -88,16 +166,16 @@ def normalize_query(query: str) -> str:
     parsed = parse_query(query.strip().lower())
     parts: list[str] = []
     for phrase in parsed.phrases:
-        cleaned = re.sub(r"[^\w\s-]", " ", phrase)
-        cleaned = " ".join(cleaned.split())
+        cleaned = re.sub(r'[^\w\s-]', ' ', phrase)
+        cleaned = ' '.join(cleaned.split())
         if cleaned:
             parts.append(f'"{cleaned}"')
     for key, value in sorted(parsed.filters.items()):
-        rendered = f"type:{value}" if key == "doc_type" else f"lang:{value}"
+        rendered = f'type:{value}' if key == 'doc_type' else f'lang:{value}'
         parts.append(rendered)
-    free = re.sub(r"[^\w\s-]", " ", " ".join(t for t in parsed.terms))
-    parts.append(" ".join(free.split()))
-    return " ".join(p for p in parts if p)
+    free = re.sub(r'[^\w\s-]', ' ', ' '.join(t for t in parsed.terms))
+    parts.append(' '.join(free.split()))
+    return ' '.join(p for p in parts if p)
 
 
 # --------------------------------------------------------------------------
@@ -114,11 +192,12 @@ def normalize_query(query: str) -> str:
 # real typo, bounded regardless of input.
 # --------------------------------------------------------------------------
 
+
 def _env_positive_int(name: str, default: int) -> int:
     """Env knob parsed per call (tests may flip it without a module reload).
     Zero/negative/garbage values fall back to the default — a broken knob
     must not silently disable correction entirely."""
-    raw = (os.environ.get(name) or "").strip()
+    raw = (os.environ.get(name) or '').strip()
     if not raw:
         return default
     try:
@@ -130,22 +209,22 @@ def _env_positive_int(name: str, default: int) -> int:
 
 def _spell_max_term_len() -> int:
     """Terms longer than this are never corrected (default 20)."""
-    return _env_positive_int("NEXUS_SPELL_MAX_TERM_LEN", 20)
+    return _env_positive_int('NEXUS_SPELL_MAX_TERM_LEN', 20)
 
 
 def _spell_d2_max_term_len() -> int:
     """Distance-2 correction only for terms up to this length (default 12)."""
-    return _env_positive_int("NEXUS_SPELL_D2_MAX_TERM_LEN", 12)
+    return _env_positive_int('NEXUS_SPELL_D2_MAX_TERM_LEN', 12)
 
 
 def _spell_max_corrected_terms() -> int:
     """At most this many terms corrected per query (default 8)."""
-    return _env_positive_int("NEXUS_SPELL_MAX_CORRECTED_TERMS", 8)
+    return _env_positive_int('NEXUS_SPELL_MAX_CORRECTED_TERMS', 8)
 
 
 def _spell_candidate_budget() -> int:
     """Total vocabulary comparisons allowed per query (default 4000)."""
-    return _env_positive_int("NEXUS_SPELL_CANDIDATE_BUDGET", 4_000)
+    return _env_positive_int('NEXUS_SPELL_CANDIDATE_BUDGET', 4_000)
 
 
 def _length_index(vocab) -> dict[int, list[str]]:
@@ -177,20 +256,19 @@ def _osa_within(term: str, word: str, max_dist: int) -> bool:
         for j in range(1, len(word) + 1):
             cost = 0 if term[i - 1] == word[j - 1] else 1
             value = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
-            if (i > 1 and j > 1 and term[i - 1] == word[j - 2]
-                    and term[i - 2] == word[j - 1]):
+            if i > 1 and j > 1 and term[i - 1] == word[j - 2] and term[i - 2] == word[j - 1]:
                 value = min(value, prev2[j - 2] + 1)
             cur[j] = value
-            if value < row_min:
-                row_min = value
+            row_min = min(row_min, value)
         if row_min > max_dist:
             return False
         prev2, prev = prev, cur
     return prev[-1] <= max_dist
 
 
-def _correct_bounded(term: str, index: dict[int, list[str]], max_edits: int,
-                     budget: list[int]) -> tuple[Optional[str], bool]:
+def _correct_bounded(
+    term: str, index: dict[int, list[str]], max_edits: int, budget: list[int]
+) -> tuple[str | None, bool]:
     """(suggestion | None, exhausted). Distance-1 hits beat distance-2 hits;
     ties break alphabetically (the window is scanned in sorted order).
 
@@ -198,10 +276,7 @@ def _correct_bounded(term: str, index: dict[int, list[str]], max_edits: int,
     query; each vocabulary comparison costs 1. On exhaustion the partial scan
     is DISCARDED (None returned) — a deterministic, honest abort rather than
     an arbitrary partial answer."""
-    window = heapq.merge(*(
-        index.get(length, ())
-        for length in range(len(term) - max_edits, len(term) + max_edits + 1)
-    ))
+    window = heapq.merge(*(index.get(length, ()) for length in range(len(term) - max_edits, len(term) + max_edits + 1)))
     hits1: list[str] = []
     hits2: list[str] = []
     for word in window:
@@ -219,7 +294,7 @@ def _correct_bounded(term: str, index: dict[int, list[str]], max_edits: int,
     return None, False
 
 
-def correct_spelling(term: str, vocab: set[str], max_edits: int = 2) -> Optional[str]:
+def correct_spelling(term: str, vocab: set[str], max_edits: int = 2) -> str | None:
     """Best in-vocabulary correction for `term`, or None.
 
     Rules (both deliberate, and both tested):
@@ -236,12 +311,11 @@ def correct_spelling(term: str, vocab: set[str], max_edits: int = 2) -> Optional
     if len(term) > _spell_max_term_len():
         return None
     budget = [_spell_candidate_budget()]
-    suggestion, _exhausted = _correct_bounded(
-        term, _length_index(vocab), max_edits, budget)
+    suggestion, _exhausted = _correct_bounded(term, _length_index(vocab), max_edits, budget)
     return suggestion
 
 
-def expand_synonyms(terms: list[str], synonyms: Optional[SynonymMap] = None) -> list[str]:
+def expand_synonyms(terms: list[str], synonyms: SynonymMap | None = None) -> list[str]:
     """ADDITIONAL candidate terms from the synonym map.
 
     Expansion-only by contract: the original terms are never removed or
@@ -261,7 +335,7 @@ def expand_synonyms(terms: list[str], synonyms: Optional[SynonymMap] = None) -> 
     return out
 
 
-def detect_language(text: str, tokens: Optional[list[str]] = None) -> str:
+def detect_language(text: str, tokens: list[str] | None = None) -> str:
     """Heuristic language detection via stopword overlap.
 
     Returns "unknown" (never a guess) when the query has fewer than 3 tokens
@@ -275,17 +349,17 @@ def detect_language(text: str, tokens: Optional[list[str]] = None) -> str:
         tokens = tokenize(text)
     tokens = [t for t in tokens if len(t) > 1]
     if len(tokens) < 3:
-        return "unknown"
+        return 'unknown'
     scores = {lang: sum(1 for t in tokens if t in words) for lang, words in _STOPWORDS.items()}
     best_lang, best_score = max(scores.items(), key=lambda kv: kv[1])
     if best_score == 0:
-        return "unknown"
+        return 'unknown'
     if sorted(scores.values(), reverse=True)[1] == best_score:
-        return "unknown"  # tie -> ambiguous
+        return 'unknown'  # tie -> ambiguous
     return best_lang
 
 
-def detect_intent(text: str, tokens: Optional[list[str]] = None) -> str:
+def detect_intent(text: str, tokens: list[str] | None = None) -> str:
     """Heuristic intent: "navigational" | "transactional" | "informational".
 
     Purely token/rule based, NOT ML — because there is no labeled intent data
@@ -297,17 +371,17 @@ def detect_intent(text: str, tokens: Optional[list[str]] = None) -> str:
         tokens = tokenize(text)
     token_set = set(tokens)
     if token_set & _TRANSACTIONAL:
-        return "transactional"
+        return 'transactional'
     # single-token domain-like query ("example.com") — note the tokenizer
     # drops the dot, so match the raw text, not the tokens
-    domain_like = bool(re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", text.strip().lower()))
+    domain_like = bool(re.fullmatch(r'[a-z0-9-]+(\.[a-z0-9-]+)+', text.strip().lower()))
     if token_set & _NAVIGATIONAL or domain_like:
-        return "navigational"
+        return 'navigational'
     if tokens and tokens[0] in _QUESTION_WORDS:
-        return "informational"
-    if " vs " in f" {text.lower()} " or "versus" in token_set:
-        return "informational"  # comparison queries are informational
-    return "informational"
+        return 'informational'
+    if ' vs ' in f' {text.lower()} ' or 'versus' in token_set:
+        return 'informational'  # comparison queries are informational
+    return 'informational'
 
 
 def extract_entities(query: str) -> list[str]:
@@ -322,7 +396,7 @@ def extract_entities(query: str) -> list[str]:
     entities: list[str] = list(parsed.phrases)
     seen = set(entities)
     # Capitalized multi-word sequences in the free text (not inside quotes).
-    for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query):
+    for match in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', query):
         if match.group(1).lower() not in seen:
             seen.add(match.group(1).lower())
             entities.append(match.group(1))
@@ -332,12 +406,13 @@ def extract_entities(query: str) -> list[str]:
 @dataclass
 class QueryUnderstanding:
     """Structured result of understand_query(); consumed opt-in by search."""
+
     original: str
     normalized: str
     corrected_terms: dict[str, str] = field(default_factory=dict)  # original -> correction
     expansion_terms: list[str] = field(default_factory=list)
-    language: str = "unknown"
-    intent: str = "informational"
+    language: str = 'unknown'
+    intent: str = 'informational'
     entities: list[str] = field(default_factory=list)
     # True when the spell-correction budget ran out mid-query: the query is
     # returned UN-rewritten for the un-corrected terms (never an error). The
@@ -364,13 +439,12 @@ class QueryUnderstanding:
         widens WHICH documents are candidates."""
         parsed = parse_query(self.original)
         parts = [f'"{p}"' for p in parsed.phrases]
-        parts += [f"type:{v}" if k == "doc_type" else f"lang:{v}"
-                  for k, v in sorted(parsed.filters.items())]
+        parts += [f'type:{v}' if k == 'doc_type' else f'lang:{v}' for k, v in sorted(parsed.filters.items())]
         parts.extend(self.effective_terms)
-        return " ".join(parts)
+        return ' '.join(parts)
 
 
-def understand_query(query: str, storage=None, synonyms: Optional[SynonymMap] = None) -> QueryUnderstanding:
+def understand_query(query: str, storage=None, synonyms: SynonymMap | None = None) -> QueryUnderstanding:
     """Compose all query-understanding stages.
 
     `storage` may be None: then spelling correction is skipped (vocabulary

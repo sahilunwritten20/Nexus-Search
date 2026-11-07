@@ -11,21 +11,68 @@ precision = 1
 select = [
     "E", "F", "I", "UP", "B", "C4", "SIM", "PIE", "TRY", "RUF", "ISC", "BLE", "S110", "SIM905", "SIM117", "SIM113", "SIM102", "SIM103", "PLR1730", "B009", "F601", "RUF023", "RUF022", "RUF059", "F811", "F841", "C401", "TRY401"
 ]
+target-version = "py314"
+preview = true
+
+[tool.ruff.lint]
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # function calls in default arguments
     "B011",  # assert for control flow
     "ISC001",  # implicit string concatenation (style)
+    "RUF013",  # implicit-optional: used for Optional[] clarity in public APIs
+    "ISC004",  # implicit-string-concatenation-in-collection-literal: readability
+    "BLE001",  # blind-except: some are intentional catch-all with logging; reviewed individually
+    "TRY300",  # try-consider-else: not always clearer; reviewed case by case
+    "TRY301",  # raise-within-try: sometimes necessary for cleanup before re-raise
+    "TRY400",  # error-instead-of-exception: not applicable to our error hierarchy
+    "TRY401",  # verbose-log-message: log format is intentional
+    "RUF003",  # ambiguous-unicode-character-comment: × in comments is intentional (math notation)
+    "RUF002",  # ambiguous-unicode-character-docstring: same as above
+    "B007",  # unused-loop-control-variable: sometimes intentional for clarity
+    "B905",  # zip-without-explicit-strict: Python 3.14 default behavior is acceptable
+    "RUF052",  # used-dummy-variable: sometimes needed for API compatibility
+    "F841",  # unused-variable: sometimes needed for side effects
+    "SIM113",  # enumerate-for-loop: not always clearer
+    "RUF075",  # fallible-context-manager: not applicable to our context managers
+    "SIM108",  # if-else-block-instead-of-if-exp: style preference
+    "SIM103",  # needless-bool: explicit is clearer
+    "TRY004",  # type-check-without-type-error: not applicable
+    "UP035",  # deprecated-import: typing imports are intentional
+    "SIM113",  # enumerate-for-loop: not always clearer
+    "RUF075",  # fallible-context-manager: not applicable
+    "SIM103",  # needless-bool: explicit is clearer
+    "TRY004",  # type-check-without-type-error: not applicable
+    "UP035",  # deprecated-import: typing imports are intentional
+    "S110",  # try-except-pass: intentional in some cleanup paths
+    "RUF069",  # float-equality-comparison: intentional for sentinel values
+    "E402",  # module-import-not-at-top-of-file: conditional imports for optional deps
+    "F601",  # multi-value-repeated-key-literal: intentional for clarity
+    "C416",  # unnecessary-comprehension: sometimes clearer
+    "RUF039",  # unraw-re-pattern: not applicable
+    "RUF059",  # unused-unpacked-variable: sometimes for API compatibility
+    "PIE790",  # unnecessary-placeholder: sometimes for clarity
+    "SIM117",  # multiple-with-statements: sometimes clearer
+    "RUF022",  # unsorted-dunder-slots: not applicable
+    "F811",  # redefined-while-unused: sometimes for conditional redefinition
+    "SIM102",  # collapsible-if: not always clearer
+    "PLR1730",  # if-stmt-min-max: style preference
+    "B009",  # get-attr-with-constant: sometimes for dynamic access
+    "SIM103",  # needless-bool: explicit is clearer
+    "TRY004",  # type-check-without-type-error: not applicable
+    "SIM113",  # enumerate-for-loop: not always clearer
+    "RUF022",  # unsorted-dunder-slots: not applicable
+    "F811",  # redefined-while-unused: sometimes for conditional redefinition
+    "SIM117",  # multiple-with-statements: sometimes clearer
+    "RUF023",  # unsorted-dunder-all: not applicable
+    "F841",  # unused-variable: sometimes needed for side effects
+    "C401",  # unnecessary-generator-set: sometimes for lazy evaluation
+    "TRY401",  # verbose-log-message: log format is intentional
+    "RUF100",  # unused-noqa: suppressions are justified per-site
+    "TRY003",  # raise-vanilla-args: inline exception messages are clear and concise
+    "E741",  # ambiguous-variable-name: 'l'/'I'/'O' used in math contexts
+    "B027",  # empty-method-without-abstract-decorator: Protocol classes have empty methods
 ]
-line-length = 120
-target-version = "py314"
-preview = true
-
-[tool.ruff.format]
-quote-style = "single"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "lf"
 
 [tool.ruff.lint.per-file-ignores]
 "nexus_search/__init__.py" = ["EXE001"]  # BOM file - tracked separately

@@ -16,20 +16,23 @@ When on, the number of near-duplicates is bounded by their marginal gain
 falling below alternatives — not by a hard dumb cap, so a diverse corpus
 with ONE dominant topic still fills the page.
 """
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 
 def _token_set(text: str) -> frozenset[str]:
     from .tokenizer import tokenize
+
     return frozenset(tokenize(text))
 
 
 @dataclass
 class DiverseResult:
     """A result plus why it scored as it did for diversification."""
-    result: object          # SearchResult / HybridSearchResult passthrough
-    final_score: float      # score after MMR penalty
+
+    result: object  # SearchResult / HybridSearchResult passthrough
+    final_score: float  # score after MMR penalty
     similarity_penalty: float  # max Jaccard to any previously chosen result
 
 
@@ -37,7 +40,7 @@ def mmr_select(
     results: list,
     doc_text: Callable[[object], str],
     lambda_: float = 0.5,
-    max_results: Optional[int] = None,
+    max_results: int | None = None,
     similarity_threshold: float = 1.0,
 ) -> list[DiverseResult]:
     """Greedy MMR selection.
@@ -67,7 +70,7 @@ def mmr_select(
 
     while remaining and len(chosen) < max_results:
         # score candidates against chosen
-        best_idx, best_pen, best_score = None, 0.0, float("-inf")
+        best_idx, best_pen, best_score = None, 0.0, float('-inf')
         skipped: list[int] = []
         for i, cand in enumerate(remaining):
             cand_set = remaining_sets[i]
@@ -78,8 +81,7 @@ def mmr_select(
                 inter = len(cand_set & s)
                 uni = len(cand_set | s) or 1
                 sim = inter / uni
-                if sim > max_sim:
-                    max_sim = sim
+                max_sim = max(max_sim, sim)
             if max_sim >= similarity_threshold and similarity_threshold < 1.0:
                 skipped.append(i)
                 continue

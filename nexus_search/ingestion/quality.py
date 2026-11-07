@@ -26,7 +26,7 @@ def content_quality_score(text: str) -> float:
         score += 0.15
 
     # Contains sentence-like structure
-    if "." in text or "!" in text or "?" in text:
+    if '.' in text or '!' in text or '?' in text:
         score += 0.2
 
     # Contains useful alphanumeric content

@@ -1,9 +1,9 @@
 """BM25 retrieval with filters, title boost, required phrases, snippets,
 pagination, and chunk grouping."""
+
 import math
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .filters import matches_filters
 from .query_parser import boolean_match, parse_query
@@ -24,7 +24,7 @@ class SearchResult:
     snippet: str
     doc_type: str
     metadata: dict = field(default_factory=dict)
-    chunk_id: Optional[str] = None  # best-matching chunk, if the doc was chunked
+    chunk_id: str | None = None  # best-matching chunk, if the doc was chunked
     matched_chunks: int = 1
 
 
@@ -55,7 +55,7 @@ class BM25Search:
             hit = self._token_cache.get(key)
             if hit is not None:
                 return hit
-        value = (tuple(tokenize(doc.title)), tuple(tokenize(f"{doc.title} {doc.content}")))
+        value = (tuple(tokenize(doc.title)), tuple(tokenize(f'{doc.title} {doc.content}')))
         with self._token_cache_lock:
             if key not in self._token_cache:
                 self._token_cache_order.append(key)
@@ -75,11 +75,17 @@ class BM25Search:
         so the doc-token memo (tuples) and parser output (lists) agree."""
         phrase_t = tuple(phrase)
         n = len(phrase_t)
-        return any(tuple(doc_tokens[i:i + n]) == phrase_t for i in range(len(doc_tokens) - n + 1))
+        return any(tuple(doc_tokens[i : i + n]) == phrase_t for i in range(len(doc_tokens) - n + 1))
 
     @staticmethod
-    def _snippet(doc, terms: list[str], phrases: list[str], width: int = 200,
-                 highlight: bool = False, mark: tuple[str, str] = ("<mark>", "</mark>")) -> str:
+    def _snippet(
+        doc,
+        terms: list[str],
+        phrases: list[str],
+        width: int = 200,
+        highlight: bool = False,
+        mark: tuple[str, str] = ('<mark>', '</mark>'),
+    ) -> str:
         """Query-focused snippet. highlight=True wraps matched terms/phrases
         in <mark>..</mark> (configurable via `mark`) inside HTML-escaped
         text — safe to render, untrusted content cannot inject markup
@@ -93,21 +99,22 @@ class BM25Search:
         positions += [lowered.find(t.lower()) for t in terms if t]
         positions = [p for p in positions if p >= 0]
         if not positions:
-            snippet = text[:width] + ("..." if len(text) > width else "")
+            snippet = text[:width] + ('...' if len(text) > width else '')
         else:
             start = max(0, min(positions) - width // 4)
-            snippet = text[start:start + width]
+            snippet = text[start : start + width]
             if start > 0:
-                snippet = "..." + snippet
+                snippet = '...' + snippet
             if start + width < len(text):
-                snippet += "..."
+                snippet += '...'
         if highlight:
             snippet = BM25Search._highlight(snippet, terms, phrases, mark)
         return snippet
 
     @staticmethod
-    def _highlight(snippet: str, terms: list[str], phrases: list[str],
-                   mark: tuple[str, str] = ("<mark>", "</mark>")) -> str:
+    def _highlight(
+        snippet: str, terms: list[str], phrases: list[str], mark: tuple[str, str] = ('<mark>', '</mark>')
+    ) -> str:
         """Wrap exact (case-insensitive) phrase/term matches in the window
         and return HTML: every TEXT segment is html.escape()d, the mark
         tags and the wrapped match text are the only live markup (P1-6 —
@@ -125,34 +132,38 @@ class BM25Search:
         could be thrown off by an unbalanced literal tag string)."""
         import html
         import re
-        targets = sorted({p for p in phrases if p} | {t for t in terms if t},
-                          key=len, reverse=True)
+
+        targets = sorted({p for p in phrases if p} | {t for t in terms if t}, key=len, reverse=True)
         open_m, close_m = mark
         if not targets:
             # still HTML output: escape even when nothing matches
             return html.escape(snippet)
         # protected regions: paired open/close tags in the SOURCE snippet
         protected: list[tuple[int, int]] = []
-        for tag_m in re.finditer(re.escape(open_m) + "|" + re.escape(close_m), snippet):
+        for tag_m in re.finditer(re.escape(open_m) + '|' + re.escape(close_m), snippet):
             if tag_m.group(0) == open_m:
                 protected.append([tag_m.start(), None])
             elif protected and protected[-1][1] is None:
                 protected[-1][1] = tag_m.end()
         protected = [(s, e) for s, e in protected if e is not None]
-        pattern = re.compile("|".join(re.escape(t) for t in targets), re.IGNORECASE)
+        pattern = re.compile('|'.join(re.escape(t) for t in targets), re.IGNORECASE)
 
         out, pos = [], 0
         for m in pattern.finditer(snippet):
             if any(m.start() < end and m.end() > start for start, end in protected):
                 continue
-            out.append(html.escape(snippet[pos:m.start()]))
+            out.append(html.escape(snippet[pos : m.start()]))
             out.append(open_m + html.escape(m.group(0)) + close_m)
             pos = m.end()
         out.append(html.escape(snippet[pos:]))
-        return "".join(out)
+        return ''.join(out)
 
     def search_page(
-        self, query: str, top_k: int = 10, offset: int = 0, group_chunks: bool = True,
+        self,
+        query: str,
+        top_k: int = 10,
+        offset: int = 0,
+        group_chunks: bool = True,
         highlight: bool = False,
     ) -> SearchPage:
         """Ranked page of results plus the total match count.
@@ -196,9 +207,7 @@ class BM25Search:
             # benchmark showed the per-doc get_document loop was the BM25
             # cost at 10K docs). The per-request dict cache stays for the
             # phrase/title/token gates below.
-            candidate_ids = {doc_id
-                             for rows in postings_by_term.values()
-                             for doc_id, _tf in rows}
+            candidate_ids = {doc_id for rows in postings_by_term.values() for doc_id, _tf in rows}
             docs_by_id = self.storage.get_documents(list(candidate_ids))
             # WP12-B4: seed the per-request cache from the batch — the
             # ranked/grouping loops below read through `get()` and were
@@ -219,8 +228,9 @@ class BM25Search:
             # full read of just the passing docs (was a get_document per doc
             # in the corpus).
             meta = self.storage.get_documents_meta()
-            passing = [doc_id for doc_id, doc in meta.items()
-                       if matches_filters(doc, parsed.filters, parsed.not_filters)]
+            passing = [
+                doc_id for doc_id, doc in meta.items() if matches_filters(doc, parsed.filters, parsed.not_filters)
+            ]
             cache.update(self.storage.get_documents(passing))
             for doc_id in passing:
                 scores[doc_id] = 0.0
@@ -238,9 +248,8 @@ class BM25Search:
                 if not all(self._has_phrase(doc_tokens, ph) for ph in phrases):
                     continue
                 score *= PHRASE_BOOST ** len(phrases)
-            if parsed.has_boolean:
-                if not boolean_match(parsed, doc_tokens, title_tokens):
-                    continue
+            if parsed.has_boolean and not boolean_match(parsed, doc_tokens, title_tokens):
+                continue
             if unique_terms:
                 title_term_set = set(title_tokens)
                 hits = sum(1 for t in unique_terms if t in title_term_set)
@@ -255,11 +264,11 @@ class BM25Search:
             doc = get(doc_id)
             if doc is None:
                 continue
-            parent = doc.metadata.get("parent_id", doc_id) if group_chunks else doc_id
+            parent = doc.metadata.get('parent_id', doc_id) if group_chunks else doc_id
             groups.setdefault(parent, []).append((doc_id, score))
 
         results = []
-        for parent, members in list(groups.items())[offset:offset + top_k]:
+        for parent, members in list(groups.items())[offset : offset + top_k]:
             best_id, best_score = members[0]
             best = get(best_id)
             if best is None:
@@ -269,8 +278,7 @@ class BM25Search:
                     doc_id=parent,
                     score=best_score,
                     title=best.title,
-                    snippet=self._snippet(best, parsed.terms, parsed.phrases,
-                                          highlight=highlight),
+                    snippet=self._snippet(best, parsed.terms, parsed.phrases, highlight=highlight),
                     doc_type=best.doc_type,
                     metadata=best.metadata,
                     chunk_id=best_id if best_id != parent else None,

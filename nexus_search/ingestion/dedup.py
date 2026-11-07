@@ -1,8 +1,8 @@
 """Content-hash deduplication that survives updates and deletes."""
+
 import hashlib
 import sqlite3
 import threading
-from typing import Optional
 
 from ..core.migrations import apply_migrations
 
@@ -17,8 +17,8 @@ CREATE INDEX IF NOT EXISTS idx_hashes_doc ON content_hashes (doc_id)
 
 def content_hash(text: str) -> str:
     """Stable hash: same content hashes identically regardless of case/whitespace."""
-    normalized = " ".join(text.split()).lower()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    normalized = ' '.join(text.split()).lower()
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
 class Deduplicator:
@@ -26,62 +26,56 @@ class Deduplicator:
     RLock, same pattern as the other one-file stores) — callers must NOT
     rely on wrapping us in an outer lock for sqlite correctness."""
 
-    def __init__(self, db_path: str = "nexus_search.db"):
+    def __init__(self, db_path: str = 'nexus_search.db'):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self.conn.execute('PRAGMA busy_timeout = 5000')
         self.lock = threading.RLock()
         with self.lock:
             # Versioned like the other stores: v1 = this schema as-is
-            self.schema_version = apply_migrations(
-                self.conn, "content_hashes", [(1, SCHEMA)]
-            )
+            self.schema_version = apply_migrations(self.conn, 'content_hashes', [(1, SCHEMA)])
 
     def is_duplicate(self, text: str) -> bool:
         with self.lock:
             h = content_hash(text)
-            row = self.conn.execute("SELECT doc_id FROM content_hashes WHERE hash = ?", (h,)).fetchone()
+            row = self.conn.execute('SELECT doc_id FROM content_hashes WHERE hash = ?', (h,)).fetchone()
             if row is None:
                 return False
             owner = row[0]
 
             # Check if documents table exists in this DB
-            tables = self.conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
-            ).fetchone()
+            tables = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone()
             if tables is None:
                 return True  # no documents table (standalone use): trust the hash
 
-            chunk_prefix = owner + "#chunk"
+            chunk_prefix = owner + '#chunk'
             prefix_len = len(chunk_prefix)
             alive = self.conn.execute(
-                "SELECT 1 FROM documents WHERE doc_id = :owner "
-                "OR substr(doc_id, 1, :plen) = :prefix LIMIT 1",
-                {"owner": owner, "plen": prefix_len, "prefix": chunk_prefix},
+                'SELECT 1 FROM documents WHERE doc_id = :owner OR substr(doc_id, 1, :plen) = :prefix LIMIT 1',
+                {'owner': owner, 'plen': prefix_len, 'prefix': chunk_prefix},
             ).fetchone()
             if alive is None:  # owner was deleted -> stale hash, allow re-ingest
                 self.forget_hash(h)  # RLock: re-entrant, same thread
                 # Also clean up any chunk hashes for this owner
                 self.conn.execute(
-                    "DELETE FROM content_hashes WHERE substr(doc_id, 1, ?) = ?",
+                    'DELETE FROM content_hashes WHERE substr(doc_id, 1, ?) = ?',
                     (prefix_len, chunk_prefix),
                 )
                 self.conn.commit()
                 return False
             return True
 
-    def hash_of(self, doc_id: str) -> Optional[str]:
+    def hash_of(self, doc_id: str) -> str | None:
         """The hash this doc_id is currently registered under, or None."""
         with self.lock:
-            row = self.conn.execute(
-                "SELECT hash FROM content_hashes WHERE doc_id = ?", (doc_id,)).fetchone()
+            row = self.conn.execute('SELECT hash FROM content_hashes WHERE doc_id = ?', (doc_id,)).fetchone()
             return row[0] if row else None
 
     def register(self, text: str, doc_id: str):
         """Record this doc's current content; drops the doc's previous hash."""
         with self.lock:
-            self.conn.execute("DELETE FROM content_hashes WHERE doc_id = ?", (doc_id,))
+            self.conn.execute('DELETE FROM content_hashes WHERE doc_id = ?', (doc_id,))
             self.conn.execute(
-                "INSERT OR REPLACE INTO content_hashes (hash, doc_id) VALUES (?, ?)",
+                'INSERT OR REPLACE INTO content_hashes (hash, doc_id) VALUES (?, ?)',
                 (content_hash(text), doc_id),
             )
             self.conn.commit()
@@ -99,12 +93,12 @@ class Deduplicator:
 
     def forget(self, doc_id: str):
         with self.lock:
-            self.conn.execute("DELETE FROM content_hashes WHERE doc_id = ?", (doc_id,))
+            self.conn.execute('DELETE FROM content_hashes WHERE doc_id = ?', (doc_id,))
             self.conn.commit()
 
     def forget_hash(self, h: str):
         with self.lock:
-            self.conn.execute("DELETE FROM content_hashes WHERE hash = ?", (h,))
+            self.conn.execute('DELETE FROM content_hashes WHERE hash = ?', (h,))
             self.conn.commit()
 
     def close(self):

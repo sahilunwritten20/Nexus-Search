@@ -1,11 +1,10 @@
-
 """Crawler pipeline for Nexus Search."""
 
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from ..ingestion.connectors.web import extract_page
@@ -19,26 +18,25 @@ from .security import install_dns_pinning, pin_dns_for_url, validate_url
 from .sitemap import maybe_gzip, parse_sitemap, parse_sitemap_index
 from .url_utils import get_domain
 
-logger = logging.getLogger("nexus_search.crawler.pipeline")
+logger = logging.getLogger('nexus_search.crawler.pipeline')
 
 IngestFn = Callable[[str, str, str, dict], None]
 
-DEFAULT_USER_AGENT = "NexusSearchBot/0.1 (+https://example.com/bot)"  # put YOUR bot page here
+DEFAULT_USER_AGENT = 'NexusSearchBot/0.1 (+https://example.com/bot)'  # put YOUR bot page here
 
 # Refuse to trust a robots.txt we couldn't fetch: block the domain for this run.
-_ROBOTS_UNREACHABLE = "User-agent: *\nDisallow: /\n"
+_ROBOTS_UNREACHABLE = 'User-agent: *\nDisallow: /\n'
 
 
 def default_ingest(url: str, title: str, text: str, metadata: dict) -> None:
-    logger.info("INGEST %s (%d chars)", url, len(text))
+    logger.info('INGEST %s (%d chars)', url, len(text))
 
 
 def _is_placeholder_ua(user_agent: str) -> bool:
     """Obviously-unconfigured contact URLs can't pass as a real bot identity
     for public crawls (they'd be reported to /dev/null or worse)."""
     ua = user_agent.lower()
-    return any(marker in ua
-               for marker in ("example.com/", "example.org/", "your-site"))
+    return any(marker in ua for marker in ('example.com/', 'example.org/', 'your-site'))
 
 
 class CrawlPipeline:
@@ -52,8 +50,8 @@ class CrawlPipeline:
 
     def __init__(
         self,
-        db_path: str = "crawler.db",
-        allowed_domains: Optional[list[str]] = None,
+        db_path: str = 'crawler.db',
+        allowed_domains: list[str] | None = None,
         max_pages: int = 1000,
         max_depth: int = 3,
         concurrency: int = 8,
@@ -62,8 +60,8 @@ class CrawlPipeline:
         recrawl_interval: float = 0,
         allow_private_hosts: bool = False,
         default_crawl_delay: float = 1.0,
-        user_agent: Optional[str] = None,
-        domain_boosts: Optional[dict[str, int]] = None,
+        user_agent: str | None = None,
+        domain_boosts: dict[str, int] | None = None,
         render_js: bool = False,
         link_graph=None,
     ):
@@ -79,11 +77,13 @@ class CrawlPipeline:
         if not user_agent or _is_placeholder_ua(user_agent):
             if not allow_private_hosts:
                 raise ValueError(
-                    "crawler user_agent must be set to a real bot contact "
-                    "(crawler_config.yaml or --user-agent); the placeholder "
-                    "is refused on the public crawl path")
-            logger.warning("no real user_agent configured; using placeholder "
-                           "(allowed only because allow_private_hosts=True)")
+                    'crawler user_agent must be set to a real bot contact '
+                    '(crawler_config.yaml or --user-agent); the placeholder '
+                    'is refused on the public crawl path'
+                )
+            logger.warning(
+                'no real user_agent configured; using placeholder (allowed only because allow_private_hosts=True)'
+            )
             user_agent = DEFAULT_USER_AGENT
         self.frontier = Frontier(db_path)
         # DNS pinning must be installed before any fetch on the public path
@@ -93,7 +93,7 @@ class CrawlPipeline:
         # Precedence: blocklist > robots.txt > allow-list.
         self.blocklist = Blocklist(db_path)
         self.politeness = PolitenessManager(
-            user_agent=user_agent.split()[0].split("/")[0],  # robots.txt product token
+            user_agent=user_agent.split()[0].split('/')[0],  # robots.txt product token
             default_delay=default_crawl_delay,
         )
         self.allow_private_hosts = allow_private_hosts
@@ -131,7 +131,7 @@ class CrawlPipeline:
         self.metrics = CrawlerMetrics()
         self.domain_counts: dict[str, int] = {}
         self.domain_lock = threading.Lock()
-        self.stats = {"crawled": 0, "skipped": 0, "errors": 0, "not_modified": 0}
+        self.stats = {'crawled': 0, 'skipped': 0, 'errors': 0, 'not_modified': 0}
         self._stats_lock = threading.Lock()
         self._closed = False
 
@@ -140,19 +140,19 @@ class CrawlPipeline:
     def _bump(self, key: str, nbytes: int = 0) -> None:
         with self._stats_lock:
             self.stats[key] += 1
-        if key == "crawled":
+        if key == 'crawled':
             self.metrics.record_crawled(nbytes)
-        elif key == "skipped":
+        elif key == 'skipped':
             self.metrics.record_skipped()
-        elif key == "errors":
+        elif key == 'errors':
             self.metrics.record_error()
-        elif key == "not_modified":
+        elif key == 'not_modified':
             self.metrics.record_not_modified()
 
     def _domain_allowed(self, domain: str) -> bool:
         if not self.allowed_domains:
             return True
-        return any(domain == a or domain.endswith("." + a) for a in self.allowed_domains)
+        return any(domain == a or domain.endswith('.' + a) for a in self.allowed_domains)
 
     def _hop_gate(self, url: str) -> bool:
         """The fetcher's per-redirect-hop gate (review ROBOTS-GAP).
@@ -171,7 +171,7 @@ class CrawlPipeline:
             return False
         if not validate_url(url):
             return False
-        if getattr(self._robots_fetching, "active", False):
+        if getattr(self._robots_fetching, 'active', False):
             return True
         domain = get_domain(url)
         if not self._domain_allowed(domain):
@@ -196,14 +196,14 @@ class CrawlPipeline:
         if self.politeness.has_robots(domain):
             return
         parts = urlsplit(url)
-        was = getattr(self._robots_fetching, "active", False)
+        was = getattr(self._robots_fetching, 'active', False)
         self._robots_fetching.active = True
         try:
-            content = self.fetcher.fetch_robots(f"{parts.scheme}://{parts.netloc}/robots.txt")
+            content = self.fetcher.fetch_robots(f'{parts.scheme}://{parts.netloc}/robots.txt')
         finally:
             self._robots_fetching.active = was
         if content is None:
-            logger.warning("robots.txt unreachable for %s - treating as disallowed this run", domain)
+            logger.warning('robots.txt unreachable for %s - treating as disallowed this run', domain)
             content = _ROBOTS_UNREACHABLE
         self.politeness.register_robots_txt(domain, content)
 
@@ -212,7 +212,7 @@ class CrawlPipeline:
     def seed(self, urls: list[str]) -> None:
         for url in urls:
             if not self.allow_private_hosts and not validate_url(url):
-                logger.warning("Ignoring unsafe seed: %s", url)
+                logger.warning('Ignoring unsafe seed: %s', url)
                 continue
             self.frontier.add(url, depth=0, priority=10)
 
@@ -248,17 +248,17 @@ class CrawlPipeline:
     # ------------------------------------------------------------- crawling
 
     def _skip(self, entry: FrontierEntry, reason: str) -> None:
-        logger.info("SKIP %s (%s)", entry.url, reason)
+        logger.info('SKIP %s (%s)', entry.url, reason)
         self.frontier.mark_skipped(entry.url)  # NOT marked visited
-        self._bump("skipped")
+        self._bump('skipped')
 
     def _process_one(self, entry: FrontierEntry) -> None:
         try:
             self._crawl(entry)
         except Exception as exc:  # one bad page must never kill the crawl
-            logger.exception("Crawl failed for %s", entry.url)
-            self.frontier.mark_error(entry.url, f"{type(exc).__name__}: {exc}")
-            self._bump("errors")
+            logger.exception('Crawl failed for %s', entry.url)
+            self.frontier.mark_error(entry.url, f'{type(exc).__name__}: {exc}')
+            self._bump('errors')
 
     def _crawl(self, entry: FrontierEntry) -> None:
         domain = get_domain(entry.url)
@@ -266,19 +266,19 @@ class CrawlPipeline:
         # Blocklist wins over everything below it (robots, allow-list); it's a
         # plain sqlite lookup — the cheapest gate — so it runs first.
         if self.blocklist.is_blocked(entry.url):
-            return self._skip(entry, "blocklist")
+            return self._skip(entry, 'blocklist')
         if not self.allow_private_hosts and not validate_url(entry.url):
-            return self._skip(entry, "unsafe host")
+            return self._skip(entry, 'unsafe host')
         if not self._domain_allowed(domain):
-            return self._skip(entry, "domain not allowed")
+            return self._skip(entry, 'domain not allowed')
 
         self._ensure_robots(entry.url, domain)
         if not self.politeness.is_allowed(domain, entry.url):
-            return self._skip(entry, "robots.txt")
+            return self._skip(entry, 'robots.txt')
 
         # Only pages we will actually fetch count toward the domain limit.
         if not self._reserve_domain_slot(domain):
-            return self._skip(entry, "domain limit")
+            return self._skip(entry, 'domain limit')
 
         # Atomic slot: concurrent workers on one domain get spaced-out slots.
         wait = self.politeness.reserve_slot(domain)
@@ -289,18 +289,16 @@ class CrawlPipeline:
 
         if result.not_modified:
             self.frontier.mark_not_modified(entry.url)
-            self._bump("not_modified")
+            self._bump('not_modified')
             return
 
         if result.error or result.html is None:
             # BUG-07: 4xx (except 408 timeout / 429 rate-limit) is terminal —
             # retrying a 404 three times was wasted fetches + impolite.
             status = result.status_code
-            permanent = (isinstance(status, int) and 400 <= status < 500
-                         and status not in (408, 429))
-            self.frontier.mark_error(entry.url, result.error or f"status {status}",
-                                     permanent=permanent)
-            self._bump("errors")
+            permanent = isinstance(status, int) and 400 <= status < 500 and status not in (408, 429)
+            self.frontier.mark_error(entry.url, result.error or f'status {status}', permanent=permanent)
+            self._bump('errors')
             return
 
         page = extract_page(result.html, entry.url)
@@ -312,11 +310,11 @@ class CrawlPipeline:
             page.title,
             page.text,
             {
-                "url": entry.url,
-                "canonical_url": page.canonical_url or entry.url,
-                "meta_description": page.meta_description,
-                "language": page.language,
-                "depth": entry.depth,
+                'url': entry.url,
+                'canonical_url': page.canonical_url or entry.url,
+                'meta_description': page.meta_description,
+                'language': page.language,
+                'depth': entry.depth,
             },
         )
         self.frontier.mark_done(
@@ -325,25 +323,25 @@ class CrawlPipeline:
             etag=result.etag,
             last_modified=result.last_modified,
         )
-        self._bump("crawled", len(result.html.encode("utf-8", errors="ignore")))
+        self._bump('crawled', len(result.html.encode('utf-8', errors='ignore')))
 
         if self.link_graph is not None:
             for link in page.links:
-                if urlsplit(link.url).scheme in ("http", "https"):
-                    self.link_graph.record_edge(entry.url, link.url,
-                                                link.anchor_text, link.rel)
+                if urlsplit(link.url).scheme in ('http', 'https'):
+                    self.link_graph.record_edge(entry.url, link.url, link.anchor_text, link.rel)
 
         if entry.depth < self.max_depth:
             for link in page.links:
                 # Cheap filters only; full SSRF/DNS validation happens when the
                 # URL is actually processed (one lookup per fetch, not per link).
-                if urlsplit(link.url).scheme not in ("http", "https"):
+                if urlsplit(link.url).scheme not in ('http', 'https'):
                     continue
                 link_domain = get_domain(link.url)
                 if not self._domain_allowed(link_domain):
                     continue
-                self.frontier.add(link.url, depth=entry.depth + 1, base=entry.url,
-                                  priority=self._url_priority(link_domain))
+                self.frontier.add(
+                    link.url, depth=entry.depth + 1, base=entry.url, priority=self._url_priority(link_domain)
+                )
 
     def _url_priority(self, domain: str) -> int:
         """Discovered-link priority: config boost per domain. Kept deliberately
@@ -373,20 +371,21 @@ class CrawlPipeline:
                     for future in as_completed(futures):
                         future.result()  # _process_one never raises
                         completed += 1
-            return {**self.stats, "metrics": self.metrics.snapshot()}
+            return {**self.stats, 'metrics': self.metrics.snapshot()}
         finally:
             self.close()
 
     def close(self) -> None:
         if self._closed:
             return
-        for name, closer in (("fetcher", self.fetcher.close),
-                             ("frontier", self.frontier.close),
-                             ("blocklist", self.blocklist.close)):
+        for name, closer in (
+            ('fetcher', self.fetcher.close),
+            ('frontier', self.frontier.close),
+            ('blocklist', self.blocklist.close),
+        ):
             try:
                 closer()
             except Exception as exc:  # P1-12b: logged, never silent — a
                 # swallowed shutdown error could hide a lost final commit
-                logger.warning("close of %s failed: %s: %s",
-                               name, type(exc).__name__, exc)
+                logger.warning('close of %s failed: %s: %s', name, type(exc).__name__, exc)
         self._closed = True

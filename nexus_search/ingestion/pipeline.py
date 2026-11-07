@@ -3,13 +3,14 @@
 ONE code path (`ingest_one`) serves both the batch CLI and the crawler, so
 chunking, quality scoring and dedup behave identically everywhere.
 """
+
 import hashlib
 import logging
 import threading
-from typing import Iterable, Optional, Union
+from collections.abc import Iterable
 
-from ..core.hybrid_search import HybridSearch
 from ..core.embedding_sync import EmbeddingSync
+from ..core.hybrid_search import HybridSearch
 from ..core.indexer import Indexer
 from .chunker import chunk_text
 from .dedup import Deduplicator, content_hash
@@ -19,11 +20,10 @@ from .mime import detect_mime_type
 from .quality import content_quality_score
 from .types import IngestDoc
 
-logger = logging.getLogger("nexus_search.ingestion")
+logger = logging.getLogger('nexus_search.ingestion')
 
 
-def _embed_indexed_docs(indexed_ids: list[str], indexer: Indexer,
-                        target: Union["EmbeddingSync", "HybridSearch"]) -> None:
+def _embed_indexed_docs(indexed_ids: list[str], indexer: Indexer, target: EmbeddingSync | HybridSearch) -> None:
     """Generate and store embeddings for newly indexed documents.
 
     Works with either ingestion-time target:
@@ -37,23 +37,24 @@ def _embed_indexed_docs(indexed_ids: list[str], indexer: Indexer,
         for idx_id in indexed_ids:
             stored_doc = indexer.storage.get_document(idx_id)
             if stored_doc:
-                text = f"{stored_doc.title} {stored_doc.content}"
+                text = f'{stored_doc.title} {stored_doc.content}'
                 target.vector_store.upsert(
-                    idx_id, text,
-                    stored_doc.doc_type or "",
-                    stored_doc.metadata.get("language", "") or "",
+                    idx_id,
+                    text,
+                    stored_doc.doc_type or '',
+                    stored_doc.metadata.get('language', '') or '',
                 )
         return
     for idx_id in indexed_ids:
         stored_doc = indexer.storage.get_document(idx_id)
         if stored_doc:
-            text = f"{stored_doc.title} {stored_doc.content}"
-            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+            text = f'{stored_doc.title} {stored_doc.content}'
+            content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()[:32]
             embedding = target.embedding_manager.get_or_compute(idx_id, text)
             target.vector_index.upsert(idx_id, embedding, content_hash)
 
 
-def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optional[int]) -> list[str]:
+def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: int | None) -> list[str]:
     """Index one doc, or (if chunk_size is set and the doc is longer) its chunks.
     Old chunks of the same parent are removed first so updates never leave stale ones.
     Returns list of indexed doc_ids (parent + chunks)."""
@@ -64,10 +65,13 @@ def _index(indexer: Indexer, doc: IngestDoc, metadata: dict, chunk_size: Optiona
         chunks = chunk_text(doc.content, chunk_size=chunk_size, overlap=min(50, chunk_size // 10), snap_to_space=True)
         indexer.delete_document(doc.doc_id)  # a previously un-chunked version
         for i, chunk in enumerate(chunks):
-            chunk_id = f"{doc.doc_id}#chunk{i}"
+            chunk_id = f'{doc.doc_id}#chunk{i}'
             indexer.add_document(
-                doc_id=chunk_id, content=chunk, title=doc.title, doc_type=doc.doc_type,
-                metadata={**metadata, "parent_id": doc.doc_id, "chunk_index": i, "chunk_count": len(chunks)},
+                doc_id=chunk_id,
+                content=chunk,
+                title=doc.title,
+                doc_type=doc.doc_type,
+                metadata={**metadata, 'parent_id': doc.doc_id, 'chunk_index': i, 'chunk_count': len(chunks)},
             )
             indexed_ids.append(chunk_id)
     else:
@@ -87,11 +91,11 @@ def _canonical_target_exists(indexer: Indexer, doc: IngestDoc) -> bool:
     it again would create a near-duplicate result. This dedup signal is
     ADDITIVE to content-hash dedup (different content can still be a
     canonical duplicate), and only applies to crawled/web metadata."""
-    canonical = str(doc.metadata.get("canonical_url") or "")
-    url = str(doc.metadata.get("url") or "")
+    canonical = str(doc.metadata.get('canonical_url') or '')
+    url = str(doc.metadata.get('url') or '')
     if not canonical or not url or canonical == url:
         return False
-    target_id = f"web:{canonical}"
+    target_id = f'web:{canonical}'
     if indexer.storage.get_document(target_id) is not None:
         return True
     # Chunked parents have no parent row, only chunk rows.
@@ -102,12 +106,12 @@ def ingest_one(
     doc: IngestDoc,
     indexer: Indexer,
     dedup: Deduplicator,
-    min_quality: Optional[float] = None,
-    chunk_size: Optional[int] = None,
-    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    failure_queue: Optional[FailureQueue] = None,
-    history: Optional[ContentHistory] = None,
+    min_quality: float | None = None,
+    chunk_size: int | None = None,
+    sync: EmbeddingSync | HybridSearch | None = None,
+    hybrid: EmbeddingSync | HybridSearch | None = None,
+    failure_queue: FailureQueue | None = None,
+    history: ContentHistory | None = None,
 ) -> str:
     """Dedup (content-hash + canonical URL) -> quality gate -> (chunk) ->
     index -> register -> embed. Returns 'indexed', 'duplicate' or 'low_quality'.
@@ -116,15 +120,13 @@ def ingest_one(
     recorded there (and re-raised so the caller still knows); without one,
     an exception propagates as before — no silent swallowing either way."""
     if failure_queue is None and history is None:
-        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size,
-                                sync, hybrid)
+        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size, sync, hybrid)
     try:
-        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size,
-                                sync, hybrid, history)
+        return _ingest_one_impl(doc, indexer, dedup, min_quality, chunk_size, sync, hybrid, history)
     except Exception as exc:
         if failure_queue is not None:
-            failure_queue.record(doc, f"{type(exc).__name__}: {exc}")
-            logger.exception("ingestion of %s failed → dead-lettered", doc.doc_id)
+            failure_queue.record(doc, f'{type(exc).__name__}: {exc}')
+            logger.exception('ingestion of %s failed → dead-lettered', doc.doc_id)
         raise
 
 
@@ -132,30 +134,31 @@ def _ingest_one_impl(
     doc: IngestDoc,
     indexer: Indexer,
     dedup: Deduplicator,
-    min_quality: Optional[float],
-    chunk_size: Optional[int],
-    sync: Optional[Union[EmbeddingSync, HybridSearch]],
-    hybrid: Optional[Union[EmbeddingSync, HybridSearch]],
-    history: Optional[ContentHistory] = None,
+    min_quality: float | None,
+    chunk_size: int | None,
+    sync: EmbeddingSync | HybridSearch | None,
+    hybrid: EmbeddingSync | HybridSearch | None,
+    history: ContentHistory | None = None,
 ) -> str:
     if dedup.is_duplicate(doc.content):
-        return "duplicate"
+        return 'duplicate'
     if _canonical_target_exists(indexer, doc):
-        logger.info("DUPLICATE canonical %s (already indexed as %s)",
-                    doc.metadata.get("url"), doc.metadata.get("canonical_url"))
-        return "duplicate"
+        logger.info(
+            'DUPLICATE canonical %s (already indexed as %s)', doc.metadata.get('url'), doc.metadata.get('canonical_url')
+        )
+        return 'duplicate'
     quality = content_quality_score(doc.content)
     if min_quality is not None and quality < min_quality:
-        return "low_quality"
-    metadata = {**doc.metadata, "quality": round(quality, 3)}
-    if "path" in metadata:
-        metadata.setdefault("mime_type", detect_mime_type(str(metadata["path"])))
+        return 'low_quality'
+    metadata = {**doc.metadata, 'quality': round(quality, 3)}
+    if 'path' in metadata:
+        metadata.setdefault('mime_type', detect_mime_type(str(metadata['path'])))
     prev_hash = dedup.hash_of(doc.doc_id)
     prev_content = None
     if history is not None and prev_hash is not None:
         # capture BEFORE re-indexing overwrites it — that's the whole point
         old_doc = indexer.storage.get_document(doc.doc_id)
-        prev_content = old_doc.content if old_doc is not None else ""
+        prev_content = old_doc.content if old_doc is not None else ''
     indexed_ids = _index(indexer, doc, metadata, chunk_size)
     dedup.register(doc.content, doc.doc_id)
     if history is not None and prev_hash is not None:
@@ -163,7 +166,7 @@ def _ingest_one_impl(
         if prev_hash != new_hash:
             # record the OVERWRITTEN content (what the index just forgot),
             # so "what changed" is auditable from history alone
-            history.record_change(doc.doc_id, prev_hash, prev_content or "", new_hash)
+            history.record_change(doc.doc_id, prev_hash, prev_content or '', new_hash)
 
     # Support both `sync` and `hybrid` parameter names for backward compatibility
     target = sync if sync is not None else hybrid
@@ -171,19 +174,19 @@ def _ingest_one_impl(
     if target is not None:
         _embed_indexed_docs(indexed_ids, indexer, target)
 
-    return "indexed"
+    return 'indexed'
 
 
 def ingest_documents(
     docs: Iterable[IngestDoc],
     indexer: Indexer,
     dedup: Deduplicator,
-    min_quality: Optional[float] = None,
-    chunk_size: Optional[int] = None,
-    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    failure_queue: Optional[FailureQueue] = None,
-    history: Optional[ContentHistory] = None,
+    min_quality: float | None = None,
+    chunk_size: int | None = None,
+    sync: EmbeddingSync | HybridSearch | None = None,
+    hybrid: EmbeddingSync | HybridSearch | None = None,
+    failure_queue: FailureQueue | None = None,
+    history: ContentHistory | None = None,
 ) -> dict:
     """Batch path - used by the CLI for files/code/product sources.
 
@@ -191,35 +194,43 @@ def ingest_documents(
     dead-lettered (and the exception logged), the "failed" counter appears in
     stats, and the loop continues. Without a queue, behavior is unchanged:
     errors abort the run (visible > silent)."""
-    stats: dict[str, int] = {"indexed": 0, "duplicates": 0}
+    stats: dict[str, int] = {'indexed': 0, 'duplicates': 0}
     if min_quality is not None:
-        stats["low_quality"] = 0
-    keys = {"indexed": "indexed", "duplicate": "duplicates", "low_quality": "low_quality"}
+        stats['low_quality'] = 0
+    keys = {'indexed': 'indexed', 'duplicate': 'duplicates', 'low_quality': 'low_quality'}
     for doc in docs:
         try:
-            status = ingest_one(doc, indexer, dedup, min_quality=min_quality,
-                                chunk_size=chunk_size, sync=sync, hybrid=hybrid,
-                                failure_queue=failure_queue, history=history)
+            status = ingest_one(
+                doc,
+                indexer,
+                dedup,
+                min_quality=min_quality,
+                chunk_size=chunk_size,
+                sync=sync,
+                hybrid=hybrid,
+                failure_queue=failure_queue,
+                history=history,
+            )
         except Exception:
             # only reachable when failure_queue recorded it
-            stats.setdefault("failed", 0)
-            stats["failed"] += 1
-            logger.error("FAILED %s (dead-lettered)", doc.doc_id)
+            stats.setdefault('failed', 0)
+            stats['failed'] += 1
+            logger.exception('FAILED %s (dead-lettered)', doc.doc_id)
             continue
         stats[keys[status]] += 1
-        logger.info("%s %s", status.upper(), doc.doc_id)
+        logger.info('%s %s', status.upper(), doc.doc_id)
     return stats
 
 
 def make_crawler_ingest_fn(
     indexer: Indexer,
     dedup: Deduplicator,
-    min_quality: Optional[float] = None,
-    chunk_size: Optional[int] = None,
-    sync: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    hybrid: Optional[Union[EmbeddingSync, HybridSearch]] = None,
-    failure_queue: Optional[FailureQueue] = None,
-    history: Optional[ContentHistory] = None,
+    min_quality: float | None = None,
+    chunk_size: int | None = None,
+    sync: EmbeddingSync | HybridSearch | None = None,
+    hybrid: EmbeddingSync | HybridSearch | None = None,
+    failure_queue: FailureQueue | None = None,
+    history: ContentHistory | None = None,
 ):
     """Returns the (url, title, text, metadata) -> None callable CrawlPipeline
     expects as `ingest_fn`.
@@ -234,13 +245,21 @@ def make_crawler_ingest_fn(
     lock = threading.Lock()
 
     def ingest_fn(url: str, title: str, text: str, metadata: dict) -> None:
-        doc = IngestDoc(doc_id=f"web:{url}", title=title, content=text, doc_type="web", metadata=metadata)
+        doc = IngestDoc(doc_id=f'web:{url}', title=title, content=text, doc_type='web', metadata=metadata)
         with lock:
             # Support both `sync` and `hybrid` parameter names
-            status = ingest_one(doc, indexer, dedup, min_quality=min_quality,
-                                chunk_size=chunk_size, sync=sync, hybrid=hybrid,
-                                failure_queue=failure_queue, history=history)
-        if status != "indexed":
-            logger.info("%s skip %s", status.upper(), url)
+            status = ingest_one(
+                doc,
+                indexer,
+                dedup,
+                min_quality=min_quality,
+                chunk_size=chunk_size,
+                sync=sync,
+                hybrid=hybrid,
+                failure_queue=failure_queue,
+                history=history,
+            )
+        if status != 'indexed':
+            logger.info('%s skip %s', status.upper(), url)
 
     return ingest_fn

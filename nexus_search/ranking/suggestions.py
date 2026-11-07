@@ -11,13 +11,13 @@ instrumentation) when it has rows; falls back to character-trigram term
 similarity against the index vocabulary when the log is empty. An empty log
 table must NEVER raise.
 """
+
 import bisect
 from collections import Counter
-from typing import Optional
 
 
 def _trigrams(term: str) -> set[str]:
-    return {term[i:i + 3] for i in range(len(term) - 2)} if len(term) > 2 else {term}
+    return {term[i : i + 3] for i in range(len(term) - 2)} if len(term) > 2 else {term}
 
 
 class Suggester:
@@ -61,7 +61,7 @@ class Suggester:
         """Up to `limit` index terms starting with `prefix` (case-folded),
         most frequent first (document frequency) — a suggestion that leads to
         zero results would be a bad suggestion."""
-        prefix = (prefix or "").strip().lower()
+        prefix = (prefix or '').strip().lower()
         if not prefix:
             return []
         self._refresh()
@@ -75,8 +75,9 @@ class Suggester:
         matches.sort(key=lambda t: (-self.storage.document_frequency(t), t))
         return matches[:limit]
 
-    def related_searches(self, query: str, experiment_log=None, limit: int = 5,
-                         max_log_rows: int = 10_000) -> list[str]:
+    def related_searches(
+        self, query: str, experiment_log=None, limit: int = 5, max_log_rows: int = 10_000
+    ) -> list[str]:
         """Queries related to `query`.
 
         Source order:
@@ -87,6 +88,7 @@ class Suggester:
 
         Empty log + empty index both return [] without error."""
         from ..core.query_parser import parse_query
+
         terms = set(parse_query(query).terms)
         related: list[str] = []
 
@@ -114,11 +116,16 @@ class Suggester:
                 if term in terms:
                     continue
                 scored[term] += 1
-        return [t for t, _ in sorted(scored.items(),
-                                     key=lambda kv: (-kv[1], -self.storage.document_frequency(kv[0]), kv[0]))[:limit]]
+        return [
+            t
+            for t, _ in sorted(scored.items(), key=lambda kv: (-kv[1], -self.storage.document_frequency(kv[0]), kv[0]))[
+                :limit
+            ]
+        ]
 
     def _from_log(self, query: str, log, limit: int, max_log_rows: int = 10_000) -> list[str]:
         from ..core.query_parser import parse_query
+
         my_terms = set(parse_query(query).terms)
         counts: Counter[str] = Counter()
         rows = log.recent_distinct_queries(max_log_rows)  # locked read

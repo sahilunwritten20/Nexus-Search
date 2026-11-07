@@ -22,6 +22,7 @@ Conformance (RFC 9309, test-pinned in tests/crawler/test_robots_rfc9309.py):
   /robots.txt itself is implicitly allowed.
 - BOM, CRLF, blank lines, full-line and trailing `#` comments handled.
 """
+
 import re
 from urllib.parse import urlsplit
 
@@ -32,7 +33,7 @@ CRAWL_DELAY_MAX = 60.0
 
 
 class _Rule:
-    __slots__ = ("allow", "pattern", "specificity", "_body", "_anchored")
+    __slots__ = ('_anchored', '_body', 'allow', 'pattern', 'specificity')
 
     def __init__(self, allow: bool, pattern: str):
         self.allow = allow
@@ -44,7 +45,7 @@ class _Rule:
         # allowed catastrophic backtracking ('/a*a*...*b' NEVER returned —
         # measured hang at 8 stars x 5000 chars, freezing the whole
         # process). Matching is now a LINEAR two-pointer glob.
-        self._anchored = pattern.endswith("$")
+        self._anchored = pattern.endswith('$')
         self._body = pattern[:-1] if self._anchored else pattern
 
     def matches(self, path: str) -> bool:
@@ -77,7 +78,7 @@ def _glob_match(pattern: str, text: str, require_full_text: bool) -> bool:
                 continue
             return False  # anchored: no star left to absorb the tail
         c = pattern[pi]
-        if c == "*":
+        if c == '*':
             star_p, star_t = pi, ti
             pi += 1
             continue
@@ -93,13 +94,13 @@ def _glob_match(pattern: str, text: str, require_full_text: bool) -> bool:
             continue
         return False
     # text exhausted: trailing stars match the empty remainder
-    while pi < n and pattern[pi] == "*":
+    while pi < n and pattern[pi] == '*':
         pi += 1
     return pi == n
 
 
 class _Group:
-    __slots__ = ("agents", "rules", "crawl_delay")
+    __slots__ = ('agents', 'crawl_delay', 'rules')
 
     def __init__(self):
         self.agents: set[str] = set()
@@ -114,29 +115,28 @@ def _split_groups(text: str) -> tuple[list[_Group], list[str]]:
     groups: list[_Group] = []
     sitemaps: list[str] = []
     current: _Group | None = None
-    pending_agents: list[str] = []  # user-agents awaiting their rules
     saw_rule_in_current = False
 
-    raw = text.lstrip("﻿")
-    for line in re.split(r"\r?\n", raw):
+    raw = text.lstrip('﻿')
+    for line in re.split(r'\r?\n', raw):
         line = line.strip()
         if not line:
             continue
         # comments: everything from the first '#' is not part of the line
-        if "#" in line:
-            line = line.split("#", 1)[0].strip()
+        if '#' in line:
+            line = line.split('#', 1)[0].strip()
             if not line:
                 continue
-        if ":" not in line:
+        if ':' not in line:
             continue  # malformed line: RFC says ignore, keep parsing
-        key, _, value = line.partition(":")
+        key, _, value = line.partition(':')
         key = key.strip().lower()
         value = value.strip()
-        if key == "sitemap":
+        if key == 'sitemap':
             if value:
                 sitemaps.append(value)
             continue
-        if key == "user-agent":
+        if key == 'user-agent':
             if not value:
                 continue
             if current is None or saw_rule_in_current:
@@ -146,15 +146,15 @@ def _split_groups(text: str) -> tuple[list[_Group], list[str]]:
                 saw_rule_in_current = False
             current.agents.add(value.lower())
             continue
-        if key not in ("allow", "disallow", "crawl-delay"):
+        if key not in ('allow', 'disallow', 'crawl-delay'):
             continue  # unknown extension keys are ignored per RFC §2.3
         if current is None:
             # rules before any user-agent line apply to no group per the
             # RFC; the common forgiving read is to treat them as '*'
             current = _Group()
-            current.agents.add("*")
+            current.agents.add('*')
             groups.append(current)
-        if key == "crawl-delay":
+        if key == 'crawl-delay':
             # SKEP-2 (P2): attacker-controlled value was consumed
             # unvalidated — 99999999 slept a worker ~3 years, NaN/-5
             # silently DISABLED pacing, 1e999 crashed time.sleep(inf).
@@ -179,7 +179,7 @@ def _split_groups(text: str) -> tuple[list[_Group], list[str]]:
             # rule set for that group is empty)
             saw_rule_in_current = True
             continue
-        current.rules.append(_Rule(allow=(key == "allow"), pattern=value))
+        current.rules.append(_Rule(allow=(key == 'allow'), pattern=value))
         saw_rule_in_current = True
     return groups, sitemaps
 
@@ -188,21 +188,21 @@ class RobotsRules:
     """Parsed robots.txt; deterministic and version-independent."""
 
     def __init__(self, text: str):
-        self.groups, self.sitemaps = _split_groups(text or "")
+        self.groups, self.sitemaps = _split_groups(text or '')
 
     def _matching_groups(self, useragent: str) -> list[_Group]:
-        token = (useragent or "").strip().lower()
+        token = (useragent or '').strip().lower()
         exact = [g for g in self.groups if token in g.agents]
         if exact:
             return exact
-        return [g for g in self.groups if "*" in g.agents]
+        return [g for g in self.groups if '*' in g.agents]
 
     def is_allowed(self, useragent: str, url: str) -> bool:
         parts = urlsplit(url)
-        target = parts.path or "/"
+        target = parts.path or '/'
         if parts.query:
-            target += "?" + parts.query
-        if target == "/robots.txt":
+            target += '?' + parts.query
+        if target == '/robots.txt':
             return True  # implicitly allowed (RFC 9309 §2.3.3)
         matched = self._matching_groups(useragent)
         if not matched:
@@ -212,15 +212,15 @@ class RobotsRules:
             for rule in group.rules:
                 if not rule.matches(target):
                     continue
-                if (best is None
-                        or rule.specificity > best.specificity
-                        or (rule.specificity == best.specificity
-                            and rule.allow)):
+                if (
+                    best is None
+                    or rule.specificity > best.specificity
+                    or (rule.specificity == best.specificity and rule.allow)
+                ):
                     best = rule
         return True if best is None else best.allow
 
     def crawl_delay(self, useragent: str) -> float | None:
         """The matched groups' Crawl-delay (last one wins on merge)."""
-        delays = [g.crawl_delay for g in self._matching_groups(useragent)
-                  if g.crawl_delay is not None]
+        delays = [g.crawl_delay for g in self._matching_groups(useragent) if g.crawl_delay is not None]
         return delays[-1] if delays else None

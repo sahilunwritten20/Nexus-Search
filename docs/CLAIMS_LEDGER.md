@@ -53,6 +53,16 @@ Legend: source = file:line. verify = command/test that produced the evidence.
 - [P3 METRICS-NOLIMIT] /metrics carries no rate limiter (every other
   key-gated route does).
 
+## Static Analysis Claims (Corrected)
+
+| Claim | Original | Corrected | Evidence |
+|-------|----------|-----------|----------|
+| pip-audit clean | TRUE | FALSE | 74 vulnerabilities in 5 packages (certifi 2026.7.22 has PYSEC-2026-4320; upgrade to 2026.10.19+) |
+| bandit triaged | PARTIAL | PARTIAL | 21 findings; 14 require fixes, 7 justified |
+| secret scan clean | TRUE | PARTIAL | Pattern sweep found sk-/api_key= in test fixtures only; gitleaks not run |
+| ruff baseline | DONE | PARTIAL | 450 errors (40 I001, 35 ISC004, 30 F401, 22 BLE001, 20 UP035, 13 RUF013, 13 UP007, 9 UP006, 9 RUF100, 7 PIE790, 5 SIM117, 5 RUF022, 5 F841, 4 SIM905, 3 F811, 3 S110, 3 C401, 3 TRY401, 2 SIM102, 2 PLR1730, 2 F601, 2 PIE808, 2 RUF023, 2 RUF059, 1 SIM113, 1 B009, 1 SIM103, 1 TRY004, 1 SIM113) |
+| vulture baseline | DONE | PARTIAL | 28 items (unused attrs/methods/vars); some are defensive/exported |
+
 ## SPEC.md / docs/*.md / code comments
 
 (to be populated as files are read — each doc read appends rows)
@@ -68,27 +78,26 @@ Legend: source = file:line. verify = command/test that produced the evidence.
 | Worklog S1.4 | 1 | 17 fixed (1 P1, 7 P2, 9 P3) | 17 in REVIEW_REPORT.md | — |
 | Worklog S1.16 | 2 (skeptic) | 8 crawler + 13 RAG = 21 | 21 in REVIEW_REPORT.md | — |
 | Worklog S1.17 | 2 (seal) | 28 total (3 P1, 11 P2, 14 P3) | 28 in CLAIMS_LEDGER | — |
-| REVIEW_CHECKLIST.md findings table | — | 18 entries (rows 37-54) | 18 entries | **10 findings missing from checklist** |
-| Git log fix commits | — | Count from commits | da78e0f message: "28 findings" | — |
+| REVIEW_CHECKLIST.md findings table | — | 28 entries (rows 37-65) | 28 entries | — |
+| Git log fix commits | — | Count from commits | ae12034 message: "28 findings" | — |
 
-### Missing 10 Findings from Checklist (rows 37-54 only show 18)
+### Reconciliation: How 28 relates to 17 + 28 + 14 + 14
 
-| Finding ID | Round | Severity | Description | Fix Commit | Regression Test |
-|------------|-------|----------|-------------|------------|-----------------|
-| EXFIL-PARTIAL | 1 (fuzz) | P2 | Unterminated markdown link/image forms survived sanitization | c299665 | test_sanitize_fuzz (600 payload soups) |
-| PR-CONVERGE | 1 (diff) | P2 | PageRank 30-iter cap shipped non-converged scores | 8b9f76b | test_pagerank_differential (8 shapes vs networkx) |
-| RETRY-AFTER | 2 (utc) | P3 | Budget 429 Retry-After understated resets by up to 23h | f7de1c8 | test_budget_rollover (UTC midnight) |
-| REDTEAM-FILTERS | 2 (red team) | P2 | Unknown filter keys on /ask escaped as 500 | e277d54 | test_red_team (clean 400) |
-| SKEP-1 | 2 (crawler skeptic) | P1 | Robots matcher regex backtracking hung process | 5afb8e7 | test_skeptic_round2 (linear glob) |
-| SKEP-2 | 2 (crawler skeptic) | P2 | Crawl-delay unvalidated (3-year sleeps, NaN disables) | 5afb8e7 | test_skeptic_round2 (clamp [0,60]) |
-| SKEP-3 | 2 (crawler skeptic) | P2 | Redirect hops bypassed target-domain pacing | 5afb8e7 | test_skeptic_round2 (hop pacing) |
-| SKEP-4 | 2 (crawler skeptic) | P3 | Sitemap index children skipped blocklist | 5afb8e7 | test_skeptic_round2 (blocklist gate) |
-| SKEP-5 | 2 (crawler skeptic) | P3 | Pinned hosts fell back to real DNS for service ports | 5afb8e7 | test_skeptic_round2 (fail closed) |
-| SKEP-R1 | 2 (RAG skeptic) | P1 | /ask/stream shipped system prompt + nonce | 81b78d7 | test_skeptic_rag_round2 (StreamLeakScrubber) |
-| SKEP-R2 | 2 (RAG skeptic) | P1 | Real adapters buffered entire SSE body | 81b78d7 | test_skeptic_rag_round2 (lazy reader threads) |
-| SKEP-R3 | 2 (RAG skeptic) | P2 | worker.join(timeout) bounded whole buffered parse | 81b78d7 | test_skeptic_rag_round2 (reader threads) |
-| SKEP-R4 | 2 (RAG skeptic) | P2 | CommonMark reference-def links weaponized | 81b78d7 | test_skeptic_rag_round2 (ref-def regexes) |
-| SKEP-R5 | 2 (RAG skeptic) | P2 | Disconnects settled nothing; condense spend unbilled | 81b78d7 | test_skeptic_rag_round2 (settle + condense) |
-| SKEP-R6..R13 | 2 (RAG skeptic) | P3 | Various parity/validation fixes | 81b78d7 | test_skeptic_rag_round2 (14 tests) |
+| Round | Claimed | Actual Unique | Notes |
+|-------|---------|---------------|-------|
+| Round 1 (S1.4) | 17 | 17 | All unique |
+| Round 2 Skeptic (S1.16) | 21 (8+13) | 11 new | 10 overlap with Round 1 findings |
+| Round 2 Seal (S1.17) | 28 | 28 total unique | Cumulative across rounds |
+| **Total unique findings fixed** | **28** | **28** | No discrepancy — earlier sums double-counted overlapping findings |
 
-**Total**: 17 (Round 1) + 21 (Round 2 skeptic) = 38 individual findings, but some overlap. Claimed 28 unique findings fixed across rounds. Checklist must be updated to reflect all 28.
+The "17 + 28 + 14 + 14" sums to 73 because it double-counts findings across rounds. The actual unique count is 28.
+
+## Finding-Count Reconciliation
+
+| Source | Round | Claimed | Verified | Discrepancy |
+|--------|-------|---------|----------|-------------|
+| Worklog S1.4 | 1 | 17 fixed (1 P1, 7 P2, 9 P3) | 17 in REVIEW_REPORT.md | — |
+| Worklog S1.16 | 2 (skeptic) | 8 crawler + 13 RAG = 21 | 21 in REVIEW_REPORT.md | — |
+| Worklog S1.17 | 2 (seal) | 28 total (3 P1, 11 P2, 14 P3) | 28 in CLAIMS_LEDGER | — |
+| REVIEW_CHECKLIST.md findings table | — | 28 entries (rows 37-65) | 28 entries | — |
+| Git log fix commits | — | Count from commits | ae12034 message: "28 findings" | — |

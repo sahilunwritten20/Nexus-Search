@@ -10,10 +10,11 @@ correct outcome (the ranker must not degrade retrieval by default). The
 value being demonstrated is the FRAMEWORK: measurable A/B numbers once
 non-default weights are configured.
 """
+
 import os
 
 # Hash embedder for offline benchmarking, same as evaluation/benchmark.py.
-os.environ.setdefault("NEXUS_EMBEDDER", "hash:384")
+os.environ.setdefault('NEXUS_EMBEDDER', 'hash:384')
 
 from ..core.hybrid_search import SearchMode
 from ..ranking.query import understand_query
@@ -23,14 +24,11 @@ from .dataset import create_benchmark_dataset
 from .metrics import compare_modes, print_comparison
 
 
-def run_rerank_benchmark(db_path: str = None, weights: RankingWeights = None) -> dict:
+def run_rerank_benchmark(db_path: str | None = None, weights: RankingWeights = None) -> dict:
     """Run hybrid vs hybrid+rerank on the benchmark dataset and return the
     comparison dict (also pretty-prints it, like benchmark.py)."""
     _, queries = create_benchmark_dataset()
-    query_dicts = [
-        {"query_id": q.query_id, "text": q.text, "relevant_docs": q.relevant_docs}
-        for q in queries
-    ]
+    query_dicts = [{'query_id': q.query_id, 'text': q.text, 'relevant_docs': q.relevant_docs} for q in queries]
 
     fns, hybrid, storage, dedup, vector_store, sync = build_search_functions(db_path)
     weights = weights or RankingWeights()
@@ -38,20 +36,22 @@ def run_rerank_benchmark(db_path: str = None, weights: RankingWeights = None) ->
     try:
         vec_stats = vector_store.get_stats()
         doc_count = storage.document_count()
-        if doc_count > 0 and vec_stats.get("count", 0) / doc_count < 1.0:
-            print("Refusing to compare - vector coverage below 100%")
-            return {"error": "vector_coverage_not_100%"}
+        if doc_count > 0 and vec_stats.get('count', 0) / doc_count < 1.0:
+            print('Refusing to compare - vector coverage below 100%')
+            return {'error': 'vector_coverage_not_100%'}
 
         def rerank_fn(query: str, top_k: int) -> list[str]:
             results = hybrid.search(query, top_k=top_k, mode=SearchMode.HYBRID)
-            ranked = rerank(results, query, weights, storage=storage,
-                            understanding=understand_query(query, storage))
+            ranked = rerank(results, query, weights, storage=storage, understanding=understand_query(query, storage))
             return [r.doc_id for r in ranked]
 
-        comparison = compare_modes(query_dicts, {
-            "hybrid": fns["hybrid"],
-            "hybrid+rerank": rerank_fn,
-        })
+        comparison = compare_modes(
+            query_dicts,
+            {
+                'hybrid': fns['hybrid'],
+                'hybrid+rerank': rerank_fn,
+            },
+        )
         print_comparison(comparison)
         return comparison
     finally:
@@ -62,5 +62,5 @@ def run_rerank_benchmark(db_path: str = None, weights: RankingWeights = None) ->
         vector_store.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_rerank_benchmark()

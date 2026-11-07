@@ -25,10 +25,10 @@ CONDENSE=llm uses the provider (counted in the budget) and falls back to
 the heuristic on ANY failure. Retrieval ALWAYS runs on the standalone
 query; the transcript is data, never instructions.
 """
+
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .provider import ProviderError
 
@@ -45,7 +45,7 @@ class SessionCapExceeded(Exception):
 
 @dataclass
 class SessionTurn:
-    role: str          # "user" | "assistant"
+    role: str  # "user" | "assistant"
     text: str
     ts: float
 
@@ -59,9 +59,9 @@ class Session:
         """Render the transcript for the prompt's DATA region."""
         lines = []
         for t in self.turns[-max_turns:]:
-            who = "User" if t.role == "user" else "Assistant"
-            lines.append(f"{who}: {t.text}")
-        return "\n".join(lines)
+            who = 'User' if t.role == 'user' else 'Assistant'
+            lines.append(f'{who}: {t.text}')
+        return '\n'.join(lines)
 
 
 class MemorySessionStore:
@@ -70,9 +70,16 @@ class MemorySessionStore:
     rather than a silently fresh session (best-effort: tombstones do not
     survive restarts — documented limit)."""
 
-    def __init__(self, *, max_turns: int, max_context_tokens: int,
-                 chars_per_token: int, max_turn_bytes: int, ttl: float,
-                 global_cap: int):
+    def __init__(
+        self,
+        *,
+        max_turns: int,
+        max_context_tokens: int,
+        chars_per_token: int,
+        max_turn_bytes: int,
+        ttl: float,
+        global_cap: int,
+    ):
         self.max_turns = max_turns
         self.max_context_tokens = max_context_tokens
         self.chars_per_token = chars_per_token
@@ -85,7 +92,7 @@ class MemorySessionStore:
 
     # ------------------------------------------------------------- read
 
-    def get(self, scope: str, session_id: str) -> Optional[Session]:
+    def get(self, scope: str, session_id: str) -> Session | None:
         key = (scope, session_id)
         with self._lock:
             now = time.time()
@@ -107,7 +114,7 @@ class MemorySessionStore:
     def append(self, scope: str, session_id: str, role: str, text: str) -> Session:
         key = (scope, session_id)
         if len(text) > self.max_turn_bytes:
-            raise SessionCapExceeded(f"turn_bytes:{len(text)}")
+            raise SessionCapExceeded(f'turn_bytes:{len(text)}')
         with self._lock:
             now = time.time()
             session = self._sessions.get(key)
@@ -125,16 +132,16 @@ class MemorySessionStore:
             if session is None:
                 session = Session(last_used=now)
             # context-token cap over the WHOLE session, BEFORE anything runs
-            candidate = Session(turns=session.turns + [SessionTurn(role, text[:self.max_turn_bytes], now)],
-                                 last_used=now)
+            candidate = Session(
+                turns=[*session.turns, SessionTurn(role, text[: self.max_turn_bytes], now)], last_used=now
+            )
             if len(candidate.turns) > self.max_turns:
                 self._check_memory_pressure()
-                raise SessionCapExceeded(f"turns:{len(candidate.turns)}")
-            est_tokens = sum(-(-len(t.text) // self.chars_per_token)
-                             for t in candidate.turns)
+                raise SessionCapExceeded(f'turns:{len(candidate.turns)}')
+            est_tokens = sum(-(-len(t.text) // self.chars_per_token) for t in candidate.turns)
             if est_tokens > self.max_context_tokens:
                 self._check_memory_pressure()
-                raise SessionCapExceeded(f"context_tokens:{est_tokens}")
+                raise SessionCapExceeded(f'context_tokens:{est_tokens}')
             self._sessions[key] = candidate
             self._expired.discard(key)
             self._evict_idle_locked(now)
@@ -147,8 +154,7 @@ class MemorySessionStore:
         pass  # pressure handled by global-cap eviction below
 
     def _evict_idle_locked(self, now: float) -> None:
-        for key in [k for k, s in self._sessions.items()
-                    if now - s.last_used > self.ttl]:
+        for key in [k for k, s in self._sessions.items() if now - s.last_used > self.ttl]:
             self._sessions.pop(key, None)
             self._expired.add(key)
 
@@ -165,8 +171,7 @@ class MemorySessionStore:
     def prune_expired(self) -> int:
         now = time.time()
         with self._lock:
-            return len([k for k, s in list(self._sessions.items())
-                        if now - s.last_used > self.ttl])
+            return len([k for k, s in list(self._sessions.items()) if now - s.last_used > self.ttl])
 
 
 class SqliteSessionStore:
@@ -176,9 +181,17 @@ class SqliteSessionStore:
     rag_session_prune(ttl) runs — schedule it (the A/B-log purge
     precedent). Tombstones are RAM-side per process (best effort)."""
 
-    def __init__(self, storage, *, max_turns: int, max_context_tokens: int,
-                 chars_per_token: int, max_turn_bytes: int, ttl: float,
-                 global_cap: int):
+    def __init__(
+        self,
+        storage,
+        *,
+        max_turns: int,
+        max_context_tokens: int,
+        chars_per_token: int,
+        max_turn_bytes: int,
+        ttl: float,
+        global_cap: int,
+    ):
         self.storage = storage
         self.max_turns = max_turns
         self.max_context_tokens = max_context_tokens
@@ -189,7 +202,7 @@ class SqliteSessionStore:
         self._lock = threading.Lock()
         self._expired: set[tuple[str, str]] = set()
 
-    def get(self, scope: str, session_id: str) -> Optional[Session]:
+    def get(self, scope: str, session_id: str) -> Session | None:
         with self._lock:
             rows = self.storage.rag_session_turns(scope, session_id)
             now = time.time()
@@ -200,8 +213,7 @@ class SqliteSessionStore:
                 return None
             session = Session(last_used=now)
             for _idx, role, text, updated in rows:
-                session.turns.append(SessionTurn(role=role, text=text,
-                                                 ts=updated))
+                session.turns.append(SessionTurn(role=role, text=text, ts=updated))
             # REVIEW SESSION-DEADCHECK: an earlier check compared
             # now - session.last_used, but last_used was JUST set to now
             # above, so it could never fire (dead code). The real staleness
@@ -216,7 +228,7 @@ class SqliteSessionStore:
 
     def append(self, scope: str, session_id: str, role: str, text: str) -> Session:
         if len(text) > self.max_turn_bytes:
-            raise SessionCapExceeded(f"turn_bytes:{len(text)}")
+            raise SessionCapExceeded(f'turn_bytes:{len(text)}')
         with self._lock:
             rows = self.storage.rag_session_turns(scope, session_id)
             now = time.time()
@@ -229,20 +241,17 @@ class SqliteSessionStore:
                 self._expired.add((scope, session_id))
                 raise SessionExpired(session_id)
             if (len(rows) + 1) > self.max_turns:
-                raise SessionCapExceeded(f"turns:{len(rows) + 1}")
-            est_tokens = sum(-(-len(r[2]) // self.chars_per_token)
-                             for r in rows)
+                raise SessionCapExceeded(f'turns:{len(rows) + 1}')
+            est_tokens = sum(-(-len(r[2]) // self.chars_per_token) for r in rows)
             est_tokens += -(-len(text) // self.chars_per_token)
             if est_tokens > self.max_context_tokens:
-                raise SessionCapExceeded(f"context_tokens:{est_tokens}")
+                raise SessionCapExceeded(f'context_tokens:{est_tokens}')
             if not rows and (scope, session_id) in self._expired:
                 self._expired.discard((scope, session_id))
                 raise SessionExpired(session_id)
-            self.storage.rag_session_append(scope, session_id, len(rows),
-                                            role, text, now)
+            self.storage.rag_session_append(scope, session_id, len(rows), role, text, now)
             session = Session(last_used=now)
-            session.turns = [SessionTurn(role=r[1], text=r[2], ts=r[3])
-                             for r in rows]
+            session.turns = [SessionTurn(role=r[1], text=r[2], ts=r[3]) for r in rows]
             session.turns.append(SessionTurn(role, text, now))
             return session
 
@@ -257,8 +266,19 @@ class SqliteSessionStore:
 # Follow-up condensing
 # ---------------------------------------------------------------------------
 
-_FOLLOWUP_MARKERS = ("and", "but", "what about", "how about", "why",
-                     "tell me more", "more", "it", "they", "that", "this")
+_FOLLOWUP_MARKERS = (
+    'and',
+    'but',
+    'what about',
+    'how about',
+    'why',
+    'tell me more',
+    'more',
+    'it',
+    'they',
+    'that',
+    'this',
+)
 
 
 def heuristic_condense(query: str, history_text: str) -> str:
@@ -270,29 +290,28 @@ def heuristic_condense(query: str, history_text: str) -> str:
         return query
     lowered = query.strip().lower()
     words = lowered.split()
-    looks_like_followup = (len(words) < 4
-                           or lowered.startswith(_FOLLOWUP_MARKERS))
+    looks_like_followup = len(words) < 4 or lowered.startswith(_FOLLOWUP_MARKERS)
     if not looks_like_followup:
         return query
     prev_user = None
     for line in history_text.splitlines():
-        if line.startswith("User: "):
-            prev_user = line[len("User: "):]
-    return f"{prev_user} {query}".strip() if prev_user else query
+        if line.startswith('User: '):
+            prev_user = line[len('User: ') :]
+    return f'{prev_user} {query}'.strip() if prev_user else query
 
 
-def condense_followup(query: str, history_text: str, *, mode: str,
-                      provider=None, config=None,
-                      messages_builder=None) -> str:
+def condense_followup(
+    query: str, history_text: str, *, mode: str, provider=None, config=None, messages_builder=None
+) -> str:
     """Bounded condense step. mode: 'heuristic' (default, zero spend),
     'llm' (provider call counted in the budget by the caller via the
     returned usage), or 'off'. ANY provider failure -> heuristic
     fallback (never a failed request over condensing)."""
     if not history_text:
         return query
-    if mode == "off":
+    if mode == 'off':
         return query
-    if mode != "llm":
+    if mode != 'llm':
         return heuristic_condense(query, history_text)
     try:
         if provider is None or messages_builder is None:
@@ -300,8 +319,9 @@ def condense_followup(query: str, history_text: str, *, mode: str,
         result = provider.complete(
             messages_builder(history_text, query),
             max_tokens=min(config.max_tokens if config else 128, 256),
-            timeout=(config.timeout if config else 30.0))
-        rewritten = (result.text or "").strip()
+            timeout=(config.timeout if config else 30.0),
+        )
+        rewritten = (result.text or '').strip()
         if rewritten and len(rewritten) < 1000:
             return rewritten
         return heuristic_condense(query, history_text)

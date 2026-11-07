@@ -19,7 +19,7 @@ Implementations:
 
 Discipline:
 - hard timeout (<= 30s, config-clamped) on every call;
-- bounded retry with jitter (<= 2, connect errors / 429 / 5xx ONLY 
+- bounded retry with jitter (<= 2, connect errors / 429 / 5xx ONLY
   read timeouts are NOT retried: the call may already have landed);
 - concurrency semaphore (default 4); saturation raises ProviderBusy
   (the API maps it to 429 + Retry-After);
@@ -27,22 +27,24 @@ Discipline:
   endpoint; error paths raise type-coded ProviderError with NO response
   bodies, NO paths, NO key fragments (the poisoned-key test enforces it).
 """
+
+import contextlib
 import json
 import re
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator, Optional, Union
 
 import requests
 
 from .config import RagConfig
 
-
 # ---------------------------------------------------------------------------
 # Results / errors
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class LLMUsage:
@@ -54,8 +56,8 @@ class LLMUsage:
 class LLMResult:
     text: str
     usage: LLMUsage = field(default_factory=LLMUsage)
-    model: str = ""
-    provider: str = ""
+    model: str = ''
+    provider: str = ''
 
 
 class LLMStream:
@@ -101,7 +103,7 @@ class LLMStream:
     @property
     def text_so_far(self) -> str:
         with self._lock:
-            return "".join(self._parts)
+            return ''.join(self._parts)
 
     @property
     def usage(self) -> LLMUsage:
@@ -130,10 +132,9 @@ class LLMStream:
 
     def result(self) -> LLMResult:
         with self._lock:
-            text = "".join(self._parts)
+            text = ''.join(self._parts)
             usage = LLMUsage(**vars(self._usage)) if self._usage else LLMUsage()
-        return LLMResult(text=text, usage=usage, model=self._model,
-                         provider=self._provider)
+        return LLMResult(text=text, usage=usage, model=self._model, provider=self._provider)
 
 
 class ProviderError(Exception):
@@ -147,14 +148,14 @@ class ProviderError(Exception):
 
 class ProviderTimeout(ProviderError):
     def __init__(self):
-        super().__init__("provider_timeout")
+        super().__init__('provider_timeout')
 
 
 class ProviderBusy(ProviderError):
     """All concurrency slots taken  the API maps this to 429 + Retry-After."""
 
     def __init__(self, retry_after: float):
-        super().__init__("provider_busy")
+        super().__init__('provider_busy')
         self.retry_after = max(0.0, retry_after)
 
 
@@ -168,12 +169,13 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 def _sleep_jitter(attempt: int) -> None:
     """Bounded exponential backoff with jitter: [0, 0.5 * 2^attempt)."""
     import random
-    time.sleep(random.uniform(0.0, 0.5 * (2 ** attempt)))
+
+    time.sleep(random.uniform(0.0, 0.5 * (2**attempt)))
 
 
-def _post_with_retries(url: str, *, headers: dict, body: dict,
-                       timeout: float, max_retries: int,
-                       stream_http: bool = False):
+def _post_with_retries(
+    url: str, *, headers: dict, body: dict, timeout: float, max_retries: int, stream_http: bool = False
+):
     """POST with the P7-3 retry contract: connect errors / 429 / 5xx are
     retried (<= max_retries, jittered); READ timeouts and other failures
     fail fast (a non-idempotent-capable call may already have landed).
@@ -187,19 +189,17 @@ def _post_with_retries(url: str, *, headers: dict, body: dict,
     attempt = 0
     while True:
         try:
-            resp = requests.post(url, headers=headers,
-                                 json=body, timeout=(timeout, timeout),
-                                 stream=bool(stream_http))
+            resp = requests.post(url, headers=headers, json=body, timeout=(timeout, timeout), stream=bool(stream_http))
         except requests.exceptions.ConnectionError:
             if attempt < max_retries:
                 _sleep_jitter(attempt)
                 attempt += 1
                 continue
-            raise ProviderError("provider_connect_error") from None
+            raise ProviderError('provider_connect_error') from None
         except requests.exceptions.Timeout:
             raise ProviderTimeout() from None
         except requests.exceptions.RequestException:
-            raise ProviderError("provider_request_error") from None
+            raise ProviderError('provider_request_error') from None
         if resp.status_code in _RETRYABLE_STATUS and attempt < max_retries:
             resp.close()
             _sleep_jitter(attempt)
@@ -207,11 +207,11 @@ def _post_with_retries(url: str, *, headers: dict, body: dict,
             continue
         if resp.status_code == 401:
             resp.close()
-            raise ProviderError("provider_auth_error")
+            raise ProviderError('provider_auth_error')
         if resp.status_code >= 400:
             # body deliberately dropped: never surfaced, never logged
             resp.close()
-            raise ProviderError(f"provider_http_error_{resp.status_code}")
+            raise ProviderError(f'provider_http_error_{resp.status_code}')
         return resp
 
 
@@ -219,22 +219,23 @@ def _post_with_retries(url: str, *, headers: dict, body: dict,
 # The interface
 # ---------------------------------------------------------------------------
 
+
 class LLMProvider(ABC):
     """`complete` is the whole surface. NOTE: there is intentionally NO
     `tools` / `functions` / `tool_choice` parameter  tool-calling cannot
     be configured into this layer, so retrieved text can never trigger a
     tool, a fetch or a write (PHASE7_PLAN 2)."""
 
-    name: str = ""
+    name: str = ''
 
     @property
     @abstractmethod
     def model(self) -> str: ...
 
     @abstractmethod
-    def complete(self, messages: list[dict], *, max_tokens: int,
-                 timeout: Optional[float] = None,
-                 stream: bool = False) -> Union[LLMResult, LLMStream]:
+    def complete(
+        self, messages: list[dict], *, max_tokens: int, timeout: float | None = None, stream: bool = False
+    ) -> LLMResult | LLMStream:
         """messages: [{"role": "system"|"user"|"assistant", "content": str}].
         stream=False -> LLMResult; stream=True -> LLMStream (iterate deltas,
         then .result()). Temperature is 0 by default (provider-configured
@@ -264,6 +265,7 @@ class _SlotMixin:
                 if acq.ok:
                     acq.sem.release()
                 return False
+
         return _Acq(self._sem, self._queue_wait)
 
 
@@ -275,12 +277,14 @@ class _SlotMixin:
 # stub parses sources with it so adversarial tests exercise the REAL
 # prompt surface. Nonce is per-request random; the stub ignores its value.
 _SOURCE_FRAME_RE = re.compile(
-    r"==== NXSRAG-[0-9a-f]+ SOURCE (\d+) ====\n(.*?)\n"
-    r"==== NXSRAG-[0-9a-f]+ END SOURCE \1 ====",
-    re.DOTALL)
+    r'==== NXSRAG-[0-9a-f]+ SOURCE (\d+) ====\n(.*?)\n'
+    r'==== NXSRAG-[0-9a-f]+ END SOURCE \1 ====',
+    re.DOTALL,
+)
 _INJECTION_RE = re.compile(
-    r"(?im)^\s*(?:ignore|disregard|forget)\b[^\n]*\b(?:instruction|rule|prompt)"
-    r"|^\s*system\s*:",)
+    r'(?im)^\s*(?:ignore|disregard|forget)\b[^\n]*\b(?:instruction|rule|prompt)'
+    r'|^\s*system\s*:',
+)
 
 
 def _normalized_lines(text: str):
@@ -289,11 +293,12 @@ def _normalized_lines(text: str):
     stub oracle must still OBEY a homoglyph-dodged injection so the
     defense tests measure the STRIPPER, not the oracle's regex."""
     from .prompt import _normalize_for_matching
+
     for line in text.splitlines():
         yield line, _normalize_for_matching(line)
 
 
-def _find_injection(text: str) -> Optional[str]:
+def _find_injection(text: str) -> str | None:
     for raw, probe in _normalized_lines(text):
         if _INJECTION_RE.search(probe):
             return raw
@@ -302,8 +307,7 @@ def _find_injection(text: str) -> Optional[str]:
 
 def parse_fenced_sources(messages: list[dict]) -> dict[int, str]:
     """Sources from the last user message, by number -> text."""
-    user_texts = [m.get("content") or "" for m in messages
-                  if m.get("role") == "user"]
+    user_texts = [m.get('content') or '' for m in messages if m.get('role') == 'user']
     sources: dict[int, str] = {}
     if not user_texts:
         return sources
@@ -314,7 +318,7 @@ def parse_fenced_sources(messages: list[dict]) -> dict[int, str]:
 
 def _first_words(text: str, n: int) -> str:
     words = text.split()
-    return " ".join(words[:n])
+    return ' '.join(words[:n])
 
 
 class StubProvider(LLMProvider, _SlotMixin):
@@ -335,20 +339,19 @@ class StubProvider(LLMProvider, _SlotMixin):
       slow                 sleeps timeout+1s (fires the hard-timeout path)
       error                raises ProviderError("stub_error")
     """
-    name = "stub"
 
-    def __init__(self, behavior: str = "extractive", concurrency: int = 64,
-                 queue_wait: float = 2.0):
+    name = 'stub'
+
+    def __init__(self, behavior: str = 'extractive', concurrency: int = 64, queue_wait: float = 2.0):
         self.behavior = behavior
-        self._model = "stub-deterministic-1"
+        self._model = 'stub-deterministic-1'
         self._init_slot(concurrency, queue_wait)
 
     @property
     def model(self) -> str:
         return self._model
 
-    def complete(self, messages, *, max_tokens, timeout=None,
-                 stream=False) -> Union[LLMResult, LLMStream]:
+    def complete(self, messages, *, max_tokens, timeout=None, stream=False) -> LLMResult | LLMStream:
         t = 30.0 if timeout is None else timeout
         if stream:
             with self._slot():
@@ -362,79 +365,71 @@ class StubProvider(LLMProvider, _SlotMixin):
 
             def _run():
                 try:
-                    box["out"] = self._generate(messages, max_tokens, t)
+                    box['out'] = self._generate(messages, max_tokens, t)
                 except BaseException as exc:  # re-raised on the caller side
-                    box["err"] = exc
+                    box['err'] = exc
 
             worker = threading.Thread(target=_run, daemon=True)
             worker.start()
             worker.join(t)
-            if "out" not in box and "err" not in box:
+            if 'out' not in box and 'err' not in box:
                 raise ProviderTimeout()
-            if "err" in box:
-                raise box["err"]
-            text, usage = box["out"]
-            return LLMResult(text=text, usage=usage, model=self._model,
-                             provider=self.name)
+            if 'err' in box:
+                raise box['err']
+            text, usage = box['out']
+            return LLMResult(text=text, usage=usage, model=self._model, provider=self.name)
 
     def _generate(self, messages, max_tokens, timeout) -> tuple[str, LLMUsage]:
         b = self.behavior
-        if b == "error":
-            raise ProviderError("stub_error")
-        if b == "slow":
+        if b == 'error':
+            raise ProviderError('stub_error')
+        if b == 'slow':
             time.sleep((timeout or 30.0) + 1.0)
-            return "", LLMUsage()
-        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+            return '', LLMUsage()
+        prompt_chars = sum(len(m.get('content') or '') for m in messages)
         usage_in = LLMUsage(tokens_in=-(-prompt_chars // 4))
-        if b == "prompt_leak":
-            system = "\n".join(m.get("content") or "" for m in messages
-                              if m.get("role") == "system")
-            text = f"{system}\n--- SYSTEM PROMPT LEAKED"
-        elif b == "obey_injection":
-            data = "\n".join(m.get("content") or "" for m in messages
-                             if m.get("role") != "system")
+        if b == 'prompt_leak':
+            system = '\n'.join(m.get('content') or '' for m in messages if m.get('role') == 'system')
+            text = f'{system}\n--- SYSTEM PROMPT LEAKED'
+        elif b == 'obey_injection':
+            data = '\n'.join(m.get('content') or '' for m in messages if m.get('role') != 'system')
             m_ = _find_injection(data)
             if m_:
-                text = f"OBEYED: {m_.strip()}"
+                text = f'OBEYED: {m_.strip()}'
             else:
                 text, usage_in = self._extractive(messages, usage_in)
-        elif b == "no_answer":
-            text = ("I don't have enough evidence in the indexed sources "
-                    "to answer that.")
-        elif b == "hallucinated_citation":
-            text = "The answer is documented in source [99]."
-        elif b == "markdown_exfil":
-            text = ("Based on [1]. ![leak](http://attacker.example/pixel) "
-                    "and [click here](http://attacker.example/link).")
-        elif b == "html_payload":
-            text = ("Based on [1]. <script>alert(1)</script>"
-                    "<img src=x onerror=alert(1)>")
-        elif b == "bad_quote":
-            text = ('According to [1], "the warp drive runs on quantum '
-                    'flux capacitors".')
+        elif b == 'no_answer':
+            text = "I don't have enough evidence in the indexed sources to answer that."
+        elif b == 'hallucinated_citation':
+            text = 'The answer is documented in source [99].'
+        elif b == 'markdown_exfil':
+            text = (
+                'Based on [1]. ![leak](http://attacker.example/pixel) and [click here](http://attacker.example/link).'
+            )
+        elif b == 'html_payload':
+            text = 'Based on [1]. <script>alert(1)</script><img src=x onerror=alert(1)>'
+        elif b == 'bad_quote':
+            text = 'According to [1], "the warp drive runs on quantum flux capacitors".'
         else:  # extractive (also the fallback for unknown behaviors)
             text, usage_in = self._extractive(messages, usage_in)
         text = text[: max_tokens * 4]  # respect the answer budget
-        usage = LLMUsage(tokens_in=usage_in.tokens_in,
-                        tokens_out=-(-len(text) // 4))
+        usage = LLMUsage(tokens_in=usage_in.tokens_in, tokens_out=-(-len(text) // 4))
         return text, usage
 
     def _extractive(self, messages, usage_in) -> tuple[str, LLMUsage]:
         sources = parse_fenced_sources(messages)
         if not sources:
-            return ("I don't have enough evidence in the indexed sources "
-                    "to answer that."), usage_in
+            return ("I don't have enough evidence in the indexed sources to answer that."), usage_in
         top = sources[min(sources)]
         quote = _first_words(top, 12)
-        answer = (f"{_first_words(top, 40)} [1] "
-                  f'As the source states, "{quote}" [1]')
+        answer = f'{_first_words(top, 40)} [1] As the source states, "{quote}" [1]'
         return answer, usage_in
 
     def _to_stream(self, text: str, usage: LLMUsage) -> LLMStream:
         s = LLMStream(self._model, self.name)
-        words = text.split(" ")
+        words = text.split(' ')
         for i in range(0, len(words), 3):
-            s.add(" ".join(words[i:i + 3]) + " ")
+            s.add(' '.join(words[i : i + 3]) + ' ')
         s.set_usage(usage)
         s.finish()
         return s
@@ -444,54 +439,59 @@ class StubProvider(LLMProvider, _SlotMixin):
 # OpenAI-compatible adapter
 # ---------------------------------------------------------------------------
 
+
 class OpenAIProvider(LLMProvider, _SlotMixin):
     """Chat-completions over `requests`. NEXUS_LLM_BASE_URL retargets to any
     OpenAI-compatible server (local ones included)."""
 
-    name = "openai"
-    _DEFAULT_URL = "https://api.openai.com/v1"
+    name = 'openai'
+    _DEFAULT_URL = 'https://api.openai.com/v1'
 
     def __init__(self, config: RagConfig):
         self.config = config
         self._model = config.resolved_model()
-        self._base = (config.base_url or self._DEFAULT_URL).rstrip("/")
+        self._base = (config.base_url or self._DEFAULT_URL).rstrip('/')
         self._init_slot(config.concurrency, config.queue_wait)
 
     @property
     def model(self) -> str:
         return self._model
 
-    def complete(self, messages, *, max_tokens, timeout=None,
-                 stream=False) -> Union[LLMResult, LLMStream]:
+    def complete(self, messages, *, max_tokens, timeout=None, stream=False) -> LLMResult | LLMStream:
         t = self.config.timeout if timeout is None else timeout
         with self._slot():
             body = {
-                "model": self._model,
-                "messages": messages,
-                "temperature": self.config.temperature,
-                "max_tokens": max_tokens,
-                "stream": bool(stream),
+                'model': self._model,
+                'messages': messages,
+                'temperature': self.config.temperature,
+                'max_tokens': max_tokens,
+                'stream': bool(stream),
             }
-            headers = {"Content-Type": "application/json",
-                       "Authorization": f"Bearer {self.config.api_key}"}
-            data = _post_with_retries(f"{self._base}/chat/completions",
-                                      headers=headers, body=body,
-                                      timeout=t,
-                                      max_retries=self.config.max_retries,
-                                      stream_http=bool(stream))
+            headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {self.config.api_key}'}
+            data = _post_with_retries(
+                f'{self._base}/chat/completions',
+                headers=headers,
+                body=body,
+                timeout=t,
+                max_retries=self.config.max_retries,
+                stream_http=bool(stream),
+            )
             if stream:
                 return self._parse_stream(data, max_tokens)
             try:
                 data = data.json()
-                text = data["choices"][0]["message"].get("content") or ""
-                usage = data.get("usage") or {}
+                text = data['choices'][0]['message'].get('content') or ''
+                usage = data.get('usage') or {}
                 return LLMResult(
                     text=text,
-                    usage=LLMUsage(tokens_in=int(usage.get("prompt_tokens", 0)),
-                                   tokens_out=int(usage.get("completion_tokens", 0))),
-                    model=self._model, provider=self.name)
-            except (KeyError, TypeError, ValueError):
-                raise ProviderError("provider_bad_response") from None
+                    usage=LLMUsage(
+                        tokens_in=int(usage.get('prompt_tokens', 0)), tokens_out=int(usage.get('completion_tokens', 0))
+                    ),
+                    model=self._model,
+                    provider=self.name,
+                )
+            except KeyError, TypeError, ValueError:
+                raise ProviderError('provider_bad_response') from None
 
     def _parse_stream(self, resp, max_tokens: int) -> LLMStream:
         """Consume the SSE body into an LLMStream. Usage: estimated from
@@ -515,46 +515,45 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
                     total = 0
                     deadline = time.monotonic() + deadline_seconds
                     for raw_line in resp.iter_lines(decode_unicode=True):
-                        if not raw_line or not raw_line.startswith("data:"):
+                        if not raw_line or not raw_line.startswith('data:'):
                             continue
                         payload = raw_line[5:].strip()
-                        if payload == "[DONE]":
+                        if payload == '[DONE]':
                             break
                         if time.monotonic() > deadline:
-                            raise ProviderError("provider_stream_timeout")
+                            raise ProviderError('provider_stream_timeout')
                         try:
                             chunk = json.loads(payload)
                         except ValueError:
                             continue
-                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                        piece = delta.get("content")
+                        delta = (chunk.get('choices') or [{}])[0].get('delta', {})
+                        piece = delta.get('content')
                         if piece:
                             total += len(piece)
                             if total > cap:
-                                raise ProviderError("provider_stream_too_large")
+                                raise ProviderError('provider_stream_too_large')
                             stream.add(piece)
-                        usage = chunk.get("usage")
+                        usage = chunk.get('usage')
                         if usage:
-                            stream.set_usage(LLMUsage(
-                                tokens_in=int(usage.get("prompt_tokens", 0)),
-                                tokens_out=int(usage.get("completion_tokens", 0))))
+                            stream.set_usage(
+                                LLMUsage(
+                                    tokens_in=int(usage.get('prompt_tokens', 0)),
+                                    tokens_out=int(usage.get('completion_tokens', 0)),
+                                )
+                            )
                     if not stream.usage.tokens_in and not stream.usage.tokens_out:
                         joined = stream.text_so_far
-                        stream.set_usage(LLMUsage(tokens_in=-(-len(joined) // 4),
-                                                  tokens_out=-(-len(joined) // 4)))
+                        stream.set_usage(LLMUsage(tokens_in=-(-len(joined) // 4), tokens_out=-(-len(joined) // 4)))
             except requests.exceptions.RequestException:
                 stream.set_error(ProviderTimeout())
             except BaseException as exc:  # reader thread failure surfaces
-                stream.set_error(exc)     # via __next__, never swallowed
+                stream.set_error(exc)  # via __next__, never swallowed
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     resp.close()
-                except Exception:
-                    pass
                 stream.finish()
 
-        threading.Thread(target=_read, daemon=True,
-                         name="openai-sse-reader").start()
+        threading.Thread(target=_read, daemon=True, name='openai-sse-reader').start()
         return stream
 
 
@@ -562,63 +561,68 @@ class OpenAIProvider(LLMProvider, _SlotMixin):
 # Anthropic Messages adapter
 # ---------------------------------------------------------------------------
 
+
 class AnthropicProvider(LLMProvider, _SlotMixin):
-    name = "anthropic"
-    _DEFAULT_URL = "https://api.anthropic.com"
+    name = 'anthropic'
+    _DEFAULT_URL = 'https://api.anthropic.com'
 
     def __init__(self, config: RagConfig):
         self.config = config
         self._model = config.resolved_model()
-        self._base = (config.base_url or self._DEFAULT_URL).rstrip("/")
+        self._base = (config.base_url or self._DEFAULT_URL).rstrip('/')
         self._init_slot(config.concurrency, config.queue_wait)
 
     @property
     def model(self) -> str:
         return self._model
 
-    def complete(self, messages, *, max_tokens, timeout=None,
-                 stream=False) -> Union[LLMResult, LLMStream]:
+    def complete(self, messages, *, max_tokens, timeout=None, stream=False) -> LLMResult | LLMStream:
         t = self.config.timeout if timeout is None else timeout
         with self._slot():
-            system = "\n".join(m.get("content") or "" for m in messages
-                               if m.get("role") == "system")
-            rest = [m for m in messages if m.get("role") != "system"]
+            system = '\n'.join(m.get('content') or '' for m in messages if m.get('role') == 'system')
+            rest = [m for m in messages if m.get('role') != 'system']
             body = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": self.config.temperature,
-                "messages": rest,
-                "stream": bool(stream),
+                'model': self._model,
+                'max_tokens': max_tokens,
+                'temperature': self.config.temperature,
+                'messages': rest,
+                'stream': bool(stream),
             }
             if system:
-                body["system"] = system
+                body['system'] = system
             headers = {
-                "Content-Type": "application/json",
-                "x-api-key": self.config.api_key,
-                "anthropic-version": "2023-06-01",
+                'Content-Type': 'application/json',
+                'x-api-key': self.config.api_key,
+                'anthropic-version': '2023-06-01',
             }
-            data = _post_with_retries(f"{self._base}/v1/messages",
-                                      headers=headers, body=body,
-                                      timeout=t,
-                                      max_retries=self.config.max_retries,
-                                      stream_http=bool(stream))
+            data = _post_with_retries(
+                f'{self._base}/v1/messages',
+                headers=headers,
+                body=body,
+                timeout=t,
+                max_retries=self.config.max_retries,
+                stream_http=bool(stream),
+            )
             if stream:
                 return self._parse_stream(data, max_tokens)
             try:
                 data = data.json()
-                text = "".join(
-                    block.get("text", "")
-                    for block in data.get("content", [])
-                    if isinstance(block, dict)
-                    and block.get("type") == "text")
-                usage = data.get("usage") or {}
+                text = ''.join(
+                    block.get('text', '')
+                    for block in data.get('content', [])
+                    if isinstance(block, dict) and block.get('type') == 'text'
+                )
+                usage = data.get('usage') or {}
                 return LLMResult(
                     text=text,
-                    usage=LLMUsage(tokens_in=int(usage.get("input_tokens", 0)),
-                                   tokens_out=int(usage.get("output_tokens", 0))),
-                    model=self._model, provider=self.name)
-            except (KeyError, TypeError, ValueError):
-                raise ProviderError("provider_bad_response") from None
+                    usage=LLMUsage(
+                        tokens_in=int(usage.get('input_tokens', 0)), tokens_out=int(usage.get('output_tokens', 0))
+                    ),
+                    model=self._model,
+                    provider=self.name,
+                )
+            except KeyError, TypeError, ValueError:
+                raise ProviderError('provider_bad_response') from None
 
     def _parse_stream(self, data, max_tokens: int) -> LLMStream:
         """SKEP-R2/R3 (see OpenAIProvider._parse_stream): lazy reader
@@ -633,30 +637,32 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
                     total = 0
                     deadline = time.monotonic() + deadline_seconds
                     for raw_line in data.iter_lines(decode_unicode=True):
-                        if not raw_line or not raw_line.startswith("data:"):
+                        if not raw_line or not raw_line.startswith('data:'):
                             continue
                         if time.monotonic() > deadline:
-                            raise ProviderError("provider_stream_timeout")
+                            raise ProviderError('provider_stream_timeout')
                         try:
                             event = json.loads(raw_line[5:].strip())
                         except ValueError:
                             continue
-                        etype = event.get("type")
-                        if etype == "content_block_delta":
-                            piece = (event.get("delta") or {}).get("text")
+                        etype = event.get('type')
+                        if etype == 'content_block_delta':
+                            piece = (event.get('delta') or {}).get('text')
                             if piece:
                                 total += len(piece)
                                 if total > cap:
-                                    raise ProviderError(
-                                        "provider_stream_too_large")
+                                    raise ProviderError('provider_stream_too_large')
                                 stream.add(piece)
-                        elif etype == "message_delta":
-                            usage = event.get("usage") or {}
+                        elif etype == 'message_delta':
+                            usage = event.get('usage') or {}
                             if usage:
-                                stream.set_usage(LLMUsage(
-                                    tokens_in=int(usage.get("input_tokens", 0)),
-                                    tokens_out=int(usage.get("output_tokens", 0))))
-                        elif etype == "message_stop":
+                                stream.set_usage(
+                                    LLMUsage(
+                                        tokens_in=int(usage.get('input_tokens', 0)),
+                                        tokens_out=int(usage.get('output_tokens', 0)),
+                                    )
+                                )
+                        elif etype == 'message_stop':
                             break
                     if not stream.usage.tokens_out and stream.text_so_far:
                         joined = stream.text_so_far
@@ -666,23 +672,25 @@ class AnthropicProvider(LLMProvider, _SlotMixin):
             except BaseException as exc:
                 stream.set_error(exc)
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     data.close()
-                except Exception:
-                    pass
                 stream.finish()
 
-        threading.Thread(target=_read, daemon=True,
-                         name="anthropic-sse-reader").start()
+        threading.Thread(target=_read, daemon=True, name='anthropic-sse-reader').start()
         return stream
 
 
 # The interface is the export surface  adapters are chosen via config.
 __all__ = [
-    "LLMProvider", "LLMResult", "LLMUsage", "LLMStream",
-    "ProviderError", "ProviderTimeout", "ProviderBusy",
-    "StubProvider", "OpenAIProvider", "AnthropicProvider",
-    "parse_fenced_sources",
+    'AnthropicProvider',
+    'LLMProvider',
+    'LLMResult',
+    'LLMStream',
+    'LLMUsage',
+    'OpenAIProvider',
+    'ProviderBusy',
+    'ProviderError',
+    'ProviderTimeout',
+    'StubProvider',
+    'parse_fenced_sources',
 ]
-
-

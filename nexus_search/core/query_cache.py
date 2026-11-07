@@ -14,9 +14,9 @@ Invariants that keep this honest rather than a caching bug factory:
 - thread-safe: FastAPI runs sync endpoints on a threadpool, so get/set/clear
   can overlap; every mutation is guarded or miss-safe
 """
+
 import threading
 import time
-from typing import Optional
 
 
 class QueryCache:
@@ -37,7 +37,7 @@ class QueryCache:
         items = tuple(sorted((k, v) for k, v in params.items()))
         return (query, *items)
 
-    def get(self, key) -> Optional[object]:
+    def get(self, key) -> object | None:
         with self._lock:
             entry = self._items.get(key)
             if entry is None:
@@ -66,5 +66,4 @@ class QueryCache:
 
     def stats(self) -> dict:
         with self._lock:
-            return {"entries": len(self._items), "hits": self._hits,
-                    "misses": self._misses, "ttl_seconds": self.ttl}
+            return {'entries': len(self._items), 'hits': self._hits, 'misses': self._misses, 'ttl_seconds': self.ttl}

@@ -5,6 +5,7 @@ to normalize independently; keeping two subtly-drifting implementations is
 how ranking bugs are born, so both now import from here. The semantics are
 exactly the pre-existing hybrid_search ones.
 """
+
 import math
 
 

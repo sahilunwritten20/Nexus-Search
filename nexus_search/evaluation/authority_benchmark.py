@@ -14,6 +14,7 @@ Arms compared (rerank always on):
 
 Reports per-arm NDCG@10 / MRR plus the rank movement of hub/clique/orphan.
 """
+
 import argparse
 import json
 import os
@@ -28,12 +29,12 @@ from .metrics import evaluate_query
 
 CORPUS = [
     # (doc_id, url, inlink plan)
-    ("hub", "http://hub.com/page", "hub"),
-    ("clique", "http://c1.com/page", "clique"),
-    ("orphan", "http://orphan.com/page", "orphan"),
+    ('hub', 'http://hub.com/page', 'hub'),
+    ('clique', 'http://c1.com/page', 'clique'),
+    ('orphan', 'http://orphan.com/page', 'orphan'),
 ]
-QUERY = "search topic"
-RELEVANCE = {"hub": 3, "clique": 1, "orphan": 0}  # identical content:
+QUERY = 'search topic'
+RELEVANCE = {'hub': 3, 'clique': 1, 'orphan': 0}  # identical content:
 # the graph IS the only relevance signal, by construction
 
 
@@ -42,26 +43,26 @@ def _build(db_path: str):
     indexer = Indexer(storage)
     graph = LinkGraph(db_path)
     for doc_id, url, _ in CORPUS:
-        indexer.add_document(doc_id, "search topic content about ranking",
-                             title="Same", doc_type="web",
-                             metadata={"url": url})
+        indexer.add_document(
+            doc_id, 'search topic content about ranking', title='Same', doc_type='web', metadata={'url': url}
+        )
     for i in range(10):
-        graph.record_edge(f"http://d{i}.com", "http://hub.com/page",
-                          f"search topic reference {i}", "")
-    graph.record_edge("http://c1.com/page", "http://c2.com/page", "mutual", "")
-    graph.record_edge("http://c2.com/page", "http://c3.com/page", "mutual", "")
-    graph.record_edge("http://c3.com/page", "http://c1.com/page", "mutual", "")
-    graph.record_edge("http://orphan.com/page", "http://nowhere.com/", "out", "")
+        graph.record_edge(f'http://d{i}.com', 'http://hub.com/page', f'search topic reference {i}', '')
+    graph.record_edge('http://c1.com/page', 'http://c2.com/page', 'mutual', '')
+    graph.record_edge('http://c2.com/page', 'http://c3.com/page', 'mutual', '')
+    graph.record_edge('http://c3.com/page', 'http://c1.com/page', 'mutual', '')
+    graph.record_edge('http://orphan.com/page', 'http://nowhere.com/', 'out', '')
     compute_authority(graph, force=True)
     return storage, graph
 
 
-def run_authority_benchmark(db_path: str = None, quiet: bool = False) -> dict:
+def run_authority_benchmark(db_path: str | None = None, quiet: bool = False) -> dict:
     import tempfile
+
     tmpdir = None
     if db_path is None:
         tmpdir = tempfile.TemporaryDirectory()
-        db_path = os.path.join(tmpdir.name, "bench.db")
+        db_path = os.path.join(tmpdir.name, 'bench.db')
     storage, graph = _build(db_path)
     try:
         hybrid = HybridSearch(storage, db_path=db_path)
@@ -72,32 +73,32 @@ def run_authority_benchmark(db_path: str = None, quiet: bool = False) -> dict:
         retrieval_order = [r.doc_id for r in page.results]
 
         def arm(weights: RankingWeights):
-            ranked = rerank(page.results, QUERY, weights=weights,
-                            storage=storage, link_intel=graph)
+            ranked = rerank(page.results, QUERY, weights=weights, storage=storage, link_intel=graph)
             order = [r.doc_id for r in ranked]
             metrics = evaluate_query(RELEVANCE, order, k_values=[10])
             return order, metrics
 
         base_order, base_metrics = arm(RankingWeights())
-        auth_order, auth_metrics = arm(RankingWeights(
-            source_authority=0.2, popularity=0.1, anchor_relevance=0.1))
+        auth_order, auth_metrics = arm(RankingWeights(source_authority=0.2, popularity=0.1, anchor_relevance=0.1))
 
         def movement(order):
-            return {doc_id: (retrieval_order.index(doc_id) + 1
-                             if doc_id in retrieval_order else None,
-                             order.index(doc_id) + 1)
-                    for doc_id, _, _ in CORPUS}
+            return {
+                doc_id: (
+                    retrieval_order.index(doc_id) + 1 if doc_id in retrieval_order else None,
+                    order.index(doc_id) + 1,
+                )
+                for doc_id, _, _ in CORPUS
+            }
 
         result = {
-            "query": QUERY,
-            "retrieval_order": retrieval_order,
-            "baseline_order": base_order,
-            "authority_on_order": auth_order,
-            "rank_movement": {"baseline": movement(base_order),
-                              "authority_on": movement(auth_order)},
-            "baseline": {k: base_metrics[k] for k in ("ndcg@10", "mrr")},
-            "authority_on": {k: auth_metrics[k] for k in ("ndcg@10", "mrr")},
-            "ground_truth": RELEVANCE,
+            'query': QUERY,
+            'retrieval_order': retrieval_order,
+            'baseline_order': base_order,
+            'authority_on_order': auth_order,
+            'rank_movement': {'baseline': movement(base_order), 'authority_on': movement(auth_order)},
+            'baseline': {k: base_metrics[k] for k in ('ndcg@10', 'mrr')},
+            'authority_on': {k: auth_metrics[k] for k in ('ndcg@10', 'mrr')},
+            'ground_truth': RELEVANCE,
         }
     finally:
         graph.close()
@@ -113,18 +114,18 @@ def run_authority_benchmark(db_path: str = None, quiet: bool = False) -> dict:
 def main(argv=None) -> int:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
     result = run_authority_benchmark()
-    print("\n=== Authority on/off (mission shape) ===")
-    print(f"retrieval order : {result['retrieval_order']}")
-    print(f"baseline (0.0)  : {result['baseline_order']}  "
-          f"NDCG@10={result['baseline']['ndcg@10']:.3f}")
-    print(f"authority ON    : {result['authority_on_order']}  "
-          f"NDCG@10={result['authority_on']['ndcg@10']:.3f}")
-    ok = result["authority_on"]["ndcg@10"] >= result["baseline"]["ndcg@10"]
-    print(f"ndcg_delta      : "
-          f"{result['authority_on']['ndcg@10'] - result['baseline']['ndcg@10']:+.3f} "
-          f"({'uplift' if ok else 'REGRESSION'})")
+    print('\n=== Authority on/off (mission shape) ===')
+    print(f'retrieval order : {result["retrieval_order"]}')
+    print(f'baseline (0.0)  : {result["baseline_order"]}  NDCG@10={result["baseline"]["ndcg@10"]:.3f}')
+    print(f'authority ON    : {result["authority_on_order"]}  NDCG@10={result["authority_on"]["ndcg@10"]:.3f}')
+    ok = result['authority_on']['ndcg@10'] >= result['baseline']['ndcg@10']
+    print(
+        f'ndcg_delta      : '
+        f'{result["authority_on"]["ndcg@10"] - result["baseline"]["ndcg@10"]:+.3f} '
+        f'({"uplift" if ok else "REGRESSION"})'
+    )
     return 0 if ok else 1
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

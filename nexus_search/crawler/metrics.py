@@ -5,7 +5,6 @@ import time
 
 
 class CrawlerMetrics:
-
     def __init__(self):
 
         self.lock = threading.Lock()
@@ -24,11 +23,8 @@ class CrawlerMetrics:
     ):
 
         with self.lock:
-
             self.crawled += 1
-            self.bytes_downloaded += (
-                bytes_downloaded
-            )
+            self.bytes_downloaded += bytes_downloaded
 
     def record_skipped(self):
 
@@ -48,23 +44,22 @@ class CrawlerMetrics:
     def snapshot(self) -> dict:
 
         with self.lock:
-
             elapsed = max(
                 0.001,
                 time.time() - self.started_at,
             )
 
             return {
-                "crawled": self.crawled,
-                "skipped": self.skipped,
-                "errors": self.errors,
-                "not_modified": self.not_modified,
-                "bytes_downloaded": self.bytes_downloaded,
-                "elapsed_seconds": round(
+                'crawled': self.crawled,
+                'skipped': self.skipped,
+                'errors': self.errors,
+                'not_modified': self.not_modified,
+                'bytes_downloaded': self.bytes_downloaded,
+                'elapsed_seconds': round(
                     elapsed,
                     3,
                 ),
-                "pages_per_second": round(
+                'pages_per_second': round(
                     self.crawled / elapsed,
                     3,
                 ),

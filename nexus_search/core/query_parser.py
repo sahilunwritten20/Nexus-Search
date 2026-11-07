@@ -27,31 +27,32 @@ memoized per query string (it is a pure function) with defensive copies on
 every hit, because one /search request parses the same query up to four
 times (understanding, retrieval, facet pass).
 """
+
 import os
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 
 from .tokenizer import tokenize
 
-_PHRASE_RE = r'"((?:[^"\\]|\\.)*)"'       # quoted, with \" escapes
+_PHRASE_RE = r'"((?:[^"\\]|\\.)*)"'  # quoted, with \" escapes
 # atom = [field:"phrase"] | ["phrase"] | [word]
 _ATOM_RE = re.compile(rf'([A-Za-z_]+):{_PHRASE_RE}|{_PHRASE_RE}|(\S+)')
 
-_OPERATORS = {"AND", "OR", "NOT"}
+_OPERATORS = {'AND', 'OR', 'NOT'}
 
-FILTER_KEYS = {"type", "doc_type", "lang", "language"}
-FILTER_KEY_MAP = {"type": "doc_type", "doc_type": "doc_type",
-                  "lang": "language", "language": "language"}
-FIELD_KEYS = {"title"}
+FILTER_KEYS = {'type', 'doc_type', 'lang', 'language'}
+FILTER_KEY_MAP = {'type': 'doc_type', 'doc_type': 'doc_type', 'lang': 'language', 'language': 'language'}
+FIELD_KEYS = {'title'}
 
 
 def _unescape(text: str) -> str:
-    return re.sub(r"\\(.)", r"\1", text)
+    return re.sub(r'\\(.)', r'\1', text)
 
 
 @dataclass
 class Group:
     """One OR-branch of the boolean query."""
+
     required: list[str] = field(default_factory=list)
     optional: list[str] = field(default_factory=list)
     required_phrases: list[str] = field(default_factory=list)
@@ -69,17 +70,17 @@ class Group:
 
     @staticmethod
     def any_term() -> str:
-        return "any"
+        return 'any'
 
 
 @dataclass
 class ParsedQuery:
-    terms: list[str] = field(default_factory=list)       # flat, positive terms
-    phrases: list[str] = field(default_factory=list)     # required phrases
+    terms: list[str] = field(default_factory=list)  # flat, positive terms
+    phrases: list[str] = field(default_factory=list)  # required phrases
     filters: dict[str, str] = field(default_factory=dict)
     not_filters: dict[str, str] = field(default_factory=dict)  # -type:pdf / NOT type:pdf
-    text: str = ""
-    groups: list[Group] = field(default_factory=list)    # boolean structure
+    text: str = ''
+    groups: list[Group] = field(default_factory=list)  # boolean structure
     # set when the term/phrase caps below dropped part of the query
     terms_truncated: bool = False
     phrases_truncated: bool = False
@@ -87,11 +88,16 @@ class ParsedQuery:
     @property
     def has_boolean(self) -> bool:
         """True iff any non-trivial boolean structure is in play."""
-        changed = (len(self.groups) > 1
-                   or (self.groups and (self.groups[0].required or self.groups[0].excluded
-                                         or self.groups[0].excluded_phrases
-                                         or self.groups[0].title_terms
-                                         or self.groups[0].title_phrases)))
+        changed = len(self.groups) > 1 or (
+            self.groups
+            and (
+                self.groups[0].required
+                or self.groups[0].excluded
+                or self.groups[0].excluded_phrases
+                or self.groups[0].title_terms
+                or self.groups[0].title_phrases
+            )
+        )
         return bool(changed)
 
 
@@ -104,9 +110,9 @@ def _split_tokens(query: str) -> list[tuple[str, bool, str]]:
         if field_phrase is not None:
             atoms.append((field_phrase, True, field_key_))
         elif phrase is not None:
-            atoms.append((phrase, True, ""))
+            atoms.append((phrase, True, ''))
         elif word:
-            atoms.append((word, False, ""))
+            atoms.append((word, False, ''))
     return atoms
 
 
@@ -121,7 +127,7 @@ def parse_query(query: str) -> ParsedQuery:
 
 
 def _max_query_terms() -> int:
-    raw = (os.environ.get("NEXUS_MAX_QUERY_TERMS") or "").strip()
+    raw = (os.environ.get('NEXUS_MAX_QUERY_TERMS') or '').strip()
     try:
         value = int(raw)
     except ValueError:
@@ -135,7 +141,7 @@ def _max_query_terms() -> int:
 _MAX_QUERY_PHRASES = 64
 
 
-from functools import lru_cache  # noqa: E402
+from functools import lru_cache  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 @lru_cache(maxsize=512)
@@ -160,13 +166,16 @@ def _copy_parsed(parsed: ParsedQuery) -> ParsedQuery:
         not_filters=dict(parsed.not_filters),
         text=parsed.text,
         groups=[
-            Group(required=list(g.required), optional=list(g.optional),
-                  required_phrases=list(g.required_phrases),
-                  optional_phrases=list(g.optional_phrases),
-                  excluded=list(g.excluded),
-                  excluded_phrases=list(g.excluded_phrases),
-                  title_terms=list(g.title_terms),
-                  title_phrases=list(g.title_phrases))
+            Group(
+                required=list(g.required),
+                optional=list(g.optional),
+                required_phrases=list(g.required_phrases),
+                optional_phrases=list(g.optional_phrases),
+                excluded=list(g.excluded),
+                excluded_phrases=list(g.excluded_phrases),
+                title_terms=list(g.title_terms),
+                title_phrases=list(g.title_phrases),
+            )
             for g in parsed.groups
         ],
         terms_truncated=parsed.terms_truncated,
@@ -197,7 +206,7 @@ def _parse_query_uncapped(query: str) -> ParsedQuery:
     def current() -> Group:
         return groups[-1]
 
-    def add_term(raw: str, is_phrase: bool, field: str = ""):
+    def add_term(raw: str, is_phrase: bool, field: str = ''):
         nonlocal pending_and, pending_not
         value = _unescape(raw) if is_phrase else raw
 
@@ -212,9 +221,9 @@ def _parse_query_uncapped(query: str) -> ParsedQuery:
             return
         if is_phrase and field and not field_title:
             # unknown field on a phrase: keep as plain phrase terms
-            field = ""
-        if not is_phrase and ":" in value and not value.startswith("\\"):
-            key, _, rest = value.partition(":")
+            field = ''
+        if not is_phrase and ':' in value and not value.startswith('\\'):
+            key, _, rest = value.partition(':')
             key_l = key.lower().strip()
             rest = rest.strip()
             if key_l in FILTER_KEYS:
@@ -241,8 +250,8 @@ def _parse_query_uncapped(query: str) -> ParsedQuery:
                     parsed.phrases.append(value.lower())
             else:
                 target.extend(toks)
-                parsed.terms.extend(toks)   # still a BM25 candidate term;
-            words_for_text.append(value)    # the gate enforces title placement
+                parsed.terms.extend(toks)  # still a BM25 candidate term;
+            words_for_text.append(value)  # the gate enforces title placement
             return
 
         if negated:
@@ -277,10 +286,10 @@ def _parse_query_uncapped(query: str) -> ParsedQuery:
 
     for raw, is_phrase, field_key in atoms:
         if not is_phrase and raw in _OPERATORS:
-            if raw == "OR":
+            if raw == 'OR':
                 groups.append(Group())
                 pending_and = pending_not = False
-            elif raw == "AND":
+            elif raw == 'AND':
                 _promote_last_optional(current())
                 pending_and = True
             else:  # NOT
@@ -288,21 +297,31 @@ def _parse_query_uncapped(query: str) -> ParsedQuery:
             continue
         # -prefix negation (binds like NOT). Repeated leading dashes fold to
         # one: "--foo" is a typo for "-foo", not a positive term "foo".
-        if not is_phrase and raw.startswith("-") and raw.lstrip("-"):
+        if not is_phrase and raw.startswith('-') and raw.lstrip('-'):
             pending_not = True
-            raw = raw.lstrip("-")
+            raw = raw.lstrip('-')
         add_term(raw, is_phrase, field_key)
 
     # A NOT that swallowed nothing is dropped; empty groups from a trailing
     # OR are dropped too — malformed tails must not change results.
-    groups = [g for g in groups if (g.required or g.optional or g.excluded
-                                    or g.required_phrases or g.optional_phrases
-                                    or g.excluded_phrases or g.title_terms
-                                    or g.title_phrases)]
+    groups = [
+        g
+        for g in groups
+        if (
+            g.required
+            or g.optional
+            or g.excluded
+            or g.required_phrases
+            or g.optional_phrases
+            or g.excluded_phrases
+            or g.title_terms
+            or g.title_phrases
+        )
+    ]
     if not groups and (parsed.terms or parsed.phrases):
         groups = [Group(optional=[], optional_phrases=list(parsed.phrases))]
     parsed.groups = groups
-    parsed.text = " ".join(words_for_text)
+    parsed.text = ' '.join(words_for_text)
     return parsed
 
 
@@ -310,7 +329,7 @@ def _phrase_in(tokens, phrase: list[str]) -> bool:
     """Token-sequence match, sequence-type agnostic (tuples vs lists)."""
     ph = tuple(phrase)
     n = len(ph)
-    return n > 0 and any(tuple(tokens[i:i + n]) == ph for i in range(len(tokens) - n + 1))
+    return n > 0 and any(tuple(tokens[i : i + n]) == ph for i in range(len(tokens) - n + 1))
 
 
 def group_match(doc_tokens: list[str], title_tokens: list[str], group: Group) -> bool:
@@ -339,7 +358,8 @@ def group_match(doc_tokens: list[str], title_tokens: list[str], group: Group) ->
         return True
     if group.optional or group.optional_phrases:
         return any(t in doc_set for t in group.optional) or any(
-            _phrase_in(doc_tokens, tokenize(ph)) for ph in group.optional_phrases)
+            _phrase_in(doc_tokens, tokenize(ph)) for ph in group.optional_phrases
+        )
     return False
 
 

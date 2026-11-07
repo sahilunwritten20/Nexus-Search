@@ -826,7 +826,7 @@ class TestFilesConnectorCoverageRemaining(unittest.TestCase):
             func = getattr(__import__('nexus_search.ingestion.connectors.files', fromlist=[func_name]), func_name)
             source = inspect.getsource(func)
             self.assertIn('except ImportError:', source)
-            self.assertIn('return ""', source)
+            self.assertIn("return ''", source)
 
     def test_read_file_routing(self):
         """Test read_file routing logic (lines 841-851, 853-854, 881-882)"""

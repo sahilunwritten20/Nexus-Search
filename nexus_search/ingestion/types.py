@@ -1,4 +1,5 @@
 """Shared type all ingestion connectors produce, regardless of source."""
+
 from dataclasses import dataclass, field
 
 

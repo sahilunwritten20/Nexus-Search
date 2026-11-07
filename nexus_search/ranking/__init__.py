@@ -7,20 +7,41 @@ Query understanding (ranking.query), ranking signals/features
 the rest of the project's philosophy: heuristics are honest heuristics, and
 signals that have no real data source yet are placeholders that say so.
 """
+
+from .ab import ExperimentLog, assign_variant
+from .features import RankingFeatures, SignalContext, build_context, extract_features
 from .query import (
-    QueryUnderstanding, SynonymMap, normalize_query, correct_spelling,
-    expand_synonyms, detect_language, detect_intent, extract_entities,
+    QueryUnderstanding,
+    SynonymMap,
+    correct_spelling,
+    detect_intent,
+    detect_language,
+    expand_synonyms,
+    extract_entities,
+    normalize_query,
     understand_query,
 )
-from .features import RankingFeatures, SignalContext, build_context, extract_features
 from .ranker import RankedResult, RankingModel, RankingWeights, WeightedSumModel, rerank
-from .ab import ExperimentLog, assign_variant
 
 __all__ = [
-    "QueryUnderstanding", "SynonymMap", "normalize_query", "correct_spelling",
-    "expand_synonyms", "detect_language", "detect_intent", "extract_entities",
-    "understand_query",
-    "RankingFeatures", "SignalContext", "build_context", "extract_features",
-    "RankedResult", "RankingModel", "RankingWeights", "WeightedSumModel", "rerank",
-    "ExperimentLog", "assign_variant",
+    'ExperimentLog',
+    'QueryUnderstanding',
+    'RankedResult',
+    'RankingFeatures',
+    'RankingModel',
+    'RankingWeights',
+    'SignalContext',
+    'SynonymMap',
+    'WeightedSumModel',
+    'assign_variant',
+    'build_context',
+    'correct_spelling',
+    'detect_intent',
+    'detect_language',
+    'expand_synonyms',
+    'extract_entities',
+    'extract_features',
+    'normalize_query',
+    'rerank',
+    'understand_query',
 ]

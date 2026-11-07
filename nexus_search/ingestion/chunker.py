@@ -12,11 +12,11 @@ def chunk_text(
     if not text:
         return []
     if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than 0")
+        raise ValueError('chunk_size must be greater than 0')
     if overlap < 0:
-        raise ValueError("overlap cannot be negative")
+        raise ValueError('overlap cannot be negative')
     if overlap >= chunk_size:
-        raise ValueError("overlap must be smaller than chunk_size")
+        raise ValueError('overlap must be smaller than chunk_size')
     if len(text) <= chunk_size:
         return [text]
 
@@ -25,7 +25,7 @@ def chunk_text(
     while start < len(text):
         end = min(start + chunk_size, len(text))
         if snap_to_space and end < len(text):
-            cut = text.rfind(" ", start + chunk_size // 2, end)
+            cut = text.rfind(' ', start + chunk_size // 2, end)
             if cut != -1:
                 end = cut
         chunks.append(text[start:end])

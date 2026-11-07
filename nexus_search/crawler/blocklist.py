@@ -9,6 +9,7 @@ Precedence: blocklist > robots.txt > allow-list. A blocked URL is skipped
 silently by the pipeline and NOT marked visited, so unblocking is effective
 "the moment it's happy again" (no stale visit records to evict).
 """
+
 import sqlite3
 import threading
 import time
@@ -26,33 +27,31 @@ CREATE TABLE IF NOT EXISTS blocklist (
 
 
 class Blocklist:
-    def __init__(self, db_path: str = "crawler.db"):
+    def __init__(self, db_path: str = 'crawler.db'):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self.conn.execute('PRAGMA busy_timeout = 5000')
         self.lock = threading.RLock()
         with self.lock:
             # Versioned like the other stores: v1 is this schema as-is;
             # columns added later become v2, ... (see core/migrations.py)
-            self.schema_version = apply_migrations(
-                self.conn, "blocklist", [(1, SCHEMA)]
-            )
+            self.schema_version = apply_migrations(self.conn, 'blocklist', [(1, SCHEMA)])
 
     @staticmethod
     def _host_of(url_or_host: str) -> str:
         host = urlsplit(url_or_host).hostname or url_or_host
-        return host.strip().lower().lstrip(".")
+        return host.strip().lower().lstrip('.')
 
-    def block(self, url_or_host: str, reason: str = "") -> None:
+    def block(self, url_or_host: str, reason: str = '') -> None:
         with self.lock:
             self.conn.execute(
-                "INSERT OR REPLACE INTO blocklist (host, reason, created_at) VALUES (?,?,?)",
-                (self._host_of(url_or_host), reason, time.time()))
+                'INSERT OR REPLACE INTO blocklist (host, reason, created_at) VALUES (?,?,?)',
+                (self._host_of(url_or_host), reason, time.time()),
+            )
             self.conn.commit()
 
     def unblock(self, url_or_host: str) -> bool:
         with self.lock:
-            cur = self.conn.execute(
-                "DELETE FROM blocklist WHERE host = ?", (self._host_of(url_or_host),))
+            cur = self.conn.execute('DELETE FROM blocklist WHERE host = ?', (self._host_of(url_or_host),))
             self.conn.commit()
             return cur.rowcount > 0
 
@@ -61,23 +60,21 @@ class Blocklist:
         if not host:
             return False
         with self.lock:
-            cur = self.conn.execute("SELECT 1 FROM blocklist WHERE host = ?", (host,))
+            cur = self.conn.execute('SELECT 1 FROM blocklist WHERE host = ?', (host,))
             if cur.fetchone():
                 return True
             # parent-domain block counts for subdomains (opt-out of "example.com"
             # has to include "blog.example.com", operators' mental model)
-            parts = host.split(".")
+            parts = host.split('.')
             for i in range(1, len(parts) - 1):
-                parent = ".".join(parts[i:])
-                if self.conn.execute(
-                        "SELECT 1 FROM blocklist WHERE host = ?", (parent,)).fetchone():
+                parent = '.'.join(parts[i:])
+                if self.conn.execute('SELECT 1 FROM blocklist WHERE host = ?', (parent,)).fetchone():
                     return True
         return False
 
     def list_all(self) -> list[tuple]:
         with self.lock:
-            return self.conn.execute(
-                "SELECT host, reason, created_at FROM blocklist ORDER BY host").fetchall()
+            return self.conn.execute('SELECT host, reason, created_at FROM blocklist ORDER BY host').fetchall()
 
     def close(self):
         with self.lock:

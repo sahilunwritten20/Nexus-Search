@@ -1,36 +1,36 @@
 """Product connector: parses CSV/JSON product catalogs into indexable documents."""
+
 import csv
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..types import IngestDoc
 from .files import _detect_encoding  # shared BOM/cp1252 handling, not a copy
 
 
 def _product_to_doc(product: dict, source: str, index: int) -> IngestDoc:
-    raw_id = product.get("id") or product.get("sku") or f"{source}-{index}"
+    raw_id = product.get('id') or product.get('sku') or f'{source}-{index}'
     doc_id = str(raw_id)
-    title = str(product.get("name") or product.get("title") or doc_id)
+    title = str(product.get('name') or product.get('title') or doc_id)
 
     # Index every scalar field's value so name, description, category etc.
     # are all searchable together, not just whichever field we called "title".
     parts = [str(v) for v in product.values() if isinstance(v, (str, int, float))]
-    content = " ".join(parts)
+    content = ' '.join(parts)
 
     metadata = {k: v for k, v in product.items() if isinstance(v, (str, int, float, bool))}
 
-    return IngestDoc(doc_id=f"product:{doc_id}", title=title, content=content,
-                      doc_type="product", metadata=metadata)
+    return IngestDoc(doc_id=f'product:{doc_id}', title=title, content=content, doc_type='product', metadata=metadata)
 
 
 def iter_products_csv(path: str) -> Iterator[IngestDoc]:
     """cp1252/latin-1 catalog exports are common (Excel); the files
     connector's detector + replacement decode beats a hard UTF-8 crash."""
     p = Path(path)
-    with p.open("rb") as probe:
+    with p.open('rb') as probe:
         encoding = _detect_encoding(probe.read(65536))
-    with p.open(newline="", encoding=encoding, errors="replace") as f:
+    with p.open(newline='', encoding=encoding, errors='replace') as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
             yield _product_to_doc(dict(row), source=p.stem, index=i)
@@ -38,17 +38,17 @@ def iter_products_csv(path: str) -> Iterator[IngestDoc]:
 
 def iter_products_json(path: str) -> Iterator[IngestDoc]:
     p = Path(path)
-    data = json.loads(p.read_text(encoding="utf-8"))
-    records = data if isinstance(data, list) else data.get("products", [])
+    data = json.loads(p.read_text(encoding='utf-8'))
+    records = data if isinstance(data, list) else data.get('products', [])
     for i, record in enumerate(records):
         yield _product_to_doc(record, source=p.stem, index=i)
 
 
 def iter_products(path: str) -> Iterator[IngestDoc]:
     p = Path(path)
-    if p.suffix.lower() == ".csv":
+    if p.suffix.lower() == '.csv':
         yield from iter_products_csv(path)
-    elif p.suffix.lower() == ".json":
+    elif p.suffix.lower() == '.json':
         yield from iter_products_json(path)
     else:
-        raise ValueError(f"Unsupported product file type: {p.suffix} (use .csv or .json)")
+        raise ValueError(f'Unsupported product file type: {p.suffix} (use .csv or .json)')

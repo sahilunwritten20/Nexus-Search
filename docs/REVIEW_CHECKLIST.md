@@ -51,7 +51,7 @@ Severity: P0/P1/P2/P3. Evidence = test name, command, or file:line.
 | NDCG-EMPTY | P3 (effects P2) | ndcg_at_k returned 1.0 for zero-relevant queries — inflated ALL published aggregate NDCG by no-answer free 1.0s | FIXED | 9620f14 | test_benchmark::test_ndcg_with_no_relevant_docs_is_zero_not_perfect; floors re-derived |
 | SESSION-DEADCHECK | P3 | SqliteSessionStore.get dead first TTL check (last_used just set) | FIXED | 60c221f | existing TTL tests (test_sqlite_store_roundtrip_and_ttl_prune) |
 | ROBOTS-WILDCARD | P2 | stdlib robotparser lacks RFC 9309 * / $ wildcards + longest-match (documented) | OPEN — B3 decision: implement RFC 9309 matcher (no new deps) | - | - |
-| COVERAGE-GATE | P2 | Full-suite: 90% line / 89% branch overall. Core (excl. evaluation): 93% line / 91% branch ✅ 92/85 gate. Security-critical (97/90 floor): 9/13 MET (storage 99%, security 98%, sanitize 99%, egress 100%, gate 97%, retrieval 97%, fetcher 99%, url_utils 100%, models 97%); 4 NOT MET: api 86/81, session 96/95, files 88/93, calibration 90/90, __main__ 94/90 | INPROG | docs/CANONICAL_COVERAGE.md |
+| COVERAGE-GATE | P2 | Full-suite: 90% line / 89% branch overall. Core (excl. evaluation): 93% line / 91% branch ✅ 92/85 gate. Security-critical (97/90 floor): 9/13 MET (storage 99%, security 98%, sanitize 99%, egress 100%, gate 97%, retrieval 97%, fetcher 99%, url_utils 100%, models 97%); 5 NOT MET: api 86/81, session 96/95, files 88/93, calibration 90/90, __main__ 94/90 | INPROG | docs/CANONICAL_COVERAGE.md |
 | NOQA-DEBT | P2 | 94 unused noqa (RUF100) + 57 unused imports + BOM file | OPEN (A5-7) | - | ruff baseline S1.4 |
 | EGRESS-COV | P1 | egress.py lifted from 76% → 100% line, 100% branch | FIXED | abd45bc | tests/rag/test_egress.py (TestLLMAdded) |
 | SANITIZE-COV | P1 | sanitize.py lifted from 70% → 100% line, 100% branch | FIXED | abd45bc | tests/rag/test_sanitize_scrubber.py |
@@ -60,6 +60,21 @@ Severity: P0/P1/P2/P3. Evidence = test name, command, or file:line.
 | FILES-COV | P1 | files.py lifted from 70% → 87% line, 93% branch | INPROG | - | tests/ingestion/test_files_coverage.py |
 | FETCHER-COV | P1 | fetcher.py lifted from 68% → 98% line, 97% branch | FIXED | abd45bc | tests/crawler/test_fetcher_coverage.py |
 | API-COV | P1 | api.py at 55% line, needs 92% | NOT STARTED | - | - |
+| EXFIL-PARTIAL | P2 | Unterminated markdown link/image forms survived sanitization (fuzz-found) | FIXED | c299665 | test_sanitize_fuzz (600 payload soups, zero channels) |
+| PR-CONVERGE | P2 | PageRank 30-iter cap shipped non-converged scores on hub-heavy graphs | FIXED | 8b9f76b | test_pagerank_differential (8 shapes vs networkx) |
+| RETRY-AFTER | P3 | Budget 429 Retry-After flat 3600 under-stated resets by up to 23h | FIXED | f7de1c8 | test_budget_rollover (seconds to UTC midnight) |
+| REDTEAM-FILTERS | P2 | Unknown filter keys on /ask escaped as 500 with internals | FIXED | e277d54 | test_red_team (clean 400 on /ask + /ask/stream) |
+| SKEP-1 | P1 | Robots matcher regex backtracking hung process (attacker robots.txt '/a*a*...*b') | FIXED | 5afb8e7 | test_skeptic_round2 (linear two-pointer glob) |
+| SKEP-2 | P2 | Crawl-delay unvalidated (3-year sleeps, NaN/-5 disabled pacing) | FIXED | 5afb8e7 | test_skeptic_round2 (clamp [0,60]) |
+| SKEP-3 | P2 | Redirect hops bypassed target-domain pacing | FIXED | 5afb8e7 | test_skeptic_round2 (hop pacing) |
+| SKEP-4 | P3 | Sitemap index children + loc URLs skipped blocklist | FIXED | 5afb8e7 | test_skeptic_round2 (blocklist gate) |
+| SKEP-5 | P3 | Pinned hosts fell back to REAL DNS for service-name ports | FIXED | 5afb8e7 | test_skeptic_round2 (fail closed on gaierror) |
+| SKEP-R1 | P1 | /ask/stream token events bypassed scrub_leaks AND moderator (system prompt + nonce leaked) | FIXED | 81b78d7 | test_skeptic_rag_round2 (StreamLeakScrubber) |
+| SKEP-R2 | P1 | Real adapters buffered entire SSE body before any cap (requests.post without stream=True) | FIXED | 81b78d7 | test_skeptic_rag_round2 (lazy reader threads) |
+| SKEP-R3 | P2 | worker.join(timeout) bounded whole buffered parse; zombie workers held slots | FIXED | 81b78d7 | test_skeptic_rag_round2 (reader threads) |
+| SKEP-R4 | P2 | CommonMark reference-definition links weaponized citation markers | FIXED | 81b78d7 | test_skeptic_rag_round2 (ref-def + full-ref regexes) |
+| SKEP-R5 | P2 | Disconnects settled nothing; condense spend unbilled on streams | FIXED | 81b78d7 | test_skeptic_rag_round2 (disconnect settles + condense) |
+| SKEP-R6..R13 | P3 | Session-turn parity, filter validation, removal counts, TTL parity, separator collision, corpus determinism, stream_limit honesty | FIXED | 81b78d7 | test_skeptic_rag_round2 (14 tests) |
 
 ## Phase B — Per-Phase Adversarial Audit
 

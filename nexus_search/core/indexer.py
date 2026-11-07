@@ -1,12 +1,13 @@
 """Indexing: turns raw documents into tokenized postings in storage."""
+
 import logging
 from collections import Counter
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .storage import Storage
 from .tokenizer import tokenize
 
-logger = logging.getLogger("nexus_search.indexer")
+logger = logging.getLogger('nexus_search.indexer')
 
 DocIdCallback = Callable[[str], None]
 
@@ -14,59 +15,64 @@ DocIdCallback = Callable[[str], None]
 class Indexer:
     def __init__(self, storage: Storage):
         self.storage = storage
-        self._listeners: dict[str, list[DocIdCallback]] = {"indexed": [], "deleted": []}
+        self._listeners: dict[str, list[DocIdCallback]] = {'indexed': [], 'deleted': []}
 
     def subscribe(
         self,
-        on_indexed: Optional[DocIdCallback] = None,
-        on_deleted: Optional[DocIdCallback] = None,
+        on_indexed: DocIdCallback | None = None,
+        on_deleted: DocIdCallback | None = None,
     ) -> None:
         """Register callbacks that receive a doc_id AFTER the change is committed
         (Phase 4 uses this to keep vector embeddings in sync). A callback that
         raises is logged and never breaks indexing."""
         if on_indexed:
-            self._listeners["indexed"].append(on_indexed)
+            self._listeners['indexed'].append(on_indexed)
         if on_deleted:
-            self._listeners["deleted"].append(on_deleted)
+            self._listeners['deleted'].append(on_deleted)
 
     def _emit(self, event: str, doc_id: str) -> None:
         for callback in list(self._listeners[event]):
             try:
                 callback(doc_id)
             except Exception:
-                logger.exception("%s listener failed for %s", event, doc_id)
+                logger.exception('%s listener failed for %s', event, doc_id)
 
     def add_document(
         self,
         doc_id: str,
         content: str,
-        title: str = "",
-        doc_type: str = "text",
-        metadata: Optional[dict] = None,
+        title: str = '',
+        doc_type: str = 'text',
+        metadata: dict | None = None,
     ):
         """Tokenize and (re)index a document. Calling this again with the
         same doc_id replaces its previous content and postings entirely."""
-        tokens = tokenize(f"{title} {content}")
+        tokens = tokenize(f'{title} {content}')
         term_freqs = Counter(tokens)
         # one explicit transaction: the document row and its postings are
         # written atomically (crash-proof against a shared connection's
         # commit landing between the two writes)
         self.storage.upsert_document_with_postings(
-            doc_id=doc_id, title=title, content=content, doc_type=doc_type,
-            length=len(tokens), metadata=metadata or {}, term_freqs=dict(term_freqs),
+            doc_id=doc_id,
+            title=title,
+            content=content,
+            doc_type=doc_type,
+            length=len(tokens),
+            metadata=metadata or {},
+            term_freqs=dict(term_freqs),
         )
-        self._emit("indexed", doc_id)
+        self._emit('indexed', doc_id)
 
     def delete_document(self, doc_id: str) -> bool:
         """Delete a document AND its chunks (doc_id#chunkN) in ONE
         transaction — a crash mid-cascade can't leave orphaned chunk rows
         behind. True if anything was deleted."""
         with self.storage.lock:
-            targets = ([doc_id] if self.storage.get_document(doc_id) else [])
+            targets = [doc_id] if self.storage.get_document(doc_id) else []
             targets += self.storage.chunk_ids(doc_id)
             if not targets:
                 return False
             self.storage.delete_documents(targets)
         for d in targets:
-            self._emit("deleted", d)
+            self._emit('deleted', d)
         return True

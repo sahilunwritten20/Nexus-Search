@@ -8,11 +8,11 @@ contract below is unchanged: register_robots_txt("") means robots
 confirmed ABSENT (4xx -> allowed); an UNREACHABLE robots.txt must be
 registered by the caller as the synthetic disallow-everything ruleset.
 """
+
 import threading
 import time
 
 from .robots import RobotsRules
-from typing import Dict, Optional
 
 
 class PolitenessManager:
@@ -22,11 +22,11 @@ class PolitenessManager:
     them may touch the same domain's rate-limit state concurrently.
     """
 
-    def __init__(self, user_agent: str = "NexusSearchBot/0.1", default_delay: float = 1.0):
+    def __init__(self, user_agent: str = 'NexusSearchBot/0.1', default_delay: float = 1.0):
         self.user_agent = user_agent
         self.default_delay = default_delay
-        self._parsers: Dict[str, RobotsRules] = {}
-        self._last_request: Dict[str, float] = {}
+        self._parsers: dict[str, RobotsRules] = {}
+        self._last_request: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def register_robots_txt(self, domain: str, content: str):

@@ -9,6 +9,7 @@ local test is exactly the completeness theater SPEC.md forbids. The log
 schema and bucketing ship tested; the analysis is downstream's job once it
 has data ("instrumentation, not results").
 """
+
 import hashlib
 import sqlite3
 import threading
@@ -34,9 +35,9 @@ def assign_variant(user_or_session_id: str, variants: list[str]) -> str:
     restarts — no RNG state involved), and variants with equal length get
     ~uniform share (blake2b low bits). Raises on empty variant list."""
     if not variants:
-        raise ValueError("variants must not be empty")
-    digest = hashlib.blake2b(user_or_session_id.encode("utf-8"), digest_size=8).digest()
-    bucket = int.from_bytes(digest, "little") % len(variants)
+        raise ValueError('variants must not be empty')
+    digest = hashlib.blake2b(user_or_session_id.encode('utf-8'), digest_size=8).digest()
+    bucket = int.from_bytes(digest, 'little') % len(variants)
     return variants[bucket]
 
 
@@ -49,9 +50,9 @@ class ExperimentLog:
     concern this schema is built to support.
     """
 
-    def __init__(self, db_path: str = "nexus_search.db"):
+    def __init__(self, db_path: str = 'nexus_search.db'):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self.conn.execute('PRAGMA busy_timeout = 5000')
         self.lock = threading.RLock()
         with self.lock:
             self.conn.executescript(SCHEMA)
@@ -60,8 +61,7 @@ class ExperimentLog:
     def record(self, query: str, variant: str, ranking_mode: str) -> None:
         with self.lock:
             self.conn.execute(
-                "INSERT INTO query_experiments (query, variant, ranking_mode, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                'INSERT INTO query_experiments (query, variant, ranking_mode, created_at) VALUES (?, ?, ?, ?)',
                 (query, variant, ranking_mode, time.time()),
             )
             self.conn.commit()
@@ -69,8 +69,7 @@ class ExperimentLog:
     def rows_for(self, query: str) -> list[tuple]:
         with self.lock:
             return self.conn.execute(
-                "SELECT query, variant, ranking_mode, created_at FROM query_experiments "
-                "WHERE query = ? ORDER BY id",
+                'SELECT query, variant, ranking_mode, created_at FROM query_experiments WHERE query = ? ORDER BY id',
                 (query,),
             ).fetchall()
 
@@ -81,14 +80,14 @@ class ExperimentLog:
         concurrent record() calls on the shared connection)."""
         with self.lock:
             rows = self.conn.execute(
-                "SELECT DISTINCT query FROM (SELECT query FROM query_experiments "
-                "ORDER BY id DESC LIMIT ?)", (int(max_rows),)
+                'SELECT DISTINCT query FROM (SELECT query FROM query_experiments ORDER BY id DESC LIMIT ?)',
+                (int(max_rows),),
             ).fetchall()
         return [r for (r,) in rows]
 
     def count(self) -> int:
         with self.lock:
-            return self.conn.execute("SELECT COUNT(*) FROM query_experiments").fetchone()[0]
+            return self.conn.execute('SELECT COUNT(*) FROM query_experiments').fetchone()[0]
 
     def purge_older_than(self, days: float) -> int:
         """Retention policy for the query log: delete rows older than `days`.
@@ -96,11 +95,10 @@ class ExperimentLog:
         forever-log is a compliance liability, so operators should run this
         on a schedule (see README/.env.example). Returns rows deleted."""
         if days <= 0:
-            raise ValueError("retention window must be positive")
+            raise ValueError('retention window must be positive')
         cutoff = time.time() - days * 86400.0
         with self.lock:
-            cur = self.conn.execute(
-                "DELETE FROM query_experiments WHERE created_at < ?", (cutoff,))
+            cur = self.conn.execute('DELETE FROM query_experiments WHERE created_at < ?', (cutoff,))
             self.conn.commit()
             return cur.rowcount
 
@@ -118,24 +116,22 @@ def main(argv=None) -> int:
     import argparse
     import os
 
-    parser = argparse.ArgumentParser(description="A/B query-log retention")
-    parser.add_argument("command", choices=["purge", "count"])
-    parser.add_argument("--db", default=os.environ.get("NEXUS_DB", "nexus_search.db"))
-    parser.add_argument("--days", type=float, default=30.0,
-                        help="delete rows older than this many days")
+    parser = argparse.ArgumentParser(description='A/B query-log retention')
+    parser.add_argument('command', choices=['purge', 'count'])
+    parser.add_argument('--db', default=os.environ.get('NEXUS_DB', 'nexus_search.db'))
+    parser.add_argument('--days', type=float, default=30.0, help='delete rows older than this many days')
     args = parser.parse_args(argv)
     log = ExperimentLog(args.db)
     try:
-        if args.command == "count":
-            print(f"{log.count()} rows")
+        if args.command == 'count':
+            print(f'{log.count()} rows')
             return 0
         deleted = log.purge_older_than(days=args.days)
-        print(f"purged {deleted} rows older than {args.days} days "
-              f"({log.count()} remain)")
+        print(f'purged {deleted} rows older than {args.days} days ({log.count()} remain)')
         return 0
     finally:
         log.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

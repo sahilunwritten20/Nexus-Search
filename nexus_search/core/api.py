@@ -3,14 +3,15 @@
 Run with: uvicorn nexus_search.core.api:app --reload
 DB path: env NEXUS_DB (default nexus_search.db)
 """
+
 import hashlib
 import logging
 import math
 import os
 import sqlite3
+import threading as _threading
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,11 +20,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .bm25 import BM25Search
-from .embedders import HashEmbedder, EmbedderUnavailable
-from .hybrid_search import HybridSearch, SearchMode, create_hybrid_search, max_candidates
-from .query_cache import QueryCache
-from ..rag.budget import BudgetExceeded, bucket_key, daily_budget_from_env, precheck, settle
+from .. import __version__ as _APP_VERSION  # WP14-6a: one version source
+from ..rag.budget import BudgetExceeded, bucket_key, precheck, settle
 from ..rag.config import RagConfig, build_provider
 from ..rag.context import make_storage_neighbor_fetcher
 from ..rag.metrics import global_metrics
@@ -33,33 +31,52 @@ from ..rag.retrieval import RagRetriever, use_rerank_from_env
 from ..rag.session import SessionCapExceeded, SessionExpired
 from ..ranking.ab import ExperimentLog, assign_variant
 from ..ranking.query import understand_query
-from .query_parser import parse_query
-from ..ranking.ranker import RankingWeights, WeightedSumModel, rerank as rerank_results
+from ..ranking.ranker import RankingWeights, WeightedSumModel
+from ..ranking.ranker import rerank as rerank_results
+from .bm25 import BM25Search
+from .embedders import EmbedderUnavailable, HashEmbedder
 from .embedding_sync import EmbeddingSync
+from .hybrid_search import SearchMode, create_hybrid_search, max_candidates
 from .indexer import Indexer
-from .models import (AskRequest, AskResponse, AskCitation, AskMetadata,
-                     AskSource, BulkDocumentIn, DocumentIn, DocumentOut,
-                     ExplainRequest, ExplainResponse, ExplainResult,
-                     SearchMetadata, SearchResponse, SearchResultOut)
+from .models import (
+    AskCitation,
+    AskMetadata,
+    AskRequest,
+    AskResponse,
+    AskSource,
+    BulkDocumentIn,
+    DocumentIn,
+    DocumentOut,
+    ExplainRequest,
+    ExplainResponse,
+    ExplainResult,
+    SearchMetadata,
+    SearchResponse,
+    SearchResultOut,
+)
+from .query_cache import QueryCache
+from .query_parser import parse_query
 from .storage import Storage
 from .vector_store import VectorStoreManager
 
-logger = logging.getLogger("nexus_search.api")
+logger = logging.getLogger('nexus_search.api')
 
 # Fail CLOSED on auth in anything but explicit dev. NEXUS_ENV defaults to
 # "production" (opt OUT of auth must be a conscious decision, not a forgotten
 # env var); a production boot without NEXUS_API_KEY refuses to start.
-_ENV = os.environ.get("NEXUS_ENV", "production").strip().lower() or "production"
-_API_KEY = os.environ.get("NEXUS_API_KEY", "")
-if not _API_KEY and _ENV != "dev":
+_ENV = os.environ.get('NEXUS_ENV', 'production').strip().lower() or 'production'
+_API_KEY = os.environ.get('NEXUS_API_KEY', '')
+if not _API_KEY and _ENV != 'dev':
     raise RuntimeError(
-        "NEXUS_API_KEY is not set and NEXUS_ENV "
+        'NEXUS_API_KEY is not set and NEXUS_ENV '
         f"!= 'dev' (got {_ENV!r}; unset counts as 'production'). Refusing to "
-        "boot with unauthenticated write endpoints. Set NEXUS_API_KEY=... to "
-        "run the API, or NEXUS_ENV=dev for local development only.")
+        'boot with unauthenticated write endpoints. Set NEXUS_API_KEY=... to '
+        'run the API, or NEXUS_ENV=dev for local development only.'
+    )
 if not _API_KEY:
-    logger.warning("NEXUS_API_KEY is not set — write endpoints are UNAUTHENTICATED "
-                   "(dev mode, only because NEXUS_ENV=dev).")
+    logger.warning(
+        'NEXUS_API_KEY is not set — write endpoints are UNAUTHENTICATED (dev mode, only because NEXUS_ENV=dev).'
+    )
 
 
 @asynccontextmanager
@@ -82,22 +99,29 @@ async def lifespan(app: FastAPI):
 
 # OpenAPI explorer is a dev convenience; in production it's information
 # disclosure (exact params, paths). NEXUS_ENV=dev keeps them on.
-_is_dev = _ENV == "dev"
-from .. import __version__ as _APP_VERSION  # WP14-6a: one version source
-app = FastAPI(title="Nexus Search — Core", version=_APP_VERSION, lifespan=lifespan,
-              docs_url="/docs" if _is_dev else None,
-              redoc_url="/redoc" if _is_dev else None,
-              openapi_url="/openapi.json" if _is_dev else None)
+_is_dev = _ENV == 'dev'
+
+app = FastAPI(
+    title='Nexus Search — Core',
+    version=_APP_VERSION,
+    lifespan=lifespan,
+    docs_url='/docs' if _is_dev else None,
+    redoc_url='/redoc' if _is_dev else None,
+    openapi_url='/openapi.json' if _is_dev else None,
+)
 
 # CORS is opt-in and explicit (NEXUS_CORS_ORIGINS="https://a,https://b");
 # unset = no CORS headers at all — browsers default-deny cross-origin.
-_cors_origins = [o.strip() for o in os.environ.get("NEXUS_CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_origins = [o.strip() for o in os.environ.get('NEXUS_CORS_ORIGINS', '').split(',') if o.strip()]
 if _cors_origins:
-    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
-                       allow_methods=["GET", "POST", "DELETE"],
-                       allow_headers=["X-API-Key", "Content-Type"])
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=['GET', 'POST', 'DELETE'],
+        allow_headers=['X-API-Key', 'Content-Type'],
+    )
 
-_NEXUS_DB = os.environ.get("NEXUS_DB", "nexus_search.db")
+_NEXUS_DB = os.environ.get('NEXUS_DB', 'nexus_search.db')
 _storage = Storage(_NEXUS_DB)
 _indexer = Indexer(_storage)
 _bm25_searcher = BM25Search(_storage)
@@ -110,15 +134,16 @@ try:
     _vector_store = VectorStoreManager(_NEXUS_DB)
     _vector_error = None
 except EmbedderUnavailable as exc:
-    logger.error("Vector subsystem unavailable at startup: %s", exc)
+    logger.exception('Vector subsystem unavailable at startup: %s', exc)
     _vector_store = None
     # type name only — the raw message can carry paths/model names to clients
-    _vector_error = f"embedder_unavailable:{type(exc).__name__}"
+    _vector_error = f'embedder_unavailable:{type(exc).__name__}'
+
 
 def _embed_batch_size() -> int:
     """NEXUS_EMBED_BATCH: docs per embedding flush on the API write path.
     Default 1 keeps the exact pre-P2-9 single-doc behavior."""
-    raw = (os.environ.get("NEXUS_EMBED_BATCH") or "").strip()
+    raw = (os.environ.get('NEXUS_EMBED_BATCH') or '').strip()
     try:
         value = int(raw)
     except ValueError:
@@ -142,7 +167,7 @@ else:
 try:
     experiment_log = ExperimentLog(_NEXUS_DB)
 except Exception as exc:  # logging must never take search down
-    logger.warning("Experiment log unavailable: %s", exc)
+    logger.warning('Experiment log unavailable: %s', exc)
     experiment_log = None
 
 # Phase 6 link intelligence: read-side ONLY. Weights ship at 0.0 by default
@@ -150,9 +175,10 @@ except Exception as exc:  # logging must never take search down
 # evaluation (docs/PHASE6_PLAN.md rollout).
 try:
     from ..links.graph import LinkGraph
+
     _link_graph = LinkGraph(_NEXUS_DB)
 except Exception as exc:
-    logger.warning("Link graph unavailable (ranking stays neutral): %s", exc)
+    logger.warning('Link graph unavailable (ranking stays neutral): %s', exc)
     _link_graph = None
 
 
@@ -166,12 +192,12 @@ class _AuthorityWorker:
 
     def __init__(self, graph, interval: float):
         import threading
+
         self._graph = graph
         self._interval = float(interval)
         self._stop = threading.Event()
         self._lock = threading.Lock()  # never two overlapping recomputes
-        self._thread = threading.Thread(target=self._run, name="authority-recompute",
-                                        daemon=True)
+        self._thread = threading.Thread(target=self._run, name='authority-recompute', daemon=True)
         self._thread.start()
 
     def _run(self):
@@ -180,9 +206,10 @@ class _AuthorityWorker:
                 continue
             try:
                 from ..links.authority import compute_authority
+
                 compute_authority(self._graph)  # version-guarded
             except Exception:
-                logger.exception("background authority recompute failed; stopping worker")
+                logger.exception('background authority recompute failed; stopping worker')
                 self._stop.set()
             finally:
                 self._lock.release()
@@ -197,7 +224,7 @@ class _AuthorityWorker:
 
 
 def _authority_interval() -> float:
-    raw = (os.environ.get("NEXUS_AUTHORITY_RECOMPUTE_INTERVAL") or "").strip()
+    raw = (os.environ.get('NEXUS_AUTHORITY_RECOMPUTE_INTERVAL') or '').strip()
     try:
         value = float(raw)
     except ValueError:
@@ -208,10 +235,10 @@ def _authority_interval() -> float:
 _authority_worker = None
 if _link_graph is not None and _authority_interval() > 0:
     _authority_worker = _AuthorityWorker(_link_graph, _authority_interval())
-    logger.info("background authority recompute every %.1fs", _authority_interval())
+    logger.info('background authority recompute every %.1fs', _authority_interval())
 
 # Query cache: TTL-bounded, and cleared on every write (see query_cache.py)
-_query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5")))
+_query_cache = QueryCache(ttl_seconds=float(os.environ.get('NEXUS_CACHE_TTL', '5')))
 
 # Phase 7 RAG boot policy (P7-3): config + status only — the service and
 # endpoints come with P7-5/P7-6. Fail-closed: a real provider without a
@@ -219,38 +246,38 @@ _query_cache = QueryCache(ttl_seconds=float(os.environ.get("NEXUS_CACHE_TTL", "5
 # kill switch, the stub outside dev needs NEXUS_RAG_ALLOW_STUB=1. The
 # status block below carries ONLY {status, provider, reason} — never the
 # key, never a base URL (credentials could hide in one).
-from ..rag.config import RagConfig
 _rag_config = RagConfig.from_env()
 _rag_status, _rag_status_reason = _rag_config.status()
-if _rag_status != "ok":
-    logger.warning("RAG subsystem %s (reason=%s) — /search keeps serving",
-                   _rag_status, _rag_status_reason)
+if _rag_status != 'ok':
+    logger.warning('RAG subsystem %s (reason=%s) — /search keeps serving', _rag_status, _rag_status_reason)
 else:
-    logger.info("RAG subsystem ok (provider=%s)", _rag_config.provider)
+    logger.info('RAG subsystem ok (provider=%s)', _rag_config.provider)
 
 
 def _rag_health_block() -> dict:
-    return {"status": _rag_status, "provider": _rag_config.provider,
-            "reason": _rag_status_reason}
+    return {'status': _rag_status, 'provider': _rag_config.provider, 'reason': _rag_status_reason}
 
 
 # The RAG service (P7-6): constructed when the boot policy says ok. It
 # wires the SHARED HybridSearch/Storage (never a second instance) and the
 # configured provider. The neighbor fetcher shares the one Storage.
-_rag_service: Optional[RagService] = None
-if _rag_status == "ok":
+_rag_service: RagService | None = None
+if _rag_status == 'ok':
     _rag_provider, _rag_status, _rag_status_reason = build_provider(_rag_config)
     if _rag_provider is not None:
         _retriever = RagRetriever(
-            _hybrid_searcher, _storage,
+            _hybrid_searcher,
+            _storage,
             bm25_search=_bm25_searcher,
             use_rerank=use_rerank_from_env(),
-            link_intel=_link_graph)
+            link_intel=_link_graph,
+        )
         # Sessions (P7-8): RAM per-worker by default; the opt-in shared
         # SQLite store rides the ONE storage connection set (v4).
         _session_store = None
-        if _rag_config.session_store == "sqlite":
+        if _rag_config.session_store == 'sqlite':
             from ..rag.session import SqliteSessionStore
+
             _session_store = SqliteSessionStore(
                 _storage,
                 max_turns=_rag_config.session_max_turns,
@@ -258,27 +285,31 @@ if _rag_status == "ok":
                 chars_per_token=_rag_config.chars_per_token,
                 max_turn_bytes=_rag_config.session_max_turn_bytes,
                 ttl=_rag_config.session_ttl,
-                global_cap=_rag_config.session_cap)
-            logger.info("RAG sessions: SHARED sqlite store "
-                        "(retention: prune on a schedule)")
+                global_cap=_rag_config.session_cap,
+            )
+            logger.info('RAG sessions: SHARED sqlite store (retention: prune on a schedule)')
         else:
             from ..rag.session import MemorySessionStore
+
             _session_store = MemorySessionStore(
                 max_turns=_rag_config.session_max_turns,
                 max_context_tokens=_rag_config.session_max_context_tokens,
                 chars_per_token=_rag_config.chars_per_token,
                 max_turn_bytes=_rag_config.session_max_turn_bytes,
                 ttl=_rag_config.session_ttl,
-                global_cap=_rag_config.session_cap)
-            logger.info("RAG sessions: per-worker RAM store "
-                        "(multi-worker deployments need sticky routing)")
+                global_cap=_rag_config.session_cap,
+            )
+            logger.info('RAG sessions: per-worker RAM store (multi-worker deployments need sticky routing)')
         _rag_service = RagService(
-            _rag_config, _retriever, _rag_provider, _storage,
+            _rag_config,
+            _retriever,
+            _rag_provider,
+            _storage,
             metrics=global_metrics(),
             neighbor_fetcher=make_storage_neighbor_fetcher(_storage),
-            session_store=_session_store)
-        logger.info("RAG service ready (provider=%s, model=%s)",
-                    _rag_provider.name, _rag_provider.model)
+            session_store=_session_store,
+        )
+        logger.info('RAG service ready (provider=%s, model=%s)', _rag_provider.name, _rag_provider.model)
 
 
 def _retry_after_next_utc_day() -> int:
@@ -289,7 +320,7 @@ def _retry_after_next_utc_day() -> int:
     return max(1, ((int(now) // 86400) + 1) * 86400 - int(now))
 
 
-def _rag_bucket(api_key: Optional[str], request: Request) -> str:
+def _rag_bucket(api_key: str | None, request: Request) -> str:
     """Budget bucket: a VERIFIED key hashes to its own; everything else
     falls through to the client IP (mirrors _rate_limit_key)."""
     client_ip = None
@@ -298,46 +329,64 @@ def _rag_bucket(api_key: Optional[str], request: Request) -> str:
     return bucket_key(api_key, _API_KEY or None, client_ip)
 
 
-def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
-                       reason: str, facets: Optional[str] = None) -> SearchResponse:
+def _keyword_only_page(
+    q: str, top_k: int, offset: int, requested_mode: str, reason: str, facets: str | None = None
+) -> SearchResponse:
     """BM25-only response used when the vector subsystem never came up."""
-    if requested_mode == "keyword":
+    if requested_mode == 'keyword':
         fallback = False
-        mode_used = "keyword"
+        mode_used = 'keyword'
     else:
         fallback = True
-        mode_used = "keyword"
+        mode_used = 'keyword'
     page = _bm25_searcher.search_page(q, top_k=top_k, offset=offset)
     facet_out = None
     facets_truncated = False
     if facets:  # same honest-count contract as the non-degraded path
-        fields = [f.strip() for f in facets.split(",") if f.strip()]
+        fields = [f.strip() for f in facets.split(',') if f.strip()]
         full = _bm25_searcher.search_page(q, top_k=min(max(page.total, 1), 500), offset=0)
         docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         from ..core.filters import facet_counts
+
         facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
         facets_truncated = page.total > 500
     results = [
         SearchResultOut(
-            doc_id=r.doc_id, score=r.score, title=r.title, snippet=r.snippet,
-            doc_type=r.doc_type, metadata=r.metadata, chunk_id=r.chunk_id,
-            matched_chunks=r.matched_chunks, bm25_score=r.score,
-            source="bm25" if not fallback else "bm25_fallback",
-        ) for r in page.results
+            doc_id=r.doc_id,
+            score=r.score,
+            title=r.title,
+            snippet=r.snippet,
+            doc_type=r.doc_type,
+            metadata=r.metadata,
+            chunk_id=r.chunk_id,
+            matched_chunks=r.matched_chunks,
+            bm25_score=r.score,
+            source='bm25' if not fallback else 'bm25_fallback',
+        )
+        for r in page.results
     ]
     has_more = (offset + len(results)) < page.total
     next_cursor = None
     if has_more:
         import base64
-        next_cursor = base64.urlsafe_b64encode(
-            f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
+
+        next_cursor = base64.urlsafe_b64encode(f'offset:{offset + len(results)}'.encode()).decode().rstrip('=')
     return SearchResponse(
-        query=q, total_results=page.total, offset=offset, top_k=top_k, results=results,
+        query=q,
+        total_results=page.total,
+        offset=offset,
+        top_k=top_k,
+        results=results,
         metadata=SearchMetadata(
-            mode=mode_used, requested_mode=requested_mode, mode_used=mode_used,
-            bm25_candidates=page.total, merged_candidates=len(results),
-            fallback=fallback, fallback_reason=reason if fallback else None,
-            has_more=has_more, next_cursor=next_cursor,
+            mode=mode_used,
+            requested_mode=requested_mode,
+            mode_used=mode_used,
+            bm25_candidates=page.total,
+            merged_candidates=len(results),
+            fallback=fallback,
+            fallback_reason=reason if fallback else None,
+            has_more=has_more,
+            next_cursor=next_cursor,
             facets_truncated=facets_truncated,
         ),
         facets=facet_out,
@@ -355,24 +404,25 @@ def _keyword_only_page(q: str, top_k: int, offset: int, requested_mode: str,
 # module top-level runs once in a fresh process, where a forward reference
 # is a NameError at import (the reload-based tests masked this by reusing
 # the already-populated namespace).
-_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+_api_key_header = APIKeyHeader(name='X-API-Key', auto_error=False)
 
 
-def require_api_key(api_key: Optional[str] = Security(_api_key_header)):
+def require_api_key(api_key: str | None = Security(_api_key_header)):
     """401 when the server is configured with a key and the caller's doesn't
     match. Constant-time compare; missing config = open dev mode."""
     if not _API_KEY:
         return  # dev mode, open by explicit configuration
     import hmac
+
     if api_key is None or not hmac.compare_digest(api_key, _API_KEY):
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
+        raise HTTPException(status_code=401, detail='invalid or missing API key')
 
 
 # ---------------------------------------------------------------------------
 # Rate limiting (slowapi): /search + the write endpoints. Scoped per API key
 # when one is presented (hashed — never the raw secret), else per client IP.
 # NEXUS_RATE_LIMIT="0" (or "") disables; headers carry X-RateLimit-*/Retry-After.
-_RATE_LIMIT = os.environ.get("NEXUS_RATE_LIMIT", "60/minute").strip()
+_RATE_LIMIT = os.environ.get('NEXUS_RATE_LIMIT', '60/minute').strip()
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -381,41 +431,42 @@ def _rate_limit_key(request: Request) -> str:
     # hashed to its own bucket, so a client rotating random values got a
     # fresh budget per request — an unlimited /search budget from one IP.
     # With no key configured the header is ignored entirely.
-    key = request.headers.get("X-API-Key")
+    key = request.headers.get('X-API-Key')
     if key and _API_KEY:
         import hmac
+
         if hmac.compare_digest(key, _API_KEY):
-            return "key:" + hashlib.sha256(key.encode()).hexdigest()[:24]
+            return 'key:' + hashlib.sha256(key.encode()).hexdigest()[:24]
     # BUG-09-hygiene / reverse proxies: behind a proxy, every client shares
     # the proxy's socket address, so raw remote-address keying lumps all
     # traffic into one bucket. NEXUS_TRUST_PROXY=N takes the client IP as
     # the Nth-from-right X-Forwarded-For entry (N = trusted proxy hops).
     # OFF by default: an untrusted XFF header must never forge a bucket.
-    raw = (os.environ.get("NEXUS_TRUST_PROXY") or "").strip()
+    raw = (os.environ.get('NEXUS_TRUST_PROXY') or '').strip()
     if raw:
         try:
             hops = int(raw)
         except ValueError:
             hops = 0
         if hops > 0:
-            xff = [h.strip() for h in
-                   request.headers.get("X-Forwarded-For", "").split(",") if h.strip()]
+            xff = [h.strip() for h in request.headers.get('X-Forwarded-For', '').split(',') if h.strip()]
             if len(xff) >= hops:
                 candidate = xff[-hops]
                 import ipaddress
+
                 try:
                     ipaddress.ip_address(candidate)
                 except ValueError:
                     pass  # junk XFF: fall through to the socket address
                 else:
-                    return "ip:" + candidate
-    return get_remote_address(request) or "unknown"
+                    return 'ip:' + candidate
+    return get_remote_address(request) or 'unknown'
 
 
 limiter = Limiter(
     key_func=_rate_limit_key,
     headers_enabled=True,
-    enabled=bool(_RATE_LIMIT) and _RATE_LIMIT != "0",
+    enabled=bool(_RATE_LIMIT) and _RATE_LIMIT != '0',
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -423,26 +474,32 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Reads are open by DESIGN (embeddable public search). Operators with private
 # corpora opt into key-gated reads with NEXUS_REQUIRE_AUTH_FOR_READS=1; the
 # dependency itself still no-ops when no NEXUS_API_KEY is configured.
-_READ_AUTH = [Depends(require_api_key)] if os.environ.get(
-    "NEXUS_REQUIRE_AUTH_FOR_READS", "").strip().lower() in ("1", "true", "yes") else []
+_READ_AUTH = (
+    [Depends(require_api_key)]
+    if os.environ.get('NEXUS_REQUIRE_AUTH_FOR_READS', '').strip().lower() in ('1', 'true', 'yes')
+    else []
+)
 
 
-@app.post("/documents", status_code=201, dependencies=[Depends(require_api_key)])
+@app.post('/documents', status_code=201, dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
 def add_document(request: Request, doc: DocumentIn, response: Response):
     try:
         _indexer.add_document(
-            doc_id=doc.doc_id, content=doc.content, title=doc.title,
-            doc_type=doc.doc_type, metadata=doc.metadata,
+            doc_id=doc.doc_id,
+            content=doc.content,
+            title=doc.title,
+            doc_type=doc.doc_type,
+            metadata=doc.metadata,
         )
         _query_cache.clear()  # writes invalidate cached pages
     except sqlite3.Error:
-        logger.exception("storage error indexing %s", doc.doc_id)
-        raise HTTPException(status_code=500, detail="storage error")  # details stay in logs
-    return {"doc_id": doc.doc_id, "status": "indexed"}
+        logger.exception('storage error indexing %s', doc.doc_id)
+        raise HTTPException(status_code=500, detail='storage error') from None  # details stay in logs
+    return {'doc_id': doc.doc_id, 'status': 'indexed'}
 
 
-@app.post("/documents/bulk", dependencies=[Depends(require_api_key)])
+@app.post('/documents/bulk', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
 def add_documents_bulk(request: Request, body: BulkDocumentIn, response: Response):
     """Batch write: N docs, one round trip. Per-doc failures are reported,
@@ -452,42 +509,51 @@ def add_documents_bulk(request: Request, body: BulkDocumentIn, response: Respons
     for doc in body.documents:
         try:
             _indexer.add_document(
-                doc_id=doc.doc_id, content=doc.content, title=doc.title,
-                doc_type=doc.doc_type, metadata=doc.metadata,
+                doc_id=doc.doc_id,
+                content=doc.content,
+                title=doc.title,
+                doc_type=doc.doc_type,
+                metadata=doc.metadata,
             )
             indexed += 1
         except sqlite3.Error:
-            logger.exception("storage error indexing %s", doc.doc_id)
-            failed.append({"doc_id": doc.doc_id, "error": "storage_error"})
+            logger.exception('storage error indexing %s', doc.doc_id)
+            failed.append({'doc_id': doc.doc_id, 'error': 'storage_error'})
         except ValueError as exc:  # e.g. vector dim mismatch surfaces here
-            failed.append({"doc_id": doc.doc_id, "error": type(exc).__name__})
+            failed.append({'doc_id': doc.doc_id, 'error': type(exc).__name__})
     if _embedding_sync is not None:
         _embedding_sync.flush()  # P2-9: one flush finalizes the partial batch
     if indexed:
         _query_cache.clear()  # writes invalidate cached pages
-    return {"indexed": indexed, "failed": failed, "total": len(body.documents)}
+    return {'indexed': indexed, 'failed': failed, 'total': len(body.documents)}
 
 
-@app.get("/documents/{doc_id}", response_model=DocumentOut, dependencies=_READ_AUTH)
+@app.get('/documents/{doc_id}', response_model=DocumentOut, dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def get_document(request: Request, doc_id: str, response: Response):
     """Read-back endpoint: the stored row for one doc_id (404 when absent).
     Chunk parents return 404 — fetch the chunk row ids directly."""
     doc = _storage.get_document(doc_id)
     if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return DocumentOut(doc_id=doc.doc_id, title=doc.title, content=doc.content,
-                       doc_type=doc.doc_type, length=doc.length,
-                       metadata=doc.metadata, added_at=doc.added_at)
+        raise HTTPException(status_code=404, detail='Document not found')
+    return DocumentOut(
+        doc_id=doc.doc_id,
+        title=doc.title,
+        content=doc.content,
+        doc_type=doc.doc_type,
+        length=doc.length,
+        metadata=doc.metadata,
+        added_at=doc.added_at,
+    )
 
 
-@app.delete("/documents/{doc_id}", dependencies=[Depends(require_api_key)])
+@app.delete('/documents/{doc_id}', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
 def delete_document(request: Request, doc_id: str, response: Response):
     if not _indexer.delete_document(doc_id):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail='Document not found')
     _query_cache.clear()  # writes invalidate cached pages
-    return {"doc_id": doc_id, "status": "deleted"}
+    return {'doc_id': doc_id, 'status': 'deleted'}
 
 
 MAX_QUERY_CHARS = 2000  # attacker-controlled parse cost must be bounded
@@ -510,14 +576,14 @@ def _run_search(
     fusion: str,
     candidates: int,
     debug: bool,
-    rerank: Optional[bool],
-    session: Optional[str],
+    rerank: bool | None,
+    session: str | None,
     sort: str,
     highlight: bool,
-    facets: Optional[str],
-    cursor: Optional[str],
-    min_score: Optional[float],
-    api_key: Optional[str],
+    facets: str | None,
+    cursor: str | None,
+    min_score: float | None,
+    api_key: str | None,
 ) -> SearchResponse:
     """The complete /search pipeline minus the HTTP-layer concerns (route
     decorators, rate limiting, auth dependencies) — extracted in WP14-2 so
@@ -533,36 +599,37 @@ def _run_search(
     the raw pieces read `SearchResultOut.bm25_score`/`vector_score`.
     """
     if not q.strip():
-        raise HTTPException(status_code=400, detail="q must not be empty")
+        raise HTTPException(status_code=400, detail='q must not be empty')
     # BUG-08: debug=true exposes per-retriever score contributions — the
     # same internals /search/explain key-gates. When a key is configured,
     # gate it identically here (401, not silently open).
     if debug and _API_KEY:
         import hmac as _hmac
+
         if api_key is None or not _hmac.compare_digest(api_key, _API_KEY):
-            raise HTTPException(status_code=401,
-                                detail="debug output requires the API key")
+            raise HTTPException(status_code=401, detail='debug output requires the API key')
     if len(q) > MAX_QUERY_CHARS:
-        raise HTTPException(status_code=400, detail="q too long")
+        raise HTTPException(status_code=400, detail='q too long')
     if len(q.split()) > MAX_QUERY_WORDS:
-        raise HTTPException(status_code=400,
-                            detail=f"q has more than {MAX_QUERY_WORDS} words")
+        raise HTTPException(status_code=400, detail=f'q has more than {MAX_QUERY_WORDS} words')
     top_k = min(max(top_k, 1), 100)
 
     # Cursor pagination (ADDITIONAL to offset, never replacing it): the cursor
     # is just a base64'd "offset:N" — stateless, resumable, honest. offset and
     # cursor together -> cursor wins (documented).
     if cursor:
-        import base64, binascii
+        import base64
+        import binascii
+
         try:
-            pad = "=" * (-len(cursor) % 4)
-            raw = base64.urlsafe_b64decode(cursor + pad).decode("ascii")
-            prefix, _, value = raw.partition(":")
-            if prefix != "offset" or not value.isdigit():
+            pad = '=' * (-len(cursor) % 4)
+            raw = base64.urlsafe_b64decode(cursor + pad).decode('ascii')
+            prefix, _, value = raw.partition(':')
+            if prefix != 'offset' or not value.isdigit():
                 raise ValueError
             offset = int(value)
         except (ValueError, binascii.Error, UnicodeDecodeError):
-            raise HTTPException(status_code=400, detail="invalid cursor")
+            raise HTTPException(status_code=400, detail='invalid cursor') from None
         offset = min(offset, 10_000)
 
     # Window contract (BUG-03/04): the fused candidate pool always covers
@@ -571,31 +638,30 @@ def _run_search(
     # instead of the pre-fix silent empty pages. An explicit `candidates`
     # above the operator's cap is clamped (the page is still correct; pool
     # quality bounds are the operator's call).
-    _max_candidates = max_candidates()
-    if offset + top_k > _max_candidates:
+    max_candidates_ = max_candidates()
+    if offset + top_k > max_candidates_:
         raise HTTPException(
-            status_code=400,
-            detail=f"offset+top_k ({offset + top_k}) exceeds "
-                   f"NEXUS_MAX_CANDIDATES ({_max_candidates})")
-    candidates = min(candidates, _max_candidates)
+            status_code=400, detail=f'offset+top_k ({offset + top_k}) exceeds NEXUS_MAX_CANDIDATES ({max_candidates_})'
+        )
+    candidates = min(candidates, max_candidates_)
 
     # Phase 5 A/B instrumentation: `session=...` buckets the request into the
     # deterministic rerank experiment (control/treatment). An explicit
     # rerank=true/false always overrides the bucket. Default (no session, no
     # rerank param) is OFF — identical behavior to pre-Phase-5.
-    variant = "off"
+    variant = 'off'
     if session:
-        variant = assign_variant(session, ["control", "treatment"])
-    rerank_flag = rerank if rerank is not None else (variant == "treatment")
+        variant = assign_variant(session, ['control', 'treatment'])
+    rerank_flag = rerank if rerank is not None else (variant == 'treatment')
 
     # Validate weights
     if bm25_weight == 0 and vector_weight == 0:
-        raise HTTPException(status_code=400, detail="At least one weight must be > 0")
+        raise HTTPException(status_code=400, detail='At least one weight must be > 0')
     # INF-WEIGHT (review): pydantic's ge=0 admits +inf, which degenerates
     # every fused score to inf (reported as null in the response). Reject
     # non-finite weights with a clear 400.
     if not (math.isfinite(bm25_weight) and math.isfinite(vector_weight)):
-        raise HTTPException(status_code=400, detail="weights must be finite")
+        raise HTTPException(status_code=400, detail='weights must be finite')
 
     # Query understanding participates by default: spell-correction (in-
     # vocabulary only) and synonym expansion widen the retrieval pool. One
@@ -615,15 +681,12 @@ def _run_search(
     # original form (rewriting would drop the structure).
     if _vector_store is None:
         probe = parse_query(q)
-        retrieval_q = q if (probe.has_boolean or probe.not_filters) \
-            else _understanding().to_retrieval_query()
-        return _keyword_only_page(retrieval_q, top_k,
-                                  offset, mode, _vector_error, facets=facets)
+        retrieval_q = q if (probe.has_boolean or probe.not_filters) else _understanding().to_retrieval_query()
+        return _keyword_only_page(retrieval_q, top_k, offset, mode, _vector_error, facets=facets)
 
-    if diversity > 0.0 and sort not in (None, "relevance"):
+    if diversity > 0.0 and sort not in (None, 'relevance'):
         # both reorder after ranking; combining them silently would be mush
-        raise HTTPException(status_code=400,
-                            detail="diversity and non-relevance sort cannot be combined")
+        raise HTTPException(status_code=400, detail='diversity and non-relevance sort cannot be combined')
 
     # BUG-06: ONE shared HybridSearch per app lifespan. A fresh instance per
     # request discarded the BM25 doc-token memo across requests; per-request
@@ -635,21 +698,39 @@ def _run_search(
     search_mode = SearchMode(mode)
 
     cache_key = QueryCache.key_of(
-        q, top_k=top_k, offset=offset, mode=mode, bm25_weight=bm25_weight,
-        vector_weight=vector_weight, fusion=fusion, candidates=candidates,
-        debug=debug, sort=sort, highlight=highlight, rerank=rerank_flag,
-        diversity=diversity, min_score=min_score,
+        q,
+        top_k=top_k,
+        offset=offset,
+        mode=mode,
+        bm25_weight=bm25_weight,
+        vector_weight=vector_weight,
+        fusion=fusion,
+        candidates=candidates,
+        debug=debug,
+        sort=sort,
+        highlight=highlight,
+        rerank=rerank_flag,
+        diversity=diversity,
+        min_score=min_score,
     )
     cached_page = _query_cache.get(cache_key)
     if cached_page is not None:
         page = cached_page
     else:
         page = hybrid_searcher.search_page(
-            q, top_k=top_k, offset=offset, mode=search_mode,
-            fusion=fusion, candidates=candidates, debug=debug,
-            sort=sort, highlight=highlight, diversity=diversity,
+            q,
+            top_k=top_k,
+            offset=offset,
+            mode=search_mode,
+            fusion=fusion,
+            candidates=candidates,
+            debug=debug,
+            sort=sort,
+            highlight=highlight,
+            diversity=diversity,
             understanding=_understanding(),
-            bm25_weight=bm25_weight, vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+            vector_weight=vector_weight,
             min_score=min_score,
         )
         _query_cache.set(cache_key, page)
@@ -657,18 +738,24 @@ def _run_search(
     # Phase 5 OPT-IN re-ranking. rerank=False (the default) is a strict no-op:
     # the page from search_page is returned byte-for-byte unchanged.
     import dataclasses
+
     results = page.results
     if rerank_flag:
-        ranked = rerank_results(results, q, storage=_storage,
-                                understanding=_understanding(),
-                                weights=RankingWeights.from_env(), link_intel=_link_graph)
+        ranked = rerank_results(
+            results,
+            q,
+            storage=_storage,
+            understanding=_understanding(),
+            weights=RankingWeights.from_env(),
+            link_intel=_link_graph,
+        )
         # copy, never mutate: page.results may be a cached object
         results = [dataclasses.replace(rr.result, score=rr.final_score) for rr in ranked]
         if page.metadata is not None:
-            page.metadata = {**page.metadata, "reranked": True}
+            page.metadata = {**page.metadata, 'reranked': True}
         if experiment_log is not None:
-            experiment_log.record(q, variant, f"{mode}+rerank")
-    elif experiment_log is not None and variant != "off":
+            experiment_log.record(q, variant, f'{mode}+rerank')
+    elif experiment_log is not None and variant != 'off':
         experiment_log.record(q, variant, mode)
 
     metadata = None
@@ -684,7 +771,8 @@ def _run_search(
         metadata.has_more = (offset + len(results)) < pageable
         if metadata.has_more:
             import base64
-            nxt = base64.urlsafe_b64encode(f"offset:{offset + len(results)}".encode()).decode().rstrip("=")
+
+            nxt = base64.urlsafe_b64encode(f'offset:{offset + len(results)}'.encode()).decode().rstrip('=')
             metadata.next_cursor = nxt
 
     # Stage 4: facet counts — computed over the match population (a fresh
@@ -693,22 +781,28 @@ def _run_search(
     facet_out = None
     facets_truncated = False
     if facets:
-        fields = [f.strip() for f in facets.split(",") if f.strip()]
-        _FACET_SAMPLE_CAP = 500
-        facets_truncated = page.total > _FACET_SAMPLE_CAP
-        full = hybrid_searcher.search_page(q, top_k=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                            offset=0, mode=search_mode, fusion=fusion,
-                                            understanding=_understanding(),  # facets follow retrieval
-                                            # the default candidate pool (50) would
-                                            # truncate counts below the sample cap
-                                            candidates=min(max(page.total, 1), _FACET_SAMPLE_CAP),
-                                            bm25_weight=bm25_weight,
-                                            vector_weight=vector_weight,
-                                            # the facet population is the SAME
-                                            # retrieval as the page: a raw cosine
-                                            # floor applies here too (WP14-1)
-                                            min_score=min_score)
+        fields = [f.strip() for f in facets.split(',') if f.strip()]
+        FACET_SAMPLE_CAP = 500
+        facets_truncated = page.total > FACET_SAMPLE_CAP
+        full = hybrid_searcher.search_page(
+            q,
+            top_k=min(max(page.total, 1), FACET_SAMPLE_CAP),
+            offset=0,
+            mode=search_mode,
+            fusion=fusion,
+            understanding=_understanding(),  # facets follow retrieval
+            # the default candidate pool (50) would
+            # truncate counts below the sample cap
+            candidates=min(max(page.total, 1), FACET_SAMPLE_CAP),
+            bm25_weight=bm25_weight,
+            vector_weight=vector_weight,
+            # the facet population is the SAME
+            # retrieval as the page: a raw cosine
+            # floor applies here too (WP14-1)
+            min_score=min_score,
+        )
         from ..core.filters import facet_counts
+
         docs_by_id = _storage.get_documents([r.doc_id for r in full.results])
         facet_out = facet_counts([d for d in docs_by_id.values() if d is not None], fields)
     if metadata is not None and facets is not None:
@@ -725,7 +819,7 @@ def _run_search(
     )
 
 
-@app.get("/search", response_model=SearchResponse, dependencies=_READ_AUTH)
+@app.get('/search', response_model=SearchResponse, dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
 def search(
     request: Request,
@@ -734,86 +828,112 @@ def search(
     top_k: int = Query(default=10, ge=1),
     offset: int = Query(default=0, ge=0, le=10_000),
     diversity: float = Query(default=0.0, ge=0.0, le=1.0),
-    mode: str = Query(default="hybrid", pattern="^(keyword|semantic|hybrid)$"),
+    mode: str = Query(default='hybrid', pattern='^(keyword|semantic|hybrid)$'),
     bm25_weight: float = Query(default=1.0, ge=0),
     vector_weight: float = Query(default=1.0, ge=0),
-    fusion: str = Query(default="rrf", pattern="^(rrf|weighted)$"),
+    fusion: str = Query(default='rrf', pattern='^(rrf|weighted)$'),
     candidates: int = Query(default=50, ge=1, le=1000),
     debug: bool = Query(default=False),
-    rerank: Optional[bool] = Query(default=None),
-    session: Optional[str] = Query(default=None),
-    sort: str = Query(default="relevance", pattern="^(relevance|freshness|title)$"),
+    rerank: bool | None = Query(default=None),
+    session: str | None = Query(default=None),
+    sort: str = Query(default='relevance', pattern='^(relevance|freshness|title)$'),
     highlight: bool = Query(default=False),
-    facets: Optional[str] = Query(default=None),
-    cursor: Optional[str] = Query(default=None),
-    min_score: Optional[float] = Query(default=None, ge=-1.0, le=1.0),
-    api_key: Optional[str] = Security(_api_key_header),
+    facets: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    min_score: float | None = Query(default=None, ge=-1.0, le=1.0),
+    api_key: str | None = Security(_api_key_header),
 ):
     return _run_search(
-        q=q, top_k=top_k, offset=offset, diversity=diversity, mode=mode,
-        bm25_weight=bm25_weight, vector_weight=vector_weight, fusion=fusion,
-        candidates=candidates, debug=debug, rerank=rerank, session=session,
-        sort=sort, highlight=highlight, facets=facets, cursor=cursor,
-        min_score=min_score, api_key=api_key,
+        q=q,
+        top_k=top_k,
+        offset=offset,
+        diversity=diversity,
+        mode=mode,
+        bm25_weight=bm25_weight,
+        vector_weight=vector_weight,
+        fusion=fusion,
+        candidates=candidates,
+        debug=debug,
+        rerank=rerank,
+        session=session,
+        sort=sort,
+        highlight=highlight,
+        facets=facets,
+        cursor=cursor,
+        min_score=min_score,
+        api_key=api_key,
     )
 
 
-@app.post("/search/explain", response_model=ExplainResponse,
-          dependencies=[Depends(require_api_key)])
+@app.post('/search/explain', response_model=ExplainResponse, dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
 def explain_search(request: Request, req: ExplainRequest, response: Response):
     if not req.query.strip():
-        raise HTTPException(status_code=400, detail="query must not be empty")
+        raise HTTPException(status_code=400, detail='query must not be empty')
     if len(req.query) > MAX_QUERY_CHARS:
-        raise HTTPException(status_code=400, detail="query too long")
+        raise HTTPException(status_code=400, detail='query too long')
     req.top_k = min(max(req.top_k, 1), 100)
 
     try:
         search_mode = SearchMode(req.mode)
     except ValueError:
-        raise HTTPException(status_code=400, detail="mode must be keyword, semantic, or hybrid")
-    if req.fusion not in ("rrf", "weighted"):
-        raise HTTPException(status_code=400, detail="fusion must be rrf or weighted")
+        raise HTTPException(status_code=400, detail='mode must be keyword, semantic, or hybrid') from None
+    if req.fusion not in ('rrf', 'weighted'):
+        raise HTTPException(status_code=400, detail='fusion must be rrf or weighted')
     if req.bm25_weight == 0 and req.vector_weight == 0:
-        raise HTTPException(status_code=400, detail="At least one weight must be > 0")
+        raise HTTPException(status_code=400, detail='At least one weight must be > 0')
     if not (math.isfinite(req.bm25_weight) and math.isfinite(req.vector_weight)):
-        raise HTTPException(status_code=400, detail="weights must be finite")
+        raise HTTPException(status_code=400, detail='weights must be finite')
 
     if _hybrid_searcher is None:
         kw = _keyword_only_page(req.query, req.top_k, 0, req.mode, _vector_error)
         return ExplainResponse(
-            query=req.query, mode=req.mode, metadata=kw.metadata,
-            results=[ExplainResult(doc_id=r.doc_id, final_score=r.score, bm25_score=r.bm25_score,
-                                   source=r.source or "bm25_fallback", title=r.title,
-                                   chunk_id=r.chunk_id) for r in kw.results],
+            query=req.query,
+            mode=req.mode,
+            metadata=kw.metadata,
+            results=[
+                ExplainResult(
+                    doc_id=r.doc_id,
+                    final_score=r.score,
+                    bm25_score=r.bm25_score,
+                    source=r.source or 'bm25_fallback',
+                    title=r.title,
+                    chunk_id=r.chunk_id,
+                )
+                for r in kw.results
+            ],
         )
 
     # Per-request weights on the shared instance (BUG-06), same as /search
-    explanation = _hybrid_searcher.explain(req.query, top_k=req.top_k,
-                                            mode=search_mode, fusion=req.fusion,
-                                            bm25_weight=req.bm25_weight,
-                                            vector_weight=req.vector_weight)
-    metadata = SearchMetadata(**explanation["metadata"]) if explanation["metadata"] else SearchMetadata(mode=req.mode)
+    explanation = _hybrid_searcher.explain(
+        req.query,
+        top_k=req.top_k,
+        mode=search_mode,
+        fusion=req.fusion,
+        bm25_weight=req.bm25_weight,
+        vector_weight=req.vector_weight,
+    )
+    metadata = SearchMetadata(**explanation['metadata']) if explanation['metadata'] else SearchMetadata(mode=req.mode)
 
-    results_out = [ExplainResult(**r) for r in explanation["results"]]
+    results_out = [ExplainResult(**r) for r in explanation['results']]
     if req.rerank:
         # Stage 2 debug visibility: raw signal values + blended rerank score
         # per result (the same numbers the ranker actually used).
         from ..ranking.features import build_context, extract_features
         from ..ranking.query import understand_query as _understand
+
         understanding = _understand(req.query, _storage)
         ctx = build_context(req.query, understanding=understanding, link_intel=_link_graph)
         docs_by_id = _storage.get_documents([r.doc_id for r in results_out])
         model = WeightedSumModel(RankingWeights.from_env())
         for row in results_out:
-            feats = extract_features(row.doc_id, _storage, ctx,
-                                     doc=docs_by_id.get(row.doc_id))
+            feats = extract_features(row.doc_id, _storage, ctx, doc=docs_by_id.get(row.doc_id))
             row.features = feats.as_dict()
             row.reranked_score = model.score(feats)
 
     return ExplainResponse(
-        query=explanation["query"],
-        mode=explanation["mode"],
+        query=explanation['query'],
+        mode=explanation['mode'],
         metadata=metadata,
         results=results_out,
     )
@@ -828,76 +948,78 @@ def _get_suggester():
     global _suggester
     if _suggester is None:
         from ..ranking.suggestions import Suggester
+
         _suggester = Suggester(_storage)
     return _suggester
 
 
-@app.get("/suggest", dependencies=_READ_AUTH)
+@app.get('/suggest', dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
-def suggest(request: Request, response: Response, q: str,
-            limit: int = Query(default=10, ge=1, le=50)):
+def suggest(request: Request, response: Response, q: str, limit: int = Query(default=10, ge=1, le=50)):
     """Autocomplete over the live index vocabulary — sorted-list + bisect
     prefix scan (see ranking/suggestions.py for the no-trie rationale)."""
-    return {"query": q, "suggestions": _get_suggester().suggest(q, limit=limit)}
+    return {'query': q, 'suggestions': _get_suggester().suggest(q, limit=limit)}
 
 
-@app.get("/related", dependencies=_READ_AUTH)
+@app.get('/related', dependencies=_READ_AUTH)
 @limiter.limit(_RATE_LIMIT)
-def related(request: Request, response: Response, q: str,
-            limit: int = Query(default=5, ge=1, le=20)):
+def related(request: Request, response: Response, q: str, limit: int = Query(default=5, ge=1, le=20)):
     """Related searches: query-log co-occurrence when it exists, trigram
     term-similarity fallback otherwise. Empty log never errors."""
     rows_cap = 10_000  # bounded co-occurrence scan — see Suggester docstring
-    return {"query": q, "related": _get_suggester().related_searches(
-        q, experiment_log=experiment_log, limit=limit, max_log_rows=rows_cap)}
+    return {
+        'query': q,
+        'related': _get_suggester().related_searches(
+            q, experiment_log=experiment_log, limit=limit, max_log_rows=rows_cap
+        ),
+    }
 
 
-@app.get("/health")
+@app.get('/health')
 def health():
     if _vector_store is None:
         return {
-            "status": "degraded",
-            "documents": _storage.document_count(),
-            "vectors": 0,
-            "coverage": 0.0,
-            "embedder": {"name": "unavailable", "dim": None, "degraded": True,
-                         "error": _vector_error},
-            "rag": _rag_health_block(),
+            'status': 'degraded',
+            'documents': _storage.document_count(),
+            'vectors': 0,
+            'coverage': 0.0,
+            'embedder': {'name': 'unavailable', 'dim': None, 'degraded': True, 'error': _vector_error},
+            'rag': _rag_health_block(),
         }
     vector_stats = _vector_store.get_stats()
-    vector_count = vector_stats.get("count", 0)
+    vector_count = vector_stats.get('count', 0)
     doc_count = _storage.document_count()
     coverage = vector_count / doc_count if doc_count > 0 else 1.0
 
     return {
-        "status": "ok" if coverage >= 0.9 else "degraded",
-        "documents": doc_count,
-        "vectors": vector_count,
-        "coverage": coverage,
-        "embedder": {
-            "name": _vector_store.embedder.name,
-            "dim": _vector_store.embedder.dim,
-            "degraded": isinstance(_vector_store.embedder, HashEmbedder),
+        'status': 'ok' if coverage >= 0.9 else 'degraded',
+        'documents': doc_count,
+        'vectors': vector_count,
+        'coverage': coverage,
+        'embedder': {
+            'name': _vector_store.embedder.name,
+            'dim': _vector_store.embedder.dim,
+            'degraded': isinstance(_vector_store.embedder, HashEmbedder),
         },
-        "rag": _rag_health_block(),
+        'rag': _rag_health_block(),
     }
 
 
-@app.get("/ready")
+@app.get('/ready')
 def ready():
     """Readiness probe: 200 once the store answers. A degraded vector
     subsystem is BROKEN for readiness (search would silently under-recall) —
     /health carries that nuance; /ready is binary for load balancers."""
     try:
-        _storage.conn.execute("SELECT 1").fetchone()
+        _storage.conn.execute('SELECT 1').fetchone()
     except sqlite3.Error:
-        raise HTTPException(status_code=503, detail="storage not ready")
+        raise HTTPException(status_code=503, detail='storage not ready') from None
     if _vector_store is None:
-        raise HTTPException(status_code=503, detail="vector subsystem not ready")
-    return {"ready": True}
+        raise HTTPException(status_code=503, detail='vector subsystem not ready')
+    return {'ready': True}
 
 
-@app.get("/metrics", dependencies=[Depends(require_api_key)])
+@app.get('/metrics', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)  # METRICS-NOLIMIT (review): gated routes are limited
 def metrics(request: Request, response: Response):
     """Ops endpoint: corpus size/embedder identity/queue depth — internal
@@ -908,55 +1030,54 @@ def metrics(request: Request, response: Response):
     sync_stats = _embedding_sync.get_stats() if _embedding_sync is not None else None
     vector_stats = _vector_store.get_stats() if _vector_store is not None else None
     out = {
-        "embedding_sync": sync_stats,
-        "vector_store": vector_stats,
-        "query_cache": _query_cache.stats(),
+        'embedding_sync': sync_stats,
+        'vector_store': vector_stats,
+        'query_cache': _query_cache.stats(),
     }
     # RAG counters (P7-3/P7-10): requests/refusals/degraded/usage/cost/
     # provider errors/redactions/citation failures/unsupported claims/
     # budget rejections + open SSE streams — day-keyed + totals.
     from ..rag.metrics import global_metrics
-    out["rag"] = {
-        "status": _rag_status,
-        "provider": _rag_config.provider,
-        "open_sse_streams": _rag_open_stream_count(),
-        "counters": global_metrics().snapshot(),
+
+    out['rag'] = {
+        'status': _rag_status,
+        'provider': _rag_config.provider,
+        'open_sse_streams': _rag_open_stream_count(),
+        'counters': global_metrics().snapshot(),
     }
     return out
 
 
-@app.get("/graph/neighbors", dependencies=[Depends(require_api_key)])
+@app.get('/graph/neighbors', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
-def graph_neighbors(request: Request, response: Response,
-                    url: str,
-                    direction: str = Query(default="out",
-                                            pattern="^(out|in|both)$"),
-                    limit: int = Query(default=50, ge=1, le=200)):
+def graph_neighbors(
+    request: Request,
+    response: Response,
+    url: str,
+    direction: str = Query(default='out', pattern='^(out|in|both)$'),
+    limit: int = Query(default=50, ge=1, le=200),
+):
     """WP5: bounded graph traversal over the normalized link graph.
     Key-gated like /search/explain (it exposes internal corpus linkage).
     Read-only; never triggers a fetch."""
     if _link_graph is None:
-        raise HTTPException(status_code=503, detail="link graph unavailable")
+        raise HTTPException(status_code=503, detail='link graph unavailable')
     if len(url) > MAX_QUERY_CHARS:
-        raise HTTPException(status_code=400, detail="url too long")
+        raise HTTPException(status_code=400, detail='url too long')
     edges = _link_graph.neighbors(url, direction=direction, limit=limit)
     return {
-        "url": url,
-        "direction": direction,
-        "edges": [
-            {"from": e.from_url, "to": e.to_url,
-             "anchor_text": e.anchor_text, "rel": e.rel_attrs}
-            for e in edges
+        'url': url,
+        'direction': direction,
+        'edges': [
+            {'from': e.from_url, 'to': e.to_url, 'anchor_text': e.anchor_text, 'rel': e.rel_attrs} for e in edges
         ],
-        "count": len(edges),
+        'count': len(edges),
     }
 
 
-@app.post("/ask", response_model=AskResponse,
-          dependencies=[Depends(require_api_key)])   # NEVER _READ_AUTH (WP14-8)
+@app.post('/ask', response_model=AskResponse, dependencies=[Depends(require_api_key)])  # NEVER _READ_AUTH (WP14-8)
 @limiter.limit(_RATE_LIMIT)
-def ask(request: Request, body: AskRequest, response: Response,
-        api_key: Optional[str] = Security(_api_key_header)):
+def ask(request: Request, body: AskRequest, response: Response, api_key: str | None = Security(_api_key_header)):
     """Answer + sources (P7-6). Key-gated UNCONDITIONALLY (LLM answers are
     spend-generating outputs, not free reads — a misconfigured
     NEXUS_REQUIRE_AUTH_FOR_READS=0 must never open this endpoint). The
@@ -964,15 +1085,15 @@ def ask(request: Request, body: AskRequest, response: Response,
     BUDGET (shared SQLite state, holds across workers) is checked BEFORE
     any provider spend and settled with actual usage after. Errors carry
     no internals: type-coded reasons only."""
-    if _rag_service is None or _rag_status != "ok":
+    if _rag_service is None or _rag_status != 'ok':
         # kill switch, absent provider, or stub-without-opt-in: search
         # keeps serving; /ask is explicitly not available.
         global_metrics().record_request()
-        raise HTTPException(status_code=503,
-                            detail=f"rag subsystem {_rag_status}")
+        raise HTTPException(status_code=503, detail=f'rag subsystem {_rag_status}')
     import uuid
+
     request_id = uuid.uuid4().hex[:12]
-    _rag_metrics = global_metrics()
+    rag_metrics = global_metrics()
 
     bucket = _rag_bucket(api_key, request)
 
@@ -983,47 +1104,52 @@ def ask(request: Request, body: AskRequest, response: Response,
         _rag_service.retriever.validate_query(body.query)
         _rag_service.retriever._render_filters(body.filters)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     # Token-budget pre-check: the honest worst case (context budget +
     # answer budget + framing slack) is refused up front on 429 — the
     # fail-closed direction (over-estimating refuses more, never less).
     try:
-        precheck(_storage, bucket,
-                 _rag_config.max_tokens + _rag_config.max_context_tokens
-                 + 256)
-    except BudgetExceeded as exc:
-        _rag_metrics.record_budget_rejection()
+        precheck(_storage, bucket, _rag_config.max_tokens + _rag_config.max_context_tokens + 256)
+    except BudgetExceeded:
+        rag_metrics.record_budget_rejection()
         raise HTTPException(
             status_code=429,
-            detail="daily rag token budget exceeded for this key/ip",
-            headers={"Retry-After": str(_retry_after_next_utc_day())})  # next UTC day at worst
+            detail='daily rag token budget exceeded for this key/ip',
+            headers={'Retry-After': str(_retry_after_next_utc_day())},
+        ) from None  # next UTC day at worst
 
     try:
         result = _rag_service.ask(
-            body.query, filters=body.filters, top_k=body.top_k,
-            mode=body.mode, session_id=body.session_id, scope=bucket,
-            request_id=request_id)
+            body.query,
+            filters=body.filters,
+            top_k=body.top_k,
+            mode=body.mode,
+            session_id=body.session_id,
+            scope=bucket,
+            request_id=request_id,
+        )
     except SessionExpired:
-        raise HTTPException(status_code=400, detail="session_expired")
+        raise HTTPException(status_code=400, detail='session_expired') from None
     except SessionCapExceeded as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except RagServiceUnavailable:
-        raise HTTPException(status_code=503,
-                            detail="rag temporarily unavailable")
+        raise HTTPException(status_code=503, detail='rag temporarily unavailable') from None
     except ProviderBusy as exc:
-        raise HTTPException(status_code=429,
-                            detail="llm provider busy, retry later",
-                            headers={"Retry-After":
-                                     str(max(int(exc.retry_after), 1))})
+        raise HTTPException(
+            status_code=429,
+            detail='llm provider busy, retry later',
+            headers={'Retry-After': str(max(int(exc.retry_after), 1))},
+        ) from None
     except ProviderError:
-        raise HTTPException(status_code=503,
-                            detail="llm provider error")
+        raise HTTPException(status_code=503, detail='llm provider error') from None
 
     # settle with the ACTUAL provider spend (refusals/degraded settle 0)
-    spend = (result.metadata.get("tokens_in", 0)
-             + result.metadata.get("tokens_out", 0)) \
-        if result.degraded_reason is None else 0
+    spend = (
+        (result.metadata.get('tokens_in', 0) + result.metadata.get('tokens_out', 0))
+        if result.degraded_reason is None
+        else 0
+    )
     settle(_storage, bucket, spend)
 
     return AskResponse(
@@ -1047,7 +1173,6 @@ def ask(request: Request, body: AskRequest, response: Response,
 # X-Accel-Buffering: no (nginx) + no response buffering elsewhere.
 # ---------------------------------------------------------------------------
 
-import threading as _threading
 
 _rag_open_streams: dict[str, int] = {}
 _rag_open_streams_lock = _threading.Lock()
@@ -1059,7 +1184,7 @@ def _rag_open_stream_count() -> int:
 
 
 def _max_open_streams_from_env() -> int:
-    raw = (os.environ.get("NEXUS_RAG_MAX_OPEN_STREAMS") or "").strip()
+    raw = (os.environ.get('NEXUS_RAG_MAX_OPEN_STREAMS') or '').strip()
     try:
         value = int(raw)
     except ValueError:
@@ -1069,75 +1194,72 @@ def _max_open_streams_from_env() -> int:
 
 def _sse_event(payload: dict) -> str:
     import json as _json
-    return f"event: {payload['event']}\ndata: " \
-           f"{_json.dumps(payload['data'])}\n\n"
+
+    return f'event: {payload["event"]}\ndata: {_json.dumps(payload["data"])}\n\n'
 
 
-@app.post("/ask/stream", dependencies=[Depends(require_api_key)])
+@app.post('/ask/stream', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
-def ask_stream(request: Request, body: AskRequest,
-               api_key: Optional[str] = Security(_api_key_header)):
+def ask_stream(request: Request, body: AskRequest, api_key: str | None = Security(_api_key_header)):
     """Server-sent events: meta (before any token; a refusal streams no
     tokens) -> token* -> citations (authoritative) -> done; truncated /
     error events instead of silent hangs. Streamed text is PROVISIONAL
     until done (sanitization runs per-chunk; verification runs at end)."""
-    if _rag_service is None or _rag_status != "ok":
-        raise HTTPException(status_code=503,
-                            detail=f"rag subsystem {_rag_status}")
+    if _rag_service is None or _rag_status != 'ok':
+        raise HTTPException(status_code=503, detail=f'rag subsystem {_rag_status}')
     try:
         _rag_service.retriever.validate_query(body.query)
         _rag_service.retriever._render_filters(body.filters)  # REDTEAM-FILTERS
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     bucket = _rag_bucket(api_key, request)
     try:
-        precheck(_storage, bucket,
-                 _rag_config.max_tokens + _rag_config.max_context_tokens
-                 + 256)
+        precheck(_storage, bucket, _rag_config.max_tokens + _rag_config.max_context_tokens + 256)
     except BudgetExceeded:
         global_metrics().record_budget_rejection()
-        raise HTTPException(status_code=429,
-                            detail="daily rag token budget exceeded for this key/ip",
-                            headers={"Retry-After": str(_retry_after_next_utc_day())})
+        raise HTTPException(
+            status_code=429,
+            detail='daily rag token budget exceeded for this key/ip',
+            headers={'Retry-After': str(_retry_after_next_utc_day())},
+        ) from None
 
     cap = _max_open_streams_from_env()
     with _rag_open_streams_lock:
         open_now = _rag_open_streams.get(bucket, 0)
         if open_now >= cap:
-            raise HTTPException(status_code=429,
-                                detail="too many open rag streams",
-                                headers={"Retry-After": "2"})
+            raise HTTPException(status_code=429, detail='too many open rag streams', headers={'Retry-After': '2'})
         _rag_open_streams[bucket] = open_now + 1
 
     import uuid
+
     request_id = uuid.uuid4().hex[:12]
 
     def _events():
         settled = False
         try:
             for event in _rag_service.ask_streaming(
-                    body.query, filters=body.filters, top_k=body.top_k,
-                    mode=body.mode, session_id=body.session_id, scope=bucket,
-                    request_id=request_id):
+                body.query,
+                filters=body.filters,
+                top_k=body.top_k,
+                mode=body.mode,
+                session_id=body.session_id,
+                scope=bucket,
+                request_id=request_id,
+            ):
                 yield _sse_event(event)
-                if event["event"] == "done" and not settled:
+                if event['event'] == 'done' and not settled:
                     settled = True
-                    spend = (event["data"].get("spend") or {})
+                    spend = event['data'].get('spend') or {}
                     # refusal/degraded/stream-truncated carry zero spend —
                     # settle() no-ops on <=0, so a plain settle is safe
-                    settle(_storage, bucket,
-                           spend.get("tokens_in", 0) + spend.get("tokens_out", 0))
+                    settle(_storage, bucket, spend.get('tokens_in', 0) + spend.get('tokens_out', 0))
         except SessionExpired:
-            yield _sse_event({"event": "error",
-                               "data": {"reason": "session_expired"}})
+            yield _sse_event({'event': 'error', 'data': {'reason': 'session_expired'}})
         except SessionCapExceeded as exc:
-            yield _sse_event({"event": "error",
-                               "data": {"reason": "session_cap_exceeded",
-                                        "detail": str(exc)}})
+            yield _sse_event({'event': 'error', 'data': {'reason': 'session_cap_exceeded', 'detail': str(exc)}})
         except RagServiceUnavailable:
-            yield _sse_event({"event": "error", "data":
-                              {"reason": "retrieval_unavailable"}})
+            yield _sse_event({'event': 'error', 'data': {'reason': 'retrieval_unavailable'}})
         finally:
             with _rag_open_streams_lock:
                 remaining = _rag_open_streams.get(bucket, 1) - 1
@@ -1151,34 +1273,38 @@ def ask_stream(request: Request, body: AskRequest,
             # settle the same worst-case estimate the pre-check reserved
             # (refusals/degraded carry 0, so honest completions only).
             if not settled:
-                settle(_storage, bucket,
-                       _rag_config.max_tokens
-                       + _rag_config.max_context_tokens + 256)
+                settle(_storage, bucket, _rag_config.max_tokens + _rag_config.max_context_tokens + 256)
             # disconnect (GeneratorExit) lands here: the provider call
             # result is abandoned, the bucket slot is released.
 
     from fastapi.responses import StreamingResponse
+
     return StreamingResponse(
-        _events(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache",
-                 "X-Accel-Buffering": "no",   # nginx: do not buffer SSE
-                 "Connection": "keep-alive"})
+        _events(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # nginx: do not buffer SSE
+            'Connection': 'keep-alive',
+        },
+    )
 
 
-@app.get("/graph/report", dependencies=[Depends(require_api_key)])
+@app.get('/graph/report', dependencies=[Depends(require_api_key)])
 @limiter.limit(_RATE_LIMIT)
 def graph_report(request: Request, response: Response):
     """WP5: component + orphans + dead-links summary. Key-gated, read-only,
     cross-references existing data only."""
     if _link_graph is None:
-        raise HTTPException(status_code=503, detail="link graph unavailable")
+        raise HTTPException(status_code=503, detail='link graph unavailable')
     from ..links.reports import orphan_pages
-    mapping, sizes = _link_graph.connected_components()
+
+    _mapping, sizes = _link_graph.connected_components()
     orphans = orphan_pages(_storage, _link_graph)
     return {
-        "edges": _link_graph.edge_count(),
-        "component_count": len(sizes),
-        "largest_component": max(sizes.values()) if sizes else 0,
-        "orphan_pages": len(orphans),
-        "orphans_sample": orphans[:10],
+        'edges': _link_graph.edge_count(),
+        'component_count': len(sizes),
+        'largest_component': max(sizes.values()) if sizes else 0,
+        'orphan_pages': len(orphans),
+        'orphans_sample': orphans[:10],
     }

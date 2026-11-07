@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 
 def _blocked_ip(ip) -> bool:
-    mapped = getattr(ip, "ipv4_mapped", None)  # ::ffff:127.0.0.1 -> 127.0.0.1
+    mapped = getattr(ip, 'ipv4_mapped', None)  # ::ffff:127.0.0.1 -> 127.0.0.1
     if mapped is not None:
         ip = mapped
     return (
@@ -19,7 +19,7 @@ def _blocked_ip(ip) -> bool:
 
 
 def _normalize_host(hostname: str) -> str:
-    return hostname.strip().lower().rstrip(".")
+    return hostname.strip().lower().rstrip('.')
 
 
 def resolve_validated_addresses(hostname: str):
@@ -32,7 +32,7 @@ def resolve_validated_addresses(hostname: str):
     if not hostname:
         return None
     hostname = _normalize_host(hostname)
-    if hostname == "localhost" or hostname.endswith(".localhost"):
+    if hostname == 'localhost' or hostname.endswith('.localhost'):
         return None
 
     try:  # literal IP address
@@ -41,7 +41,7 @@ def resolve_validated_addresses(hostname: str):
             return None
         family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
         sockaddr = (hostname, 0, 0, 0) if ip.version == 6 else (hostname, 0)
-        return [(family, socket.SOCK_STREAM, 0, "", sockaddr)]
+        return [(family, socket.SOCK_STREAM, 0, '', sockaddr)]
     except ValueError:
         pass
 
@@ -51,7 +51,7 @@ def resolve_validated_addresses(hostname: str):
         return None
     for address in addresses:
         try:
-            ip = ipaddress.ip_address(address[4][0].split("%")[0])
+            ip = ipaddress.ip_address(address[4][0].split('%')[0])
         except ValueError:
             return None
         if _blocked_ip(ip):
@@ -66,7 +66,7 @@ def is_private_or_local_host(hostname: str) -> bool:
 def validate_url(url: str) -> bool:
     """True only for http(s) URLs whose host resolves exclusively to public IPs."""
     parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
+    if parts.scheme not in {'http', 'https'} or not parts.hostname:
         return False
     return not is_private_or_local_host(parts.hostname)
 
@@ -108,21 +108,19 @@ def install_dns_pinning() -> None:
 
 
 def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
-    pins = getattr(_tls, "pins", None)
+    pins = getattr(_tls, 'pins', None)
     if pins and isinstance(host, str):
         pinned = pins.get(_normalize_host(host))
         if pinned is not None:
             try:
                 port_num = int(port) if port is not None else 0
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as err:
                 # SKEP-5 (P3): a service-name port on a PINNED host used
                 # to fall back to a real DNS lookup — the exact rebind
                 # window the pin exists to close. Fail closed instead:
                 # the HTTP stack always passes numeric ports; anything
                 # else can safely be refused.
-                raise socket.gaierror(
-                    socket.EAI_NONAME,
-                    "no pinned address for service-name port")
+                raise socket.gaierror(socket.EAI_NONAME, 'no pinned address for service-name port') from None
             result = []
             for fam, stype, prot, canon, sa in pinned:
                 if family and fam != family:
@@ -136,13 +134,11 @@ def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
                 if type and stype and stype != type:
                     continue
                 out_type = type or stype or socket.SOCK_STREAM
-                entry = (fam, out_type, prot, canon, (sa[0], port_num) + tuple(sa[2:]))
+                entry = (fam, out_type, prot, canon, (sa[0], port_num, *tuple(sa[2:])))
                 if entry not in result:
                     result.append(entry)
             if not result:
-                raise socket.gaierror(
-                    socket.EAI_NONAME, "no pinned address for requested family/type"
-                )
+                raise socket.gaierror(socket.EAI_NONAME, 'no pinned address for requested family/type')
             return result
     return _real_getaddrinfo(host, port, family, type, proto, flags)
 
@@ -156,7 +152,7 @@ def pinned_resolution(hostname: str, addresses):
     """Force getaddrinfo(hostname, ...) to return `addresses`, for the
     current thread only, for the duration of this block."""
     key = _normalize_host(hostname)
-    pins = getattr(_tls, "pins", None)
+    pins = getattr(_tls, 'pins', None)
     if pins is None:
         pins = _tls.pins = {}
     previous = pins.get(key)
@@ -187,7 +183,7 @@ class _BlockedPin:
     __slots__ = ()
 
     def __enter__(self):
-        raise PinnedResolutionBlocked("host failed pin-time validation")
+        raise PinnedResolutionBlocked('host failed pin-time validation')
 
     def __exit__(self, *exc):
         return False

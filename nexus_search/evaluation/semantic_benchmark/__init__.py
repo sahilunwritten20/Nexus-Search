@@ -25,7 +25,8 @@ hybrid-vs-keyword on NDCG@10.
 Run: python -m nexus_search.evaluation.semantic_benchmark
 Outputs JSON + a markdown table to docs/SEMANTIC_BENCHMARK.md.
 """
-from .fixture import build_fixture, SPLIT_SEED  # noqa: F401
-from .runner import run_benchmark, main  # noqa: F401
 
-__all__ = ["build_fixture", "run_benchmark", "main", "SPLIT_SEED"]
+from .fixture import SPLIT_SEED, build_fixture
+from .runner import main, run_benchmark
+
+__all__ = ['SPLIT_SEED', 'build_fixture', 'main', 'run_benchmark']

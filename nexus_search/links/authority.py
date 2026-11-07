@@ -10,9 +10,9 @@ never leave half-written scores behind.
 Proven-not-perfumed: tests/links/ asserts the mission's exact success shape
 (clique vs. diverse inlinks vs. orphan) computes the right ordering.
 """
+
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -21,7 +21,7 @@ import numpy as np
 
 from .graph import LinkGraph
 
-logger = logging.getLogger("nexus_search.links.authority")
+logger = logging.getLogger('nexus_search.links.authority')
 
 DAMPING = 0.85
 # Iteration cap (review PR-CONVERGE): 30 iterations cannot reach the
@@ -35,7 +35,7 @@ CONVERGENCE_TOL = 1e-6
 RECIPROCAL_FACTOR = 0.25  # mutual admiration discount, both directions
 
 # rel values that mark an edge as not-an-endorsement (SEO convention)
-_NON_ENDORSING = ("nofollow", "sponsored", "ugc")
+_NON_ENDORSING = ('nofollow', 'sponsored', 'ugc')
 
 
 @dataclass
@@ -77,19 +77,23 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     version = graph.edges_version()
     if not force:
         with graph.lock:
-            row = graph.conn.execute(
-                "SELECT value FROM graph_meta WHERE key = 'computed_version'"
-            ).fetchone()
+            row = graph.conn.execute("SELECT value FROM graph_meta WHERE key = 'computed_version'").fetchone()
         if row is not None and int(row[0]) == version:
-            return AuthorityStats(pages=0, edges_in=0, edges_used=0,
-                                  reciprocal_pairs=0, iterations=0,
-                                  converged=True, seconds=time.time() - started,
-                                  skipped=True)
+            return AuthorityStats(
+                pages=0,
+                edges_in=0,
+                edges_used=0,
+                reciprocal_pairs=0,
+                iterations=0,
+                converged=True,
+                seconds=time.time() - started,
+                skipped=True,
+            )
 
     edges = graph.edges()
-    stats = AuthorityStats(pages=0, edges_in=len(edges), edges_used=0,
-                           reciprocal_pairs=0, iterations=0, converged=False,
-                           seconds=0.0)
+    stats = AuthorityStats(
+        pages=0, edges_in=len(edges), edges_used=0, reciprocal_pairs=0, iterations=0, converged=False, seconds=0.0
+    )
 
     # per-URL aggregated inbound anchor text (ALL edges with text, not just
     # endorsing ones: a nofollow anchor still describes its target), capped
@@ -98,35 +102,34 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     for e in sorted(edges, key=lambda e: (e.to_url, e.from_url)):
         if e.anchor_text.strip() and e.from_url != e.to_url:
             anchors.setdefault(e.to_url, []).append(e.anchor_text.strip())
-    anchor_text = {url: (" | ".join(parts))[:512]
-                   for url, parts in anchors.items()}
+    anchor_text = {url: (' | '.join(parts))[:512] for url, parts in anchors.items()}
 
     endorsing = {}  # (from, to) -> None, dedup by PK
     for e in edges:
         if e.from_url == e.to_url or not _endorses(e.rel_attrs):
             continue
-        endorsing[(e.from_url, e.to_url)] = True
+        endorsing[e.from_url, e.to_url] = True
 
     urls = sorted({u for pair in endorsing for u in pair})
     n = len(urls)
     # scores table is rebuilt even on empty input (clears stale rows), but a
     # graph with no endorsing edges yields NEUTRAL-by-omission downstream
     if n == 0:
-        _write_scores(graph, {}, anchors=anchor_text, domains={},
-                      version=version,
-                      seconds=time.time() - started)
+        _write_scores(graph, {}, anchors=anchor_text, domains={}, version=version, seconds=time.time() - started)
         stats.seconds = time.time() - started
         return stats
 
     idx = {u: i for i, u in enumerate(urls)}
     src, dst, wts = [], [], []
     seen_pairs = set(endorsing)
-    for (a, b) in sorted(endorsing):
+    for a, b in sorted(endorsing):
         w = 1.0
         if (b, a) in seen_pairs:
             w *= RECIPROCAL_FACTOR
             stats.reciprocal_pairs += 1
-        src.append(idx[a]); dst.append(idx[b]); wts.append(w)
+        src.append(idx[a])
+        dst.append(idx[b])
+        wts.append(w)
     stats.edges_used = len(src)
     stats.reciprocal_pairs //= 2  # counted each direction
 
@@ -163,9 +166,9 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
         # withheld by reciprocal discounts joins the same uniform pool
         dangling_mass = pr[out_degree == 0.0].sum()
         has_out = out_degree > 0.0
-        withheld_mass = float(
-            (pr[has_out] * (1.0 - outflow[has_out] / out_degree[has_out])).sum()
-        ) if has_out.any() else 0.0
+        withheld_mass = (
+            float((pr[has_out] * (1.0 - outflow[has_out] / out_degree[has_out])).sum()) if has_out.any() else 0.0
+        )
         np.add.at(new, dst, DAMPING * contribution)
         new += DAMPING * (dangling_mass + withheld_mass) / n
         delta = np.abs(new - pr).sum()
@@ -177,10 +180,10 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     # per-URL inbound stats (endorsing edges only) + domain diversity
     in_count = np.zeros(n, dtype=np.int64)
     in_domains: list[set] = [set() for _ in range(n)]
-    for (a, b) in endorsing:
+    for a, b in endorsing:
         i = idx[b]
         in_count[i] += 1
-        in_domains[i].add((urlsplit(a).hostname or "").lower())
+        in_domains[i].add((urlsplit(a).hostname or '').lower())
 
     scores: dict[str, tuple[float, float, int, int, float]] = {}
     # normalize PR to a comparable [0,1]-ish range for the ranker: divide by
@@ -190,8 +193,7 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
         diversity = min(len(in_domains[i]) / 10.0, 1.0)
         authority = (float(pr[i]) / max_pr) * (0.5 + 0.5 * diversity)
         popularity = math.log1p(len(in_domains[i])) / math.log1p(100.0)
-        scores[u] = (authority, popularity, int(in_count[i]),
-                     len(in_domains[i]), float(pr[i]))
+        scores[u] = (authority, popularity, int(in_count[i]), len(in_domains[i]), float(pr[i]))
 
     # Per-domain aggregate (WP5): PR-weighted mean of member page authority
     # (a high-PR page carries its domain's reputation more than a footnote
@@ -199,7 +201,7 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     # behind NEXUS_DOMAIN_AUTHORITY_FALLBACK (default off).
     domain_pages: dict[str, list[int]] = {}
     for u, i in idx.items():
-        domain_pages.setdefault((urlsplit(u).hostname or "").lower(), []).append(i)
+        domain_pages.setdefault((urlsplit(u).hostname or '').lower(), []).append(i)
     domains: dict[str, tuple[float, float, int]] = {}
     for domain, members in sorted(domain_pages.items()):
         weights = np.asarray([pr[i] for i in members], dtype=np.float64)
@@ -209,9 +211,7 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
         d_auth = float((weights * auths).sum() / total) if total > 0 else 0.0
         domains[domain] = (d_auth, float(pops.mean()), len(members))
 
-    _write_scores(graph, scores, anchors=anchor_text, domains=domains,
-                  version=version,
-                  seconds=time.time() - started)
+    _write_scores(graph, scores, anchors=anchor_text, domains=domains, version=version, seconds=time.time() - started)
     stats.pages = n
     stats.iterations = it
     stats.converged = converged
@@ -219,8 +219,7 @@ def compute_authority(graph: LinkGraph, force: bool = False) -> AuthorityStats:
     return stats
 
 
-def _write_scores(graph: LinkGraph, scores: dict, anchors: dict,
-                  domains: dict, version: int, seconds: float) -> None:
+def _write_scores(graph: LinkGraph, scores: dict, anchors: dict, domains: dict, version: int, seconds: float) -> None:
     """Shadow-swap the scores table: readers never see a partial rewrite.
     Also rebuilds the derived tables (url_anchors, domain_authority) and
     records the computed edge-set version (the incremental guard), then
@@ -228,7 +227,7 @@ def _write_scores(graph: LinkGraph, scores: dict, anchors: dict,
     now = time.time()
     with graph.lock:
         conn = graph.conn
-        conn.execute("DROP TABLE IF EXISTS authority_scores_shadow")
+        conn.execute('DROP TABLE IF EXISTS authority_scores_shadow')
         conn.execute("""
             CREATE TABLE authority_scores_shadow (
                 url TEXT PRIMARY KEY, pagerank REAL NOT NULL,
@@ -237,35 +236,33 @@ def _write_scores(graph: LinkGraph, scores: dict, anchors: dict,
                 computed_at REAL NOT NULL)""")
         if scores:
             conn.executemany(
-                "INSERT INTO authority_scores_shadow (url, pagerank, inlink_count, "
-                "inlink_domains, authority, popularity, computed_at) VALUES (?,?,?,?,?,?,?)",
-                [(u, pr, ic, idom, auth, pop, now)
-                 for u, (auth, pop, ic, idom, pr) in scores.items()])
+                'INSERT INTO authority_scores_shadow (url, pagerank, inlink_count, '
+                'inlink_domains, authority, popularity, computed_at) VALUES (?,?,?,?,?,?,?)',
+                [(u, pr, ic, idom, auth, pop, now) for u, (auth, pop, ic, idom, pr) in scores.items()],
+            )
         # derived tables are rebuilt whole (idempotent-by-replacement)
-        conn.execute("DELETE FROM url_anchors")
+        conn.execute('DELETE FROM url_anchors')
         if anchors:
-            conn.executemany(
-                "INSERT INTO url_anchors (url, anchor_text) VALUES (?,?)",
-                sorted(anchors.items()))
-        conn.execute("DELETE FROM domain_authority")
+            conn.executemany('INSERT INTO url_anchors (url, anchor_text) VALUES (?,?)', sorted(anchors.items()))
+        conn.execute('DELETE FROM domain_authority')
         if domains:
             conn.executemany(
-                "INSERT INTO domain_authority (domain, authority, popularity, "
-                "pages, computed_at) VALUES (?,?,?,?,?)",
-                [(d, auth, pop, pages, now)
-                 for d, (auth, pop, pages) in sorted(domains.items())])
+                'INSERT INTO domain_authority (domain, authority, popularity, pages, computed_at) VALUES (?,?,?,?,?)',
+                [(d, auth, pop, pages, now) for d, (auth, pop, pages) in sorted(domains.items())],
+            )
         conn.execute(
             "INSERT INTO graph_meta (key, value) VALUES ('computed_version', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (str(version),))
+            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (str(version),),
+        )
         conn.commit()  # shadow complete — Python begins an implicit txn on DDL
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute('BEGIN IMMEDIATE')
         try:
-            conn.execute("ALTER TABLE authority_scores RENAME TO authority_scores_old")
-            conn.execute("ALTER TABLE authority_scores_shadow RENAME TO authority_scores")
-            conn.execute("DROP TABLE authority_scores_old")
+            conn.execute('ALTER TABLE authority_scores RENAME TO authority_scores_old')
+            conn.execute('ALTER TABLE authority_scores_shadow RENAME TO authority_scores')
+            conn.execute('DROP TABLE authority_scores_old')
         except BaseException:
-            conn.execute("ROLLBACK")
+            conn.execute('ROLLBACK')
             raise
-        conn.execute("COMMIT")
+        conn.execute('COMMIT')
         graph.invalidate_authority_cache()

@@ -22,9 +22,10 @@ enter the prompt and in what order:
 Determinism: first-fit in retrieval rank order; ties and equal scores never
 reorder anything (input order is the tie-break by construction).
 """
+
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 from .egress import llm_allowed
 from .retrieval import RagChunk
@@ -41,6 +42,7 @@ def estimate_tokens(text: str, chars_per_token: int = 4) -> int:
 
 def _token_set(text: str) -> frozenset:
     from ..core.tokenizer import tokenize
+
     return frozenset(tokenize(text))
 
 
@@ -54,13 +56,14 @@ def jaccard(a: frozenset, b: frozenset) -> float:
 class SelectedSource:
     """One prompt source: stable number, the cited chunk, and the (possibly
     neighbor-stitched) text that enters the prompt."""
-    number: int                  # [1..n], stable
+
+    number: int  # [1..n], stable
     chunk_id: str
     parent_id: str
-    chunk_index: Optional[int]
+    chunk_index: int | None
     title: str
-    url: Optional[str]
-    text: str                    # the text that enters the prompt
+    url: str | None
+    text: str  # the text that enters the prompt
     stitched_with: list[str] = field(default_factory=list)  # neighbor ids
 
 
@@ -84,7 +87,7 @@ def select_context(
     per_parent_cap: int = 3,
     dedup_threshold: float = 0.85,
     stitch_neighbors: bool = True,
-    fetch_neighbors: Optional[Callable[[str, list[int]], dict[int, str]]] = None,
+    fetch_neighbors: Callable[[str, list[int]], dict[int, str]] | None = None,
 ) -> ContextSelection:
     """Budgeted, deduped, per-parent-capped, stably-numbered selection.
 
@@ -113,12 +116,11 @@ def select_context(
             return chunk.text, []
         if chunk.chunk_index is None or not chunk.chunk_count:
             return chunk.text, []
-        indexes = [i for i in (chunk.chunk_index - 1, chunk.chunk_index + 1)
-                   if 0 <= i < chunk.chunk_count]
+        indexes = [i for i in (chunk.chunk_index - 1, chunk.chunk_index + 1) if 0 <= i < chunk.chunk_count]
         # only neighbors that are NOT already their own numbered sources
         wanted = []
         for i in indexes:
-            nid = f"{chunk.parent_id}#chunk{i}"
+            nid = f'{chunk.parent_id}#chunk{i}'
             if nid not in selected_ids:
                 wanted.append(i)
         if not wanted:
@@ -126,52 +128,47 @@ def select_context(
         fetched = fetch_neighbors(chunk.parent_id, wanted)
         pieces = []
         stitched_with = []
-        for i in sorted([chunk.chunk_index] + [
-                j for j in wanted if j in fetched]):
+        for i in sorted([chunk.chunk_index] + [j for j in wanted if j in fetched]):
             if i == chunk.chunk_index:
                 pieces.append(chunk.text)
             else:
                 pieces.append(fetched[i])
-                stitched_with.append(f"{chunk.parent_id}#chunk{i}")
+                stitched_with.append(f'{chunk.parent_id}#chunk{i}')
         if len(pieces) == 1:
             return chunk.text, []
-        stitched = "\n".join(pieces)
+        stitched = '\n'.join(pieces)
         base_tokens = estimate_tokens(chunk.text, chars_per_token)
         new_tokens = estimate_tokens(stitched, chars_per_token)
-        if (used_tokens - base_tokens + new_tokens > max_context_tokens
-                or used_bytes - len(chunk.text) + len(stitched) > max_context_bytes):
+        if (
+            used_tokens - base_tokens + new_tokens > max_context_tokens
+            or used_bytes - len(chunk.text) + len(stitched) > max_context_bytes
+        ):
             return chunk.text, []  # budget says no: keep the bare chunk
         return stitched, stitched_with
 
     for chunk in chunks:
         if not llm_allowed(chunk.metadata):
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "llm_allowed"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'llm_allowed'})
             continue
         if chunk.chunk_id in stitched_ids:
             # already inside an earlier source's stitched text
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "stitched_earlier"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'stitched_earlier'})
             continue
         count = per_parent.get(chunk.parent_id, 0)
         if count >= per_parent_cap:
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "per_parent_cap"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'per_parent_cap'})
             continue
         text_set = _token_set(chunk.text)
         if any(jaccard(text_set, s) >= dedup_threshold for s in selected_sets):
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "near_duplicate"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'near_duplicate'})
             continue
         tokens = estimate_tokens(chunk.text, chars_per_token)
         nbytes = len(chunk.text)
         if used_tokens + tokens > max_context_tokens:
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "budget_tokens"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'budget_tokens'})
             continue
         if used_bytes + nbytes > max_context_bytes:
-            selection.dropped.append({"chunk_id": chunk.chunk_id,
-                                      "reason": "budget_bytes"})
+            selection.dropped.append({'chunk_id': chunk.chunk_id, 'reason': 'budget_bytes'})
             continue
         # the chunk itself fits — commit it, then try to stitch neighbors
         used_tokens += tokens
@@ -186,25 +183,27 @@ def select_context(
             used_tokens += delta_t
             used_bytes += delta_b
             stitched_ids.update(stitched_with)
-        selection.sources.append(SelectedSource(
-            number=len(selection.sources) + 1,
-            chunk_id=chunk.chunk_id,
-            parent_id=chunk.parent_id,
-            chunk_index=chunk.chunk_index,
-            title=chunk.title,
-            url=chunk.url,
-            text=final_text,
-            stitched_with=stitched_with,
-        ))
+        selection.sources.append(
+            SelectedSource(
+                number=len(selection.sources) + 1,
+                chunk_id=chunk.chunk_id,
+                parent_id=chunk.parent_id,
+                chunk_index=chunk.chunk_index,
+                title=chunk.title,
+                url=chunk.url,
+                text=final_text,
+                stitched_with=stitched_with,
+            )
+        )
 
     selection.stats = {
-        "sources": len(selection.sources),
-        "dropped": len(selection.dropped),
-        "context_tokens_estimated": used_tokens,
-        "context_bytes": used_bytes,
-        "max_context_tokens": max_context_tokens,
-        "max_context_bytes": max_context_bytes,
-        "drop_reasons": sorted({d["reason"] for d in selection.dropped}),
+        'sources': len(selection.sources),
+        'dropped': len(selection.dropped),
+        'context_tokens_estimated': used_tokens,
+        'context_bytes': used_bytes,
+        'max_context_tokens': max_context_tokens,
+        'max_context_bytes': max_context_bytes,
+        'drop_reasons': sorted({d['reason'] for d in selection.dropped}),
     }
     return selection
 
@@ -217,18 +216,19 @@ def make_storage_neighbor_fetcher(storage) -> Callable[[str, list[int]], dict[in
     of a chunk whose metadata says llm_allowed:false — this fetcher enforces
     it (stitching is a prompt path, so the egress filter applies to it
     exactly as it applies to selected chunks)."""
+
     def fetch(parent_id: str, indexes: list[int]) -> dict[int, str]:
-        ids = [f"{parent_id}#chunk{i}" for i in indexes]
+        ids = [f'{parent_id}#chunk{i}' for i in indexes]
         docs = storage.get_documents(ids)
         out: dict[int, str] = {}
         for i in indexes:
-            doc = docs.get(f"{parent_id}#chunk{i}")
+            doc = docs.get(f'{parent_id}#chunk{i}')
             if doc is not None and llm_allowed(doc.metadata):
                 out[i] = doc.content
         return out
+
     return fetch
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == '__main__':  # pragma: no cover
     print(select_context([]).stats)
-
