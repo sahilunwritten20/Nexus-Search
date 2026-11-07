@@ -7,6 +7,8 @@ serving); NEXUS_RAG_ENABLED=0 is the kill switch (disabled); the stub
 provider outside dev requires NEXUS_RAG_ALLOW_STUB=1.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
