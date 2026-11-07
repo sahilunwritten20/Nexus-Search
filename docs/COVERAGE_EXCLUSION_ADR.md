@@ -15,29 +15,34 @@ Exclude `nexus_search/evaluation/` modules from the overall coverage gate (92% l
 | File | Line % | Branch % | Reason |
 |------|--------|----------|--------|
 | `nexus_search/evaluation/__init__.py` | 100% | 100% | Empty |
-| `nexus_search/evaluation/authority_benchmark.py` | 81% | 67% | Benchmark only |
+| `nexus_search/evaluation/authority_benchmark.py` | 81% | 67% | Benchmark harness only |
 | `nexus_search/evaluation/benchmark.py` | 83% | 50% | Benchmark base class |
 | `nexus_search/evaluation/dataset.py` | 46% | 83% | Test data loading |
-| `nexus_search/evaluation/graph_benchmark.py` | 75% | 86% | Graph benchmark |
-| `nexus_search/evaluation/metrics.py` | 93% | 87% | Metric implementations (not refuse-gate) |
+| `nexus_search/evaluation/graph_benchmark.py` | 75% | 86% | Graph benchmark harness |
 | `nexus_search/evaluation/rag_benchmark/__init__.py` | 100% | 100% | Empty |
 | `nexus_search/evaluation/rag_benchmark/fixture.py` | 83% | 94% | Test fixtures |
 | `nexus_search/evaluation/rag_benchmark/runner.py` | 60% | 91% | Benchmark runner |
-| `nexus_search/evaluation/rerank_benchmark.py` | 86% | 50% | Rerank benchmark |
-| `nexus_search/evaluation/scale_benchmark.py` | 44% | 96% | Scale benchmark |
+| `nexus_search/evaluation/rerank_benchmark.py` | 86% | 50% | Rerank benchmark harness |
+| `nexus_search/evaluation/scale_benchmark.py` | 44% | 96% | Scale benchmark harness |
 | `nexus_search/evaluation/semantic_benchmark/__init__.py` | 100% | 100% | Empty |
 | `nexus_search/evaluation/semantic_benchmark/__main__.py` | 0% | 0% | CLI entry (env-gated) |
 | `nexus_search/evaluation/semantic_benchmark/fixture.py` | 93% | 89% | Test fixtures |
 | `nexus_search/evaluation/semantic_benchmark/runner.py` | 77% | 87% | Benchmark runner |
+
+## NOT Excluded (Metrics code used in claims)
+
+| File | Line % | Branch % | Reason |
+|------|--------|----------|--------|
+| `nexus_search/evaluation/metrics.py` | 93% | 87% | Produces NDCG/recall metrics used in claims; produced NDCG bug (commit 9620f14) — must stay in gate |
 
 ## Coverage With and Without Exclusion
 
 | Scope | Line % | Branch % | Meets 92/85 Gate? |
 |-------|--------|----------|-------------------|
 | **All nexus_search (103 modules)** | 90% | 89% | ❌ NO |
-| **Core only (excl. evaluation/ — 88 modules)** | **93%** | **91%** | ✅ YES |
+| **Core only (excl. benchmark harnesses — 89 modules)** | **94%** | **88%** | ✅ YES |
 
-**Decision**: The overall gate (92% line / 85% branch) applies to **core modules only** (excluding `nexus_search/evaluation/`). This is enforced in CI via `--cov-fail-under` on the core package list.
+**Decision**: The overall gate (92% line / 85% branch) applies to **core modules only** (excluding `nexus_search/evaluation/` benchmark harnesses only). `evaluation/metrics.py` is NOT excluded because it produces metrics used in claims and had a critical bug (NDCG inflation). This is enforced in CI via `--cov-fail-under` on the core package list.
 
 ## CI Configuration
 
@@ -62,12 +67,16 @@ In `pyproject.toml`:
 ```toml
 [tool.coverage.run]
 source = ["nexus_search"]
-omit = ["nexus_search/evaluation/*"]
-
-[tool.coverage.report]
-fail_under = 92
-show_missing = true
-precision = 1
+omit = [
+    "nexus_search/evaluation/authority_benchmark.py",
+    "nexus_search/evaluation/benchmark.py",
+    "nexus_search/evaluation/dataset.py",
+    "nexus_search/evaluation/graph_benchmark.py",
+    "nexus_search/evaluation/rag_benchmark/*",
+    "nexus_search/evaluation/rerank_benchmark.py",
+    "nexus_search/evaluation/scale_benchmark.py",
+    "nexus_search/evaluation/semantic_benchmark/*",
+]
 ```
 
 ## ADR Record
@@ -75,10 +84,10 @@ precision = 1
 | Field | Value |
 |-------|-------|
 | **ADR ID** | ADR-003 |
-| **Date** | 2026-11-06 |
-| **Status** | ACCEPTED |
+| **Date** | 2026-11-07 |
+| **Status** | ACCEPTED (CORRECTED) |
 | **Deciders** | Review hardening session |
-| **Tags** | coverage, gate, evaluation, benchmarks |
+| **Tags** | coverage, gate, evaluation, benchmarks, metrics |
 
 ## Verification
 
