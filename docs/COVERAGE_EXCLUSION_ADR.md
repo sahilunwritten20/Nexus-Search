@@ -1,13 +1,13 @@
 # Coverage Exclusion Configuration — ADR
 
 ## Decision
-Exclude `nexus_search/evaluation/` modules from the overall coverage gate (92% line / 85% branch).
+Exclude `nexus_search/evaluation/` **benchmark harnesses only** from the overall coverage gate (92% line / 85% branch).
 
 ## Justification
-1. **All evaluation modules are benchmarks** — they are not production code paths. They are explicitly env-gated behind `NEXUS_RUN_*_BENCH` and `NEXUS_RUN_MODEL_TESTS`.
-2. **No security-relevant logic** — None of the evaluation modules contain authentication, authorization, input validation, SSRF protection, or refuse-gate logic. Verified by inspection:
-   - `authority_benchmark.py`, `benchmark.py`, `dataset.py`, `graph_benchmark.py`, `metrics.py`, `rag_benchmark/`, `rerank_benchmark.py`, `scale_benchmark.py`, `semantic_benchmark/`, `runner.py` — all are measurement/reporting code only.
-3. **No refuse-gate or calibration code** — The refuse-gate (`calibration.py::_gate_refuses`) and metrics used in claims (`metrics.py`) are in `nexus_search/rag/`, not in evaluation.
+1. **All excluded modules are benchmarks** — they are not production code paths. They are explicitly env-gated behind `NEXUS_RUN_*_BENCH` and `NEXUS_RUN_MODEL_TESTS`.
+2. **No security-relevant logic** — None of the excluded modules contain authentication, authorization, input validation, SSRF protection, or refuse-gate logic. Verified by inspection:
+   - `authority_benchmark.py`, `benchmark.py`, `dataset.py`, `graph_benchmark.py`, `rag_benchmark/`, `rerank_benchmark.py`, `scale_benchmark.py`, `semantic_benchmark/`, `runner.py` — all are measurement/reporting code only.
+3. **Metrics code stays in gate** — The refuse-gate (`calibration.py::_gate_refuses`) and metrics used in claims (`metrics.py`) are in `nexus_search/rag/`, not in evaluation.
 4. **Env-gated by design** — These modules are never imported in production unless the operator explicitly sets env vars. They are development/benchmarking tools.
 
 ## Excluded Files (from coverage gate)
@@ -40,9 +40,9 @@ Exclude `nexus_search/evaluation/` modules from the overall coverage gate (92% l
 | Scope | Line % | Branch % | Meets 92/85 Gate? |
 |-------|--------|----------|-------------------|
 | **All nexus_search (103 modules)** | 90% | 89% | ❌ NO |
-| **Core only (excl. benchmark harnesses — 89 modules)** | **94%** | **88%** | ✅ YES |
+| **Core only (excl. eval benchmarks — 89 modules)** | **94%** | **88%** | ✅ YES |
 
-**Decision**: The overall gate (92% line / 85% branch) applies to **core modules only** (excluding `nexus_search/evaluation/` benchmark harnesses only). `evaluation/metrics.py` is NOT excluded because it produces metrics used in claims and had a critical bug (NDCG inflation). This is enforced in CI via `--cov-fail-under` on the core package list.
+**Decision**: The overall gate (92% line / 85% branch) applies to **core modules only** (excluding `nexus_search/evaluation/` benchmark harnesses only). `evaluation/metrics.py` is NOT excluded because it produces metrics used in claims and had a critical NDCG bug (commit 9620f14). This is enforced in CI via `--cov-fail-under` on the core package list.
 
 ## CI Configuration
 
@@ -77,6 +77,11 @@ omit = [
     "nexus_search/evaluation/scale_benchmark.py",
     "nexus_search/evaluation/semantic_benchmark/*",
 ]
+
+[tool.coverage.report]
+fail_under = 92
+show_missing = true
+precision = 1
 ```
 
 ## ADR Record
