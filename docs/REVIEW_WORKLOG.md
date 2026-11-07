@@ -661,13 +661,81 @@ Overall core (excl. evaluation): ~85% line / ~92% branch — still below 92/85 g
 [E] Updated docs/CANONICAL_COVERAGE.md with measured truth table.
 [E] Created Makefile with canonical commands for coverage, mutation, lint, security, fresh-clone, load-smoke, real-embedder.
 
-### S3.2 Remaining Gates
+### S3.2 Remaining Gates (Post-Full-Suite)
 
 | Gate | Status | Work Needed |
 |------|--------|-------------|
-| Coverage overall 92/85 | INPROG | Core ~85/92; exclude evaluation modules from gate |
-| Security-critical 97/90 | INPROG | 6/11 MET; files 87%, api 55% remain |
-| Mutation testing | NOT DONE | mutmut blocked on Windows; manual checks done |
+| Coverage overall 92/85 | INPROG | Core 93/91 ✅ (excl. evaluation per ADR-003); api 86/81, files 88/93, session 96/95, calibration 90/90, __main__ 94/90 need lift |
+| Security-critical 97/90 | INPROG | 9/13 MET (storage, security, sanitize, egress, gate, retrieval, fetcher, url_utils, models); 4 NOT MET: api 86/81, session 96/95, files 88/93, calibration 90/90, __main__ 94/90 |
+| Mutation testing | NOT DONE | mutmut blocked on Windows; manual checks only; Linux CI needed |
 | Refuse-gate calibration | NOT DONE | calibration.py::_gate_refuses train-only tuning |
 | Round-3 Skeptic Pass | NOT DONE | Fresh-context review of all post-R2 changes |
 | Final Seal | NOT DONE | Requires all above green |
+
+---
+
+## 2026-11-06 — Session 4 (Final Seal Evidence + WP1 api.py)
+
+### S4.0 Final Seal Evidence — Two Randomized Full-Suite Runs
+
+[E] Two randomized full-suite runs on the current head (commit 7c344a5):
+  run1: 1536 passed, 13 skipped, 846 subtests in 707.37s
+  run2: 1536 passed, 13 skipped, 846 subtests in 661.20s
+Zero flakes, order-independent. Test count grew from 1323 (Round 2) to 1536 (+213 review tests).
+Schemathesis: 900 generated requests / 15 operations / 0 5xx (commit 06b60f7).
+Red team: 201 cases / 0 violations (commit e277d54).
+Soak test: 10,079 req / 30 min / 0 errors (worklog S1.15).
+Kill-9 chaos: 4 delays / integrity ok (worklog S1.15).
+Fresh-clone: PASSES (worklog S1.15).
+Load smoke: PASSES (worklog S1.15).
+
+[D] Final seal requires: mutation testing scores, refuse-gate calibration, Round-3 skeptic pass. These remain NOT DONE.
+
+### S4.1 Mutation Testing Blocked — Plan for Linux CI
+
+[F] mutmut is blocked on native Windows (WSL-only binary, issue boxed/mutmut#397).
+[D] Run mutmut in Linux CI (WSL/Docker) on high-risk modules:
+  - nexus_search/core/tokenizer.py
+  - nexus_search/core/bm25.py
+  - nexus_search/core/query_parser.py
+  - nexus_search/core/fusion/normalization modules
+  - nexus_search/crawler/url_utils.py
+  - nexus_search/crawler/security.py (SSRF/DNS pinning)
+  - nexus_search/crawler/robots.py (robots matcher)
+  - nexus_search/links/graph.py (PageRank)
+  - nexus_search/rag/citations.py
+  - nexus_search/rag/sanitize.py
+  - nexus_search/rag/calibration.py (refuse-gate)
+  - nexus_search/rag/egress.py
+  - nexus_search/core/storage.py (budget accounting)
+  - nexus_search/core/api.py (auth/limiter)
+Command: `mutmut run --paths-to-mutate <module> --tests-dir <tests> --runner "python -m pytest -q -p no:randomly"`
+
+[D] Remove "Mutation-Checked" from all status lines until scores exist. Manual per-fix checks are NOT a substitute for tool-based mutation testing.
+
+### S4.2 WP1 Priority 1: api.py Coverage Lift (86% → 97% line, 81% → 90% branch)
+
+Missing coverage in api.py (from full-suite run):
+- Lines 72-74: startup/shutdown error paths
+- Lines 112-116: rate limiter error handling
+- Lines 138-139, 144-146, 154-156: auth failure paths
+- Lines 168-175, 178-188: request validation errors
+- Lines 191-192, 196: filter validation
+- Lines 205, 210-211: pagination boundaries
+- Lines 243-284: bulk endpoints
+- Lines 314-319: reindex/backup admin
+- Lines 331-332: search explain
+- Lines 398-399, 400-412: embedding sync errors
+- Lines 459-463, 464-466, 466-468: vector maintenance
+- Lines 562, 667-669, 669-674, 675-682, 682-693: advanced features
+- Lines 766, 768, 773-774, 776, 778, 780, 783-784: admin endpoints
+- Lines 802-812: backup/restore
+- Lines 829-832: vector maintenance
+- Lines 893-894, 896: metrics edge cases
+- Lines 939, 941: search DOS
+- Lines 1011-1020: bulk embed
+- Lines 1090-1091: crawler endpoints
+- Lines 1131-1139, 1147, 1154: ranking endpoints
+- Lines 1174: pipeline endpoints
+
+[D] Target: auth failures on every route, rate limiting, oversized bodies, invalid inputs, filter/pagination boundaries, error paths, admin/bulk/reindex routes.

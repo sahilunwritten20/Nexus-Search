@@ -1,6 +1,6 @@
-# WP0 Gap Audit — Exit Gates vs Measured Reality (UPDATED)
+# WP0 Gap Audit — Exit Gates vs Measured Reality (FINAL — Full Suite)
 
-Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
+Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 
 ## Legend
 - **PROVEN**: Command output + location saved
@@ -27,7 +27,7 @@ Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
 | auth | mutmut | NOT RUN | — | NOT DONE (P2) | — |
 | budget accounting | mutmut | NOT RUN | — | NOT DONE (P2) | — |
 
-**Action**: Run mutmut in Linux CI. For now: document as PARTIAL with manual checks logged.
+**Action**: Run mutmut in Linux CI (WSL/Docker). For now: document as PARTIAL with manual checks logged.
 
 ---
 
@@ -122,31 +122,27 @@ Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
 
 ---
 
-## 9. Security-Critical Module Coverage Floors
+## 9. Security-Critical Module Coverage Floors (FULL-SUITE MEASURED)
 
-| Module | Current Line | Current Branch | Floor Line | Floor Branch | Status |
-|--------|-------------|----------------|------------|--------------|--------|
-| storage.py | **98%** | — | 97% | 90% | **MET** ✓ |
-| security.py | **99%** | — | 97% | 90% | **MET** ✓ |
-| sanitize.py | **100%** | — | 97% | 90% | **MET** ✓ |
-| prompt.py | NOT MEASURED | — | 97% | 90% | UNKNOWN |
-| citations.py | NOT MEASURED | — | 97% | 90% | UNKNOWN |
-| politeness.py | NOT MEASURED | — | 97% | 90% | UNKNOWN |
-| files.py | **89%** | — | 97% | 90% | **NOT MET** (P1) |
-| url_utils.py | **86%** | — | 97% | 90% | NOT MET |
-| egress.py | **76%** | — | 97% | 90% | **NOT MET** (P1) |
-| gate.py | **96%** | — | 97% | 90% | NOT MET (line) |
-| retrieval.py | **98%** | — | 97% | 90% | **MET** (line) |
-| session.py | **96%** | — | 92% | 85% | **MET** ✓ (overall) |
+| Module | Line % | Branch % | Floor Line | Floor Branch | Status |
+|--------|--------|----------|------------|--------------|--------|
+| storage.py | 99% | 99% | 97% | 90% | ✅ **MET** |
+| security.py | 98% | 95% | 97% | 90% | ✅ **MET** |
+| sanitize.py | 99% | 94% | 97% | 90% | ✅ **MET** |
+| egress.py | 100% | 100% | 97% | 90% | ✅ **MET** |
+| gate.py | 97% | 93% | 97% | 90% | ✅ **MET** |
+| retrieval.py | 97% | 91% | 97% | 90% | ✅ **MET** |
+| fetcher.py | 99% | 98% | 97% | 90% | ✅ **MET** |
+| url_utils.py | 100% | 100% | 97% | 90% | ✅ **MET** |
+| session.py | 96% | 95% | 97% | 90% | ❌ **NOT MET** (line 96% < 97%) |
+| files.py | 88% | 93% | 97% | 90% | ❌ **NOT MET** (line 88% < 97%) |
+| calibration.py | 90% | 90% | 97% | 90% | ❌ **NOT MET** (both) |
+| __main__.py | 94% | 90% | 97% | 90% | ❌ **NOT MET** (line 94% < 97%) |
+| api.py | 86% | 81% | 97% | 90% | ❌ **NOT MET** (both) |
 
-**Overall**: 89.2% line / 83.1% branch claimed → **NEEDS VERIFICATION**
-
-**Progress since WP0 start:**
-- storage.py: 57% → 98% (+41%)
-- security.py: 47% → 99% (+52%) - already covered by existing tests
-- sanitize.py: 70% → 100% (+30%)
-- files.py: 70% → 89% (+19%)
-- session.py: 77% → 96% (+19%)
+**Overall Core (excl. evaluation)**: 93% line / 91% branch → **MET 92/85 gate**
+**Overall All**: 90% line / 89% branch → **NOT MET 92/85 gate**
+**Exclusion**: evaluation/ modules excluded via ADR-003 (docs/COVERAGE_EXCLUSION_ADR.md)
 
 ---
 
@@ -157,8 +153,9 @@ Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
 | sentence-transformers path env-gated | PROVEN | NEXUS_RUN_MODEL_TESTS=1 required |
 | What IS verified with real embedder | PARTIAL | Model-gated arm: 1176 passed / 5 skipped (worklog S1.3) |
 | What is NOT verified | DOCUMENTED | Refuse-gate calibration, benchmark floors, semantic search quality |
-| Benchmark under real embedder | NOT DONE (P2) | Requires GPU/CI; command: `NEXUS_RUN_MODEL_TESTS=1 pytest tests/evaluation/` |
+| Benchmark under real embedder | NOT DONE (P2) | Command: `NEXUS_RUN_MODEL_TESTS=1 pytest tests/evaluation/` |
 | Refuse-gate under real embedder | NOT DONE (P1) | Same |
+| CPU test (all-MiniLM-L6-v2) | NOT RUN | Blocker: network/download in CI; exact command: `pip install sentence-transformers && NEXUS_RUN_MODEL_TESTS=1 pytest tests/rag/test_calibration.py -q` |
 
 ---
 
@@ -170,7 +167,7 @@ Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
 | Worklog S1.16 (Round 2 skeptic) | 8 crawler + 13 RAG = 21 | 21 in REVIEW_REPORT.md |
 | Worklog S1.17 (Round 2 seal) | 28 total (3 P1, 11 P2, 14 P3) | 28 in CLAIMS_LEDGER |
 | REVIEW_CHECKLIST.md findings table | 18 entries (37-54) | 18 entries |
-| Git log (fix commits) | Count from commits | abd45bc message: "28 findings fixed" |
+| Git log (fix commits) | Count from commits | 7c344a5 message: "WP0/1: Canonical coverage audit + security-critical coverage lift" |
 
 **Discrepancy**: Checklist shows 18 findings (rows 37-54) but 28 claimed. Need to add missing 10 findings to checklist.
 
@@ -180,36 +177,18 @@ Date: 2026-11-06. Branch: review/hardening. Commit: abd45bc.
 
 | Severity | Count | Items |
 |----------|-------|-------|
-| P1 | 7 | Mutation (SSRF, sanitize, refuse-gate), Route guard, Security-critical coverage (files 89%, egress 76%, url_utils 86%, gate 96%), Real-embedder refuse-gate |
-| P2 | 15 | Mutation (other modules), Union-find diff, Retrieval vs ranx, Migration idempotence, Chaos (ingest/crawl/SSE/disk/ro/lock), Docs-truth (routes, migrations, ROADMAP), Static (mypy, noqa, suppression), Security-critical coverage (prompt, citations, politeness), Real-embedder benchmark |
-| P3 | 3 | pip-licenses (DONE), suppression wiring, backup checksums |
+| P1 | 10 | Mutation (SSRF, sanitize, refuse-gate, auth, budget), Route guard, Security-critical coverage (session, files, calibration, __main__, api), Real-embedder refuse-gate, Route inventory, Auth guard test |
+| P2 | 18 | Mutation (other modules), Union-find diff, Retrieval vs ranx, Migration idempotence, Chaos (ingest/crawl/SSE/disk/ro/lock), Docs-truth (routes, migrations, ROADMAP), Static (mypy, noqa, suppression), Security-critical coverage (api), Real-embedder benchmark, Backup checksums, Mutation testing, Refuse-gate calibration, Round-3 skeptic |
+| P3 | 5 | pip-licenses (DONE), suppression wiring, backup checksums, ROADMAP update, finding-count reconciliation |
 
 ---
 
-## WP1 Progress (Coverage Lift) - IN PROGRESS
+## Next: WP1 — Coverage Lift (Priority: Security-Critical Modules First)
 
-| Module | Before | After | Status |
-|--------|--------|-------|--------|
-| storage.py | 57% | 98% | ✓ MET security floor |
-| security.py | 47% | 99% | ✓ MET security floor |
-| sanitize.py | 70% | 100% | ✓ MET security floor |
-| files.py | 70% | 89% | PARTIAL (needs 97%) |
-| session.py | 77% | 96% | ✓ MET overall gate |
-| egress.py | 76% | 76% | NOT STARTED |
-| fetcher.py | 68% | 68% | NOT STARTED |
-| api.py | 58% | 58% | NOT STARTED |
-| gate.py | 96% | 96% | NEEDS +1% |
-| rag/__main__.py | 0% | 95%* | *CLI tests added |
-
----
-
-## Next Actions (Priority Order)
-
-1. **Files.py**: Lift from 89% → 97% (remaining: encoding detection fallbacks, OCR, docx/xlsx/pptx import errors)
-2. **Egress.py**: Lift from 76% → 97% (moderation paths)
-3. **Fetcher.py**: Lift from 68% → 92% (JS render, charset, error paths)
-4. **Api.py**: Lift from 58% → 92% (error paths, filter validation)
-5. **Gate.py**: Lift from 96% → 97% (line 93, 145)
-6. **Run mutmut** in Linux CI for mutation scores
-7. **Route inventory + auth guard** script
-8. **Real-embedder benchmark** (if GPU available)
+Target order (security-critical first):
+1. **api.py** (86% → 97% line, 81% → 90% branch) — P1 (auth, limiter, filters, bulk, reindex, admin)
+2. **files.py** (88% → 97% line, 93% → 90% branch) — P1 (encoding fallbacks, OCR, optional deps)
+3. **session.py** (96% → 97% line, 95% → 90% branch) — P1 (rollback, expired, count)
+4. **gate.py** (97% → 97% line, 93% → 90% branch) — P1 (lines 93, 145)
+5. **calibration.py** (90% → 97% line, 90% → 90% branch) — P1 (refuse-gate logic)
+6. **rag/__main__.py** (94% → 97% line, 90% → 90% branch) — P1 (CLI edge cases)
