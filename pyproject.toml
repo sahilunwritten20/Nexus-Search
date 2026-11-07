@@ -1,0 +1,46 @@
+[tool.coverage.run]
+source = ["nexus_search"]
+omit = ["nexus_search/evaluation/*"]
+
+[tool.coverage.report]
+fail_under = 92
+show_missing = true
+precision = 1
+
+[tool.ruff]
+select = [
+    "E", "F", "I", "UP", "B", "C4", "SIM", "PIE", "TRY", "RUF", "ISC", "BLE", "S110", "SIM905", "SIM117", "SIM113", "SIM102", "SIM103", "PLR1730", "B009", "F601", "RUF023", "RUF022", "RUF059", "F811", "F841", "C401", "TRY401"
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in default arguments
+    "B011",  # assert for control flow
+    "ISC001",  # implicit string concatenation (style)
+]
+line-length = 120
+target-version = "py314"
+preview = true
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+[tool.ruff.lint.per-file-ignores]
+"nexus_search/__init__.py" = ["EXE001"]  # BOM file - tracked separately
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_return_any = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101", "B110", "B311", "B405", "B608"]

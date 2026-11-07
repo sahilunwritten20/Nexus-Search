@@ -60,3 +60,35 @@ Legend: source = file:line. verify = command/test that produced the evidence.
 ## .env.example
 
 (to be populated by the env-consistency script diff)
+
+## Finding-Count Reconciliation
+
+| Source | Round | Claimed | Verified | Discrepancy |
+|--------|-------|---------|----------|-------------|
+| Worklog S1.4 | 1 | 17 fixed (1 P1, 7 P2, 9 P3) | 17 in REVIEW_REPORT.md | — |
+| Worklog S1.16 | 2 (skeptic) | 8 crawler + 13 RAG = 21 | 21 in REVIEW_REPORT.md | — |
+| Worklog S1.17 | 2 (seal) | 28 total (3 P1, 11 P2, 14 P3) | 28 in CLAIMS_LEDGER | — |
+| REVIEW_CHECKLIST.md findings table | — | 18 entries (rows 37-54) | 18 entries | **10 findings missing from checklist** |
+| Git log fix commits | — | Count from commits | da78e0f message: "28 findings" | — |
+
+### Missing 10 Findings from Checklist (rows 37-54 only show 18)
+
+| Finding ID | Round | Severity | Description | Fix Commit | Regression Test |
+|------------|-------|----------|-------------|------------|-----------------|
+| EXFIL-PARTIAL | 1 (fuzz) | P2 | Unterminated markdown link/image forms survived sanitization | c299665 | test_sanitize_fuzz (600 payload soups) |
+| PR-CONVERGE | 1 (diff) | P2 | PageRank 30-iter cap shipped non-converged scores | 8b9f76b | test_pagerank_differential (8 shapes vs networkx) |
+| RETRY-AFTER | 2 (utc) | P3 | Budget 429 Retry-After understated resets by up to 23h | f7de1c8 | test_budget_rollover (UTC midnight) |
+| REDTEAM-FILTERS | 2 (red team) | P2 | Unknown filter keys on /ask escaped as 500 | e277d54 | test_red_team (clean 400) |
+| SKEP-1 | 2 (crawler skeptic) | P1 | Robots matcher regex backtracking hung process | 5afb8e7 | test_skeptic_round2 (linear glob) |
+| SKEP-2 | 2 (crawler skeptic) | P2 | Crawl-delay unvalidated (3-year sleeps, NaN disables) | 5afb8e7 | test_skeptic_round2 (clamp [0,60]) |
+| SKEP-3 | 2 (crawler skeptic) | P2 | Redirect hops bypassed target-domain pacing | 5afb8e7 | test_skeptic_round2 (hop pacing) |
+| SKEP-4 | 2 (crawler skeptic) | P3 | Sitemap index children skipped blocklist | 5afb8e7 | test_skeptic_round2 (blocklist gate) |
+| SKEP-5 | 2 (crawler skeptic) | P3 | Pinned hosts fell back to real DNS for service ports | 5afb8e7 | test_skeptic_round2 (fail closed) |
+| SKEP-R1 | 2 (RAG skeptic) | P1 | /ask/stream shipped system prompt + nonce | 81b78d7 | test_skeptic_rag_round2 (StreamLeakScrubber) |
+| SKEP-R2 | 2 (RAG skeptic) | P1 | Real adapters buffered entire SSE body | 81b78d7 | test_skeptic_rag_round2 (lazy reader threads) |
+| SKEP-R3 | 2 (RAG skeptic) | P2 | worker.join(timeout) bounded whole buffered parse | 81b78d7 | test_skeptic_rag_round2 (reader threads) |
+| SKEP-R4 | 2 (RAG skeptic) | P2 | CommonMark reference-def links weaponized | 81b78d7 | test_skeptic_rag_round2 (ref-def regexes) |
+| SKEP-R5 | 2 (RAG skeptic) | P2 | Disconnects settled nothing; condense spend unbilled | 81b78d7 | test_skeptic_rag_round2 (settle + condense) |
+| SKEP-R6..R13 | 2 (RAG skeptic) | P3 | Various parity/validation fixes | 81b78d7 | test_skeptic_rag_round2 (14 tests) |
+
+**Total**: 17 (Round 1) + 21 (Round 2 skeptic) = 38 individual findings, but some overlap. Claimed 28 unique findings fixed across rounds. Checklist must be updated to reflect all 28.

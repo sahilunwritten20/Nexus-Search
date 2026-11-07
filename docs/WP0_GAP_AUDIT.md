@@ -1,37 +1,51 @@
 # WP0 Gap Audit — Exit Gates vs Measured Reality (FINAL — Full Suite)
 
-Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
+Date: 2026-11-07. Branch: review/hardening. Commit: da78e0f.
 
 ## Legend
 - **PROVEN**: Command output + location saved
 - **PARTIAL**: Some evidence, gap documented
 - **NOT DONE**: No evidence, severity assigned
+- **UNMEASURED**: Not yet evaluated
 
 ---
 
-## 1. Mutation Testing (Target: >=85% on high-risk modules)
+## 1. Coverage Gates
+
+| Gate | Target | Measured | Status | Evidence |
+|------|--------|----------|--------|----------|
+| Overall line (all) | 92% | 90% | NOT DONE (P1) | docs/CANONICAL_COVERAGE.md |
+| Overall branch (all) | 85% | 89% | NOT DONE (P1) | docs/CANONICAL_COVERAGE.md |
+| Core (excl. eval) line | 92% | 93% | PROVEN | docs/COVERAGE_EXCLUSION_ADR.md |
+| Core (excl. eval) branch | 85% | 91% | PROVEN | docs/COVERAGE_EXCLUSION_ADR.md |
+| Security-critical 97/90 | per-module | See table | PARTIAL | docs/CANONICAL_COVERAGE.md |
+
+---
+
+## 2. Mutation Testing (Target: >=85% on high-risk modules)
 
 | Module | Tool | Score | Survivors | Status | Evidence |
 |--------|------|-------|-----------|--------|----------|
-| tokenizer | mutmut | NOT RUN | — | NOT DONE (P2) | mutmut blocked on Windows; manual per-fix checks only |
-| BM25 | mutmut | NOT RUN | — | NOT DONE (P2) | manual checks in worklog |
-| query_parser | mutmut | NOT RUN | — | NOT DONE (P2) | manual checks in worklog |
-| fusion/normalization | mutmut | NOT RUN | — | NOT DONE (P2) | — |
-| URL normalization | mutmut | NOT RUN | — | NOT DONE (P2) | — |
+| tokenizer | mutmut | NOT RUN | — | NOT DONE (P1) | mutmut blocked on Windows; manual per-fix checks only |
+| BM25 | mutmut | NOT RUN | — | NOT DONE (P1) | manual checks in worklog |
+| query_parser | mutmut | NOT RUN | — | NOT DONE (P1) | manual checks in worklog |
+| fusion/normalization | mutmut | NOT RUN | — | NOT DONE (P1) | — |
+| URL normalization | mutmut | NOT RUN | — | NOT DONE (P1) | — |
 | SSRF/DNS pinning | mutmut | NOT RUN | — | NOT DONE (P1) | — |
 | robots matcher | mutmut | NOT RUN | — | NOT DONE (P1) | — |
-| PageRank | mutmut | NOT RUN | — | NOT DONE (P2) | — |
-| citation verification | mutmut | NOT RUN | — | NOT DONE (P2) | — |
+| PageRank | mutmut | NOT RUN | — | NOT DONE (P1) | — |
+| citation verification | mutmut | NOT RUN | — | NOT DONE (P1) | — |
 | sanitization | mutmut | NOT RUN | — | NOT DONE (P1) | — |
 | refuse-gate | mutmut | NOT RUN | — | NOT DONE (P1) | — |
-| auth | mutmut | NOT RUN | — | NOT DONE (P2) | — |
-| budget accounting | mutmut | NOT RUN | — | NOT DONE (P2) | — |
+| auth | mutmut | NOT RUN | — | NOT DONE (P1) | — |
+| budget accounting | mutmut | NOT RUN | — | NOT DONE (P1) | — |
+| egress | mutmut | NOT RUN | — | NOT DONE (P1) | — |
 
-**Action**: Run mutmut in Linux CI (WSL/Docker). For now: document as PARTIAL with manual checks logged.
+**Action**: Run mutmut in Linux CI (WSL/Docker). Document exact error if both fail, then run AST mutation harness.
 
 ---
 
-## 2. Differential Tests
+## 3. Differential Tests
 
 | Differential | Status | Evidence | Gap |
 |--------------|--------|----------|-----|
@@ -44,7 +58,7 @@ Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 
 ---
 
-## 3. Migration Upgrade Tests (Populated DBs)
+## 4. Migration Upgrade Tests (Populated DBs)
 
 | Migration | Status | Evidence |
 |-----------|--------|----------|
@@ -57,34 +71,38 @@ Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 
 ---
 
-## 4. Backup/Restore Executed & Verified
+## 5. Backup/Restore Executed & Verified
 
 | Check | Status | Evidence |
 |-------|--------|----------|
 | Online snapshot under live API | PROVEN | Worklog S1.14: row counts equal, doc_id sets equal |
 | PRAGMA integrity_check both sides | PROVEN | Worklog S1.14 |
-| Restore verified with checksums | PARTIAL | Counts verified; no SHA256 recorded |
+| Restore verified with checksums (SHA256) | NOT DONE (P2) | Counts verified; no SHA256 recorded |
 
 ---
 
-## 5. Chaos / Fault Injection (SIGTERM, disk-full, provider outage, DNS failure, DB lock storm)
+## 6. Chaos / Fault Injection
 
 | Scenario | Status | Evidence |
 |----------|--------|----------|
 | Kill-9 mid-write | PROVEN | tests/core/test_crash_safety.py (4 delays, integrity ok) |
-| Kill-9 mid-ingestion | NOT DONE (P2) | — |
-| Kill-9 mid-crawl | NOT DONE (P2) | — |
-| Kill-9 mid-SSE stream | NOT DONE (P2) | — |
-| Disk-full | NOT DONE (P2) | — |
-| Read-only filesystem | NOT DONE (P2) | — |
+| Kill-9 mid-ingestion | NOT DONE (P1) | — |
+| Kill-9 mid-crawl | NOT DONE (P1) | — |
+| Kill-9 mid-SSE stream | NOT DONE (P1) | — |
+| SIGTERM during request | NOT DONE (P1) | — |
+| SIGTERM during ingestion | NOT DONE (P1) | — |
+| SIGTERM during crawl | NOT DONE (P1) | — |
+| SIGTERM during SSE stream | NOT DONE (P1) | — |
+| Disk-full | NOT DONE (P1) | — |
+| Read-only filesystem | NOT DONE (P1) | — |
 | Provider outage | PARTIAL | Stream caps tested; no full outage test |
 | DNS failure | PARTIAL | Pinning tests cover; no resolver failure test |
-| DB lock storm | NOT DONE (P2) | — |
-| Consistency checker after each | NOT DONE (P2) | — |
+| DB lock storm | NOT DONE (P1) | — |
+| Consistency checker after each | NOT DONE (P1) | — |
 
 ---
 
-## 6. Route Inventory + Auth Guard Test
+## 7. Route Inventory + Auth Guard Test
 
 | Check | Status | Evidence |
 |-------|--------|----------|
@@ -94,7 +112,7 @@ Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 
 ---
 
-## 7. Docs-Truth Scripts Wired into CI
+## 8. Docs-Truth Scripts Wired into CI
 
 | Check | Status | Evidence |
 |-------|--------|----------|
@@ -106,7 +124,7 @@ Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 
 ---
 
-## 8. Static Analysis on CURRENT HEAD
+## 9. Static Analysis on CURRENT HEAD (da78e0f)
 
 | Tool | Status | Evidence |
 |------|--------|----------|
@@ -116,79 +134,139 @@ Date: 2026-11-06. Branch: review/hardening. Commit: 7c344a5.
 | vulture | DONE (baseline) | Unused response params, imports |
 | bandit | DONE (baseline) | 21 findings triaged in worklog S1.4 |
 | pip-audit | PROVEN | "No known vulnerabilities found" |
-| Secret scan (git history) | PROVEN | Pattern sweep clean (gitleaks unavailable) |
+| Secret scan (git history) | PARTIAL | Pattern sweep clean (gitleaks unavailable); test fixtures contain sk-/api_key= placeholders |
 | pip-licenses | PROVEN | No copyleft licenses |
 | Suppression comments justified | NOT DONE (P2) | 14 noqa sites read; not all wired as live |
 
 ---
 
-## 9. Security-Critical Module Coverage Floors (FULL-SUITE MEASURED)
+## 10. Security-Critical Module Coverage Floors (FULL-SUITE MEASURED)
 
-| Module | Line % | Branch % | Floor Line | Floor Branch | Status |
-|--------|--------|----------|------------|--------------|--------|
-| storage.py | 99% | 99% | 97% | 90% | ✅ **MET** |
-| security.py | 98% | 95% | 97% | 90% | ✅ **MET** |
-| sanitize.py | 99% | 94% | 97% | 90% | ✅ **MET** |
-| egress.py | 100% | 100% | 97% | 90% | ✅ **MET** |
-| gate.py | 97% | 93% | 97% | 90% | ✅ **MET** |
-| retrieval.py | 97% | 91% | 97% | 90% | ✅ **MET** |
-| fetcher.py | 99% | 98% | 97% | 90% | ✅ **MET** |
-| url_utils.py | 100% | 100% | 97% | 90% | ✅ **MET** |
-| session.py | 96% | 95% | 97% | 90% | ❌ **NOT MET** (line 96% < 97%) |
-| files.py | 88% | 93% | 97% | 90% | ❌ **NOT MET** (line 88% < 97%) |
-| calibration.py | 90% | 90% | 97% | 90% | ❌ **NOT MET** (both) |
-| __main__.py | 94% | 90% | 97% | 90% | ❌ **NOT MET** (line 94% < 97%) |
-| api.py | 86% | 81% | 97% | 90% | ❌ **NOT MET** (both) |
+| Module | Line % | Branch % | Floor Line | Floor Branch | Status | Missing Lines (from full suite) |
+|--------|--------|----------|------------|--------------|--------|--------------------------------|
+| storage.py | 99% | 99% | 97% | 90% | ✅ **MET** | 137-139 (rollback) |
+| security.py | 98% | 95% | 97% | 90% | ✅ **MET** | 114-147, 140-127, 193 |
+| sanitize.py | 99% | 94% | 97% | 90% | ✅ **MET** | 110-113, 113-123 |
+| egress.py | 100% | 100% | 97% | 90% | ✅ **MET** | — |
+| gate.py | 97% | 93% | 97% | 90% | ✅ **MET** | 93, 145 |
+| retrieval.py | 97% | 91% | 97% | 90% | ✅ **MET** | 112-115, 116-119, 236, 241-249 |
+| fetcher.py | 99% | 98% | 97% | 90% | ✅ **MET** | 175-198, 193-194 |
+| url_utils.py | 100% | 100% | 97% | 90% | ✅ **MET** | — |
+| models.py | 97% | 97% | 97% | 90% | ✅ **MET** | 147, 149 |
+| session.py | 96% | 95% | 97% | 90% | ❌ **NOT MET** | 116-117, 198-199, 219, 250 |
+| files.py | 88% | 93% | 97% | 90% | ❌ **NOT MET** | 131-133, 170-172, 187-191, 357-358, 526, 529, 560, 568, 616-619, 661-659, 677-exit, 707-711, 710, 723-737, 760-773, 795-796, 801-804, 813-814, 823-821, 835-836, 841-851, 853-854 |
+| calibration.py | 90% | 90% | 97% | 90% | ❌ **NOT MET** | 236, 309-exit, 313-314, 322-333, 337 |
+| __main__.py | 94% | 90% | 97% | 90% | ❌ **NOT MET** | 83-84, 89, 113 |
+| api.py | 86% | 81% | 97% | 90% | ❌ **NOT MET** | 72-74, 74-76, 76-78, 78-80, 112-116, 138-139, 144-146, 154-156, 168-175, 178-188, 191-192, 196, 205, 210-211, 243-284, 314-319, 331-332, 398-399, 400-412, 403-412, 459-463, 464-466, 466-468, 562, 667-669, 669-674, 675-682, 682-693, 766, 768, 773-774, 776, 778, 780, 783-784, 802-812, 829-832, 893-894, 896, 939, 941, 1011-1020, 1090-1091, 1131-1139, 1147, 1154, 1174 |
 
-**Overall Core (excl. evaluation)**: 93% line / 91% branch → **MET 92/85 gate**
-**Overall All**: 90% line / 89% branch → **NOT MET 92/85 gate**
-**Exclusion**: evaluation/ modules excluded via ADR-003 (docs/COVERAGE_EXCLUSION_ADR.md)
+**Summary**: 9/14 security-critical modules MET. 5 NOT MET: api, session, files, calibration, __main__.
+
+**Security-critical list justification**: Modules that handle auth/limiter (api), session isolation (session), ingestion limits (files), refuse-gate (calibration, __main__), and all SSRF/sanitization/storage paths.
 
 ---
 
-## 10. Real-Embedder Status
+## 11. Coverage With/Without ADR-003 Exclusion
+
+| Scope | Line % | Branch % | Meets 92/85 Gate? |
+|-------|--------|----------|-------------------|
+| **All nexus_search (103 modules)** | 90% | 89% | ❌ NO |
+| **Core only (excl. evaluation/ — 88 modules)** | **93%** | **91%** | ✅ YES |
+
+**Excluded files (ADR-003)**: All 14 files under `nexus_search/evaluation/` — verified no security-relevant logic (benchmarks only, env-gated, no refuse-gate/calibration/metrics used in claims).
+
+---
+
+## 12. Real-Embedder Status
 
 | Item | Status | Evidence |
 |------|--------|----------|
 | sentence-transformers path env-gated | PROVEN | NEXUS_RUN_MODEL_TESTS=1 required |
 | What IS verified with real embedder | PARTIAL | Model-gated arm: 1176 passed / 5 skipped (worklog S1.3) |
 | What is NOT verified | DOCUMENTED | Refuse-gate calibration, benchmark floors, semantic search quality |
-| Benchmark under real embedder | NOT DONE (P2) | Command: `NEXUS_RUN_MODEL_TESTS=1 pytest tests/evaluation/` |
+| Benchmark under real embedder | NOT DONE (P2) | Command: `pip install sentence-transformers && NEXUS_RUN_MODEL_TESTS=1 pytest tests/evaluation/` |
 | Refuse-gate under real embedder | NOT DONE (P1) | Same |
 | CPU test (all-MiniLM-L6-v2) | NOT RUN | Blocker: network/download in CI; exact command: `pip install sentence-transformers && NEXUS_RUN_MODEL_TESTS=1 pytest tests/rag/test_calibration.py -q` |
 
 ---
 
-## 11. Finding Count Reconciliation
+## 13. Finding Count Reconciliation
 
 | Source | Claimed | Verified |
 |--------|---------|----------|
 | Worklog S1.4 (Round 1) | 17 fixed | 17 in REVIEW_REPORT.md |
 | Worklog S1.16 (Round 2 skeptic) | 8 crawler + 13 RAG = 21 | 21 in REVIEW_REPORT.md |
 | Worklog S1.17 (Round 2 seal) | 28 total (3 P1, 11 P2, 14 P3) | 28 in CLAIMS_LEDGER |
-| REVIEW_CHECKLIST.md findings table | 18 entries (37-54) | 18 entries |
-| Git log (fix commits) | Count from commits | 7c344a5 message: "WP0/1: Canonical coverage audit + security-critical coverage lift" |
+| REVIEW_CHECKLIST.md findings table | 18 entries (rows 37-54) | 18 entries |
+| Git log (fix commits) | Count from commits | da78e0f message: "WP1: Final seal evidence + canonical coverage truth" |
 
 **Discrepancy**: Checklist shows 18 findings (rows 37-54) but 28 claimed. Need to add missing 10 findings to checklist.
 
 ---
 
-## Summary: NOT DONE / PARTIAL by Severity
+## 13 Skipped Tests Inventory
 
-| Severity | Count | Items |
-|----------|-------|-------|
-| P1 | 10 | Mutation (SSRF, sanitize, refuse-gate, auth, budget), Route guard, Security-critical coverage (session, files, calibration, __main__, api), Real-embedder refuse-gate, Route inventory, Auth guard test |
-| P2 | 18 | Mutation (other modules), Union-find diff, Retrieval vs ranx, Migration idempotence, Chaos (ingest/crawl/SSE/disk/ro/lock), Docs-truth (routes, migrations, ROADMAP), Static (mypy, noqa, suppression), Security-critical coverage (api), Real-embedder benchmark, Backup checksums, Mutation testing, Refuse-gate calibration, Round-3 skeptic |
-| P3 | 5 | pip-licenses (DONE), suppression wiring, backup checksums, ROADMAP update, finding-count reconciliation |
+| Test | File:Line | Reason | Env Gate | Can Run? |
+|------|-----------|--------|----------|----------|
+| test_load_smoke (2) | tests/test_load_smoke.py:107,181 | NEXUS_RUN_LOAD_SMOKE | Yes | Yes (set env) |
+| test_graph_benchmark | tests/evaluation/test_graph_benchmark.py:30 | NEXUS_RUN_GRAPH_BENCH | Yes | Yes (set env) |
+| test_rag_benchmark (3) | tests/evaluation/test_rag_benchmark.py:72,103,112 | ST arm / real-LLM | Yes | ST yes; real-LLM needs paid keys |
+| test_semantic_benchmark (2) | tests/evaluation/test_semantic_benchmark.py:64,68 | ST floors | Yes | Yes (set env) |
+| test_gate_calibration (2) | tests/rag/test_gate_calibration.py:99,102 | ST gate floors | Yes | Yes (set env) |
+| test_embedders (3) | tests/core/test_embedders.py:159,184,278 | ST model | Yes | Yes (set env) |
+| test_fetcher (1) | tests/crawler/test_fetcher.py:133 | playwright not installed | Yes | No (optional dep) |
+
+**Total**: 13 skipped. All are env-gated and UNVERIFIED in default CI.
 
 ---
 
-## Next: WP1 — Coverage Lift (Priority: Security-Critical Modules First)
+## 14. Earlier Seal Evidence — Marked SUPERSEDED
 
-Target order (security-critical first):
-1. **api.py** (86% → 97% line, 81% → 90% branch) — P1 (auth, limiter, filters, bulk, reindex, admin)
-2. **files.py** (88% → 97% line, 93% → 90% branch) — P1 (encoding fallbacks, OCR, optional deps)
-3. **session.py** (96% → 97% line, 95% → 90% branch) — P1 (rollback, expired, count)
-4. **gate.py** (97% → 97% line, 93% → 90% branch) — P1 (lines 93, 145)
-5. **calibration.py** (90% → 97% line, 90% → 90% branch) — P1 (refuse-gate logic)
-6. **rag/__main__.py** (94% → 97% line, 90% → 90% branch) — P1 (CLI edge cases)
+| Evidence | Original Commit | Status | Re-run Required? |
+|----------|----------------|--------|------------------|
+| Schemathesis 900 req / 15 ops / 0 5xx | 06b60f7 | SUPERSEDED | Yes, on final head |
+| Red team 201 cases / 0 violations | e277d54 | SUPERSEDED | Yes, on final head |
+| Soak test 10,079 req / 30 min / 0 errors | S1.15 | SUPERSEDED | Yes, on final head |
+| Kill-9 chaos 4 delays / integrity ok | 2d8c11c | SUPERSEDED | Yes, on final head |
+| Fresh-clone test | S1.15 | SUPERSEDED | Yes, on final head |
+| Load smoke | S1.15 | SUPERSEDED | Yes, on final head |
+
+---
+
+## 15. Checklist Items for Every Non-PROVEN Gate
+
+| Gate | Severity | Checklist ID | Work Needed |
+|------|----------|--------------|-------------|
+| Coverage overall 92/85 | P1 | A4-1 | Lift api.py, session.py, files.py, calibration.py, __main__.py |
+| Security-critical 97/90 | P1 | A4-2 | Lift api, session, files, calibration, __main__ |
+| Mutation testing >=85% (14 modules) | P1 | A7-2 | Run mutmut in Linux CI; if blocked, run AST harness |
+| Union-find vs networkx | P2 | B1-3 | Create differential test |
+| Retrieval metrics vs ranx | P2 | B4-4 | Create differential test |
+| Migration idempotence | P2 | B3-5 | Create test |
+| Migration crash-safety | P2 | B3-6 | Create test |
+| Backup restore SHA256 | P2 | B4-3 | Record checksums |
+| Chaos: kill-9 ingestion/crawl/SSE | P1 | B6-1 | Create tests |
+| Chaos: SIGTERM all operations | P1 | B6-2 | Create tests |
+| Chaos: disk-full, read-only FS | P1 | B6-3 | Create tests |
+| Chaos: provider outage, DNS failure, DB lock storm | P1 | B6-4 | Create tests |
+| Route inventory from app | P1 | C-sec-2 | Generate script |
+| Auth guard test for new routes | P1 | C-sec-3 | Create guard test |
+| Docs-truth: routes vs docs | P2 | C-doc-1 | Create script |
+| Docs-truth: migrations list | P2 | C-doc-2 | Create script |
+| Docs-truth: test counts in ROADMAP | P2 | C-doc-3 | Update ROADMAP.md |
+| Static: ruff curated config | P2 | A5-1 | Create pyproject.toml config |
+| Static: mypy strict config | P2 | A5-3 | Create pyproject.toml config |
+| Static: suppression comments justified | P2 | A5-7 | Wire 14 noqa sites as live |
+| Coverage ratchet in CI | P1 | A8-1 | Add --cov-fail-under to pyproject.toml |
+| Real-embedder benchmark | P2 | B7 | Run on CPU (all-MiniLM-L6-v2) |
+| Refuse-gate calibration | P1 | WP-C | Train-only tuning, held-out evaluated once |
+| Round-3 skeptic pass | P1 | WP-D | Fresh-context reviewers |
+| Final seal on final head | P1 | WP-E | All gates green |
+
+---
+
+## Next: WP-A Corrections and Audit
+
+1. Rebuild WP0_GAP_AUDIT.md (this file) as the single source of truth ✅
+2. Run static analysis on current head (da78e0f) and record results
+3. Update CLAIMS_LEDGER.md with finding-count reconciliation table
+4. Begin WP-B1: api.py coverage lift (86/81 → 97/90)
