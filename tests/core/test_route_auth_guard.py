@@ -91,6 +91,8 @@ class TestAuthMatrix:
     @pytest.fixture
     def client(self):
         # Set env vars BEFORE importing the app module
+        saved_env = os.environ.get("NEXUS_API_KEY")
+        saved_dev = os.environ.get("NEXUS_ENV")
         os.environ["NEXUS_ENV"] = "dev"
         os.environ["NEXUS_API_KEY"] = "test-key"
         os.environ["NEXUS_EMBEDDER"] = "hash:384"
@@ -99,7 +101,19 @@ class TestAuthMatrix:
         import nexus_search.core.api
         importlib.reload(nexus_search.core.api)
         from nexus_search.core.api import app
-        return TestClient(app)
+        try:
+            yield TestClient(app)
+        finally:
+            # Restore environment to avoid test pollution
+            if saved_env is None:
+                os.environ.pop("NEXUS_API_KEY", None)
+            else:
+                os.environ["NEXUS_API_KEY"] = saved_env
+            if saved_dev is None:
+                os.environ.pop("NEXUS_ENV", None)
+            else:
+                os.environ["NEXUS_ENV"] = saved_dev
+            importlib.reload(nexus_search.core.api)
 
     def test_public_routes_no_key(self, client):
         """Public routes should work without API key."""

@@ -172,7 +172,8 @@ class TestMinScoreOnApi(unittest.TestCase):
         cls._saved_db = os.environ.get("NEXUS_DB")
         os.environ["NEXUS_DB"] = os.path.join(tempfile.mkdtemp(prefix="wp14_api_"),
                                               "api.db")
-        os.environ.setdefault("NEXUS_ENV", "dev")
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ.pop("NEXUS_API_KEY", None)  # ensure no key from test pollution
         from nexus_search.core import api
         importlib.reload(api)
         cls.api = api
