@@ -99,7 +99,10 @@ class TestQueryCacheApi(unittest.TestCase):
         # later importlib.reload(api) that restores this stale ambient value
         # crashed with "unable to open database file" (16 CI failures).
         self._saved_db = os.environ.get("NEXUS_DB")
+        self._saved_api_key = os.environ.get("NEXUS_API_KEY")
         os.environ["NEXUS_DB"] = os.path.join(self.dir, "a.db")
+        os.environ["NEXUS_ENV"] = "dev"
+        os.environ.pop("NEXUS_API_KEY", None)  # ensure no key from test pollution
         from nexus_search.core import api
         importlib.reload(api)
         self.api = api
@@ -111,12 +114,20 @@ class TestQueryCacheApi(unittest.TestCase):
             os.environ.pop("NEXUS_DB", None)
         else:
             os.environ["NEXUS_DB"] = self._saved_db
+        if self._saved_api_key is None:
+            os.environ.pop("NEXUS_API_KEY", None)
+        else:
+            os.environ["NEXUS_API_KEY"] = self._saved_api_key
         for _ in range(10):
             try:
                 shutil.rmtree(self.dir)
                 break
             except PermissionError:
                 time.sleep(0.05)
+        # Reload api module to pick up restored env vars
+        import importlib
+        import nexus_search.core.api
+        importlib.reload(nexus_search.core.api)
 
     def test_repeat_query_served_from_cache(self):
         r1 = self.client.get("/search", params={"q": "alpha"}).json()
